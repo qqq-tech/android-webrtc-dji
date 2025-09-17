@@ -96,6 +96,73 @@ In order to get started just follow the steps below. Create your own HTML file w
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
+## Component build & run guide
+
+Follow the component-specific notes below to compile and launch each part of the workflow.
+
+### Android ground control station
+
+1. **Import sources** – copy the files from [`android-application/`](android-application) into your Android Studio project (or a Gradle module) and align the package names with your application ID. Ensure the DJI Mobile SDK 4 dependency is declared in `build.gradle`:
+   ```gradle
+   implementation 'com.dji:dji-sdk:4.16'
+   implementation 'org.webrtc:google-webrtc:1.0.+'  // or a pinned version supported by your device
+   ```
+2. **Configure DJI keys** – register your application on the DJI developer portal, download the `DJISDKLIB` AAR if required, and add your `dji.sdk.key` to `AndroidManifest.xml` together with the required permissions (USB, internet, location, etc.).
+3. **Build** – run `./gradlew assembleDebug` (or use the Android Studio *Build > Make Project* action) to produce an APK that contains the GCS logic plus the WebRTC/raw H.264 streamers.
+4. **Run** – deploy the app to a DJI-supported device, connect the drone, and launch the activity that instantiates `DJIStreamer`. Confirm your signaling server URL, drone ID, and optional raw TCP streaming targets are set before requesting a stream from the browser dashboard.
+
+### Browser dashboard
+
+1. **Install dependencies** – the dashboard uses vanilla HTML/JS; no build step is required. To simplify local testing you can serve the `browser/` directory with any static file server, e.g.:
+   ```bash
+   cd browser
+   python -m http.server 8081
+   ```
+2. **Run** – open `http://localhost:8081/dashboard.html?streamId=<STREAM_ID>&signalingHost=<RELAY_HOST>` in Chrome/Firefox. Replace `STREAM_ID` with the identifier used by the Android peer and `RELAY_HOST` with the reachable hostname/IP (including `ws://`/`wss://` if applicable) of the Pion relay.
+3. **Operate** – the left pane displays the raw WebRTC track while the right canvas renders YOLO overlays as soon as the Jetson WebSocket publishes detection JSON. Any `{ "error": "...", "code": "..." }` messages received from the relay will surface in the UI console.
+
+### Jetson analytics service
+
+1. **Create a Python environment** – Python 3.9+ is recommended. On the Jetson run:
+   ```bash
+   cd jetson
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+   The requirements file lists `aiortc`, `opencv-python`, `ultralytics`, and supporting packages needed for WebRTC reception and YOLO inference.
+2. **Provision YOLO weights** – download or copy the desired YOLOv8 model (e.g., `yolov8n.pt`) into the `jetson/` directory or adjust `yolo_processor.py` to point at your custom weights.
+3. **Run** – start the WebSocket broadcast service and WebRTC receiver:
+   ```bash
+   # Terminal 1 – WebSocket hub for browser overlays
+   python websocket_server.py --host 0.0.0.0 --port 8765
+
+   # Terminal 2 – subscribe to the Android stream via the Pion relay
+   python webrtc_receiver.py <STREAM_ID> \
+       --signaling-host ws://<RELAY_HOST>:8080 \
+       --overlay-ws ws://<JETSON_HOST>:8765 \
+       --model yolov8n.pt
+   ```
+   The receiver relays detection metadata that matches the agreed JSON format, enabling the dashboard to render overlays in real time.
+
+### Pion relay server
+
+1. **Install Go toolchain** – Go 1.20+ is recommended.
+2. **Download dependencies** – from the repository root run:
+   ```bash
+   cd pion-server
+   go mod tidy
+   ```
+   This fetches the Pion WebRTC modules and creates `go.sum` on first use.
+3. **Build/Run** – to compile a binary execute `go build -o bin/pion-relay main.go`. During development you can run the relay directly:
+   ```bash
+   go run main.go --addr :8080
+   ```
+   The server exposes WebSocket endpoints for publishers/subscribers, forwarding SDP/ICE JSON, RTP packets, and propagating structured error responses.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 <!-- PRE SETUP -->
 ### Pre-setup
 
