@@ -1,7 +1,5 @@
 package com.example;
 
-import static org.webrtc.SessionDescription.Type.OFFER;
-
 import android.content.Context;
 import android.util.Log;
 
@@ -59,6 +57,7 @@ public class WebRTCClient {
         createVideoTrackFromVideoCapturer();
         initializePeerConnection();
         startStreamingVideo();
+        initiateOffer();
     }
 
     private static void initializeFactory(Context context){
@@ -83,13 +82,22 @@ public class WebRTCClient {
     public void handleWebRTCMessage(JSONObject message){
         try {
             Log.d(TAG, "connectToSignallingServer: got message " + message);
-            if (message.getString("type").equals("offer")) {
-                Log.d(TAG, "connectToSignallingServer: received an offer");
-                peerConnection.setRemoteDescription(new SimpleSdpObserver(), new SessionDescription(OFFER, message.getString("sdp")));
-                answerCall();
-            } else if (message.getString("type").equals("candidate")) {
-                Log.d(TAG, "connectToSignallingServer: receiving candidates");
-                IceCandidate candidate = new IceCandidate(message.getString("id"), message.getInt("label"), message.getString("candidate"));
+            String type = message.getString("type");
+            if (type.equals("sdp")) {
+                String remoteSdp = message.getString("sdp");
+                String sdpType = message.optString("sdpType", "answer");
+                SessionDescription.Type descriptionType = SessionDescription.Type.fromCanonicalForm(sdpType);
+                Log.d(TAG, "Received remote SDP of type: " + descriptionType);
+                peerConnection.setRemoteDescription(new SimpleSdpObserver(), new SessionDescription(descriptionType, remoteSdp));
+                if (descriptionType == SessionDescription.Type.OFFER) {
+                    sendAnswer();
+                }
+            } else if (type.equals("ice")) {
+                Log.d(TAG, "connectToSignallingServer: receiving ICE candidate");
+                IceCandidate candidate = new IceCandidate(
+                        message.optString("sdpMid", ""),
+                        message.optInt("sdpMLineIndex", 0),
+                        message.getString("candidate"));
                 peerConnection.addIceCandidate(candidate);
             }
         }
@@ -99,21 +107,34 @@ public class WebRTCClient {
         }
     }
 
-    private void answerCall() {
-        peerConnection.createAnswer(new SimpleSdpObserver() {
+    private void initiateOffer() {
+        MediaConstraints mediaConstraints = new MediaConstraints();
+        peerConnection.createOffer(new SimpleSdpObserver() {
             @Override
             public void onCreateSuccess(SessionDescription sessionDescription) {
                 peerConnection.setLocalDescription(new SimpleSdpObserver(), sessionDescription);
-                JSONObject message = new JSONObject();
                 try {
-                    message.put("type", "answer");
-                    message.put("sdp", sessionDescription.description);
-                    sendMessage(message);
+                    sendMessage(SignalingMessageBuilder.buildSdpMessage(sessionDescription));
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
             }
-        }, new MediaConstraints());
+        }, mediaConstraints);
+    }
+
+    private void sendAnswer() {
+        MediaConstraints mediaConstraints = new MediaConstraints();
+        peerConnection.createAnswer(new SimpleSdpObserver() {
+            @Override
+            public void onCreateSuccess(SessionDescription sessionDescription) {
+                peerConnection.setLocalDescription(new SimpleSdpObserver(), sessionDescription);
+                try {
+                    sendMessage(SignalingMessageBuilder.buildSdpMessage(sessionDescription));
+                } catch (JSONException e) {
+                    e.printStackTrace();
+                }
+            }
+        }, mediaConstraints);
     }
 
     private void sendMessage(Object message) {
@@ -186,14 +207,8 @@ public class WebRTCClient {
             @Override
             public void onIceCandidate(IceCandidate iceCandidate) {
                 Log.d(TAG, "onIceCandidate: ");
-                JSONObject message = new JSONObject();
-
                 try {
-                    message.put("type", "candidate");
-                    message.put("label", iceCandidate.sdpMLineIndex);
-                    message.put("id", iceCandidate.sdpMid);
-                    message.put("candidate", iceCandidate.sdp);
-
+                    JSONObject message = SignalingMessageBuilder.buildIceMessage(iceCandidate);
                     Log.d(TAG, "onIceCandidate: sending candidate " + message);
                     sendMessage(message);
                 } catch (JSONException e) {

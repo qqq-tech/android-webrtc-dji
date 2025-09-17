@@ -17,7 +17,10 @@ import android.os.SystemClock;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import dji.sdk.camera.VideoFeeder;
 import dji.sdk.codec.DJICodecManager;
@@ -27,6 +30,8 @@ public class DJIVideoCapturer implements VideoCapturer {
 
     private static DJICodecManager codecManager;
     private static final ArrayList<CapturerObserver> observers = new ArrayList<CapturerObserver>();
+    private static final List<RawH264FrameListener> rawFrameListeners = new CopyOnWriteArrayList<>();
+    private static final AtomicLong frameCounter = new AtomicLong();
 
     private final String droneDisplayName;
     private Context context;
@@ -80,6 +85,10 @@ public class DJIVideoCapturer implements VideoCapturer {
                 VideoFeeder.VideoDataListener videoDataListener = new VideoFeeder.VideoDataListener() {
                     @Override
                     public void onReceive(byte[] bytes, int dataSize) {
+                        // Broadcast the raw H264 frame before decoding so it can be forwarded using the
+                        // custom TCP streaming path.
+                        notifyRawFrameListeners(bytes, dataSize);
+
                         // Pass the encoded data along to obtain the YUV-color data
                         codecManager.sendDataToDecoder(bytes, dataSize);
                     }
@@ -87,6 +96,76 @@ public class DJIVideoCapturer implements VideoCapturer {
                 VideoFeeder.getInstance().getPrimaryVideoFeed().addVideoDataListener(videoDataListener);
                 break;
         }
+    }
+
+    public static void registerRawFrameListener(RawH264FrameListener listener) {
+        if (listener != null && !rawFrameListeners.contains(listener)) {
+            rawFrameListeners.add(listener);
+        }
+    }
+
+    public static void unregisterRawFrameListener(RawH264FrameListener listener) {
+        rawFrameListeners.remove(listener);
+    }
+
+    private void notifyRawFrameListeners(byte[] bytes, int dataSize) {
+        if (rawFrameListeners.isEmpty() || bytes == null || dataSize <= 0) {
+            return;
+        }
+
+        byte[] payloadCopy = new byte[dataSize];
+        System.arraycopy(bytes, 0, payloadCopy, 0, dataSize);
+
+        RawH264Frame.FrameType frameType = detectFrameType(payloadCopy, dataSize);
+        RawH264Frame frame = new RawH264Frame(
+                frameCounter.incrementAndGet(),
+                SystemClock.elapsedRealtime(),
+                payloadCopy,
+                dataSize,
+                frameType
+        );
+
+        for (RawH264FrameListener listener : rawFrameListeners) {
+            try {
+                listener.onRawFrame(frame);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private RawH264Frame.FrameType detectFrameType(byte[] buffer, int length) {
+        if (buffer == null || length < 1) {
+            return RawH264Frame.FrameType.UNKNOWN;
+        }
+
+        int offset = findStartCodeOffset(buffer, length);
+        if (offset < 0 || offset >= length) {
+            return RawH264Frame.FrameType.UNKNOWN;
+        }
+
+        int nalUnitType = buffer[offset] & 0x1F;
+        switch (nalUnitType) {
+            case 5:
+                return RawH264Frame.FrameType.IDR;
+            case 1:
+                return RawH264Frame.FrameType.P;
+            case 7:
+                return RawH264Frame.FrameType.SPS;
+            case 8:
+                return RawH264Frame.FrameType.PPS;
+            default:
+                return RawH264Frame.FrameType.UNKNOWN;
+        }
+    }
+
+    private int findStartCodeOffset(byte[] buffer, int length) {
+        for (int i = 0; i < length - 4; i++) {
+            if (buffer[i] == 0x00 && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x00 && buffer[i + 3] == 0x01) {
+                return i + 4;
+            }
+        }
+        return -1;
     }
 
     @Override

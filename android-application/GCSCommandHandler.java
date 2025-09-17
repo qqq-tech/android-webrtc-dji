@@ -1,0 +1,297 @@
+package com.example;
+
+import android.util.Log;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import dji.common.error.DJIError;
+import dji.common.flightcontroller.FlightControllerState;
+import dji.common.flightcontroller.FlightMode;
+import dji.common.flightcontroller.LocationCoordinate3D;
+import dji.common.flightcontroller.virtualstick.FlightControlData;
+import dji.common.flightcontroller.virtualstick.FlightCoordinateSystem;
+import dji.common.flightcontroller.virtualstick.RollPitchControlMode;
+import dji.common.flightcontroller.virtualstick.VerticalControlMode;
+import dji.common.flightcontroller.virtualstick.YawControlMode;
+import dji.common.gimbal.GimbalState;
+import dji.common.gimbal.Rotation;
+import dji.common.gimbal.RotationMode;
+import dji.common.util.CommonCallbacks;
+import dji.sdk.base.BaseProduct;
+import dji.sdk.flightcontroller.FlightController;
+import dji.sdk.gimbal.Gimbal;
+import dji.sdk.products.Aircraft;
+import dji.sdk.sdkmanager.DJISDKManager;
+
+import com.example.SocketConnection;
+
+/**
+ * Handles commands coming from the ground control station client and pushes telemetry updates
+ * back to the signaling backend. The commands leverage DJI's Mobile SDK v4 APIs.
+ */
+public class GCSCommandHandler {
+    private static final String TAG = "GCSCommandHandler";
+
+    private FlightController flightController;
+    private Gimbal gimbal;
+    private boolean virtualStickInitialized = false;
+
+    public GCSCommandHandler() {
+        refreshProductHandles();
+    }
+
+    public void startTelemetry() {
+        FlightController controller = getFlightController();
+        if (controller == null) {
+            Log.w(TAG, "Telemetry skipped - flight controller unavailable");
+            return;
+        }
+
+        controller.setStateCallback(this::emitTelemetry);
+    }
+
+    public void handleCommand(JSONObject command) throws JSONException {
+        if (command == null) {
+            emitCommandError("unknown", "Missing command payload", "INVALID_COMMAND");
+            return;
+        }
+
+        refreshProductHandles();
+        String action = command.optString("action");
+        switch (action) {
+            case "takeoff":
+                handleTakeoff(action);
+                break;
+            case "land":
+                handleLanding(action);
+                break;
+            case "return_home":
+                handleGoHome(action);
+                break;
+            case "cancel_return_home":
+                handleCancelGoHome(action);
+                break;
+            case "virtual_stick":
+                handleVirtualStick(action, command);
+                break;
+            case "gimbal_rotate":
+                handleGimbalRotate(action, command);
+                break;
+            default:
+                emitCommandError(action, "Unsupported command", "UNSUPPORTED_ACTION");
+                break;
+        }
+    }
+
+    private void handleTakeoff(String action) {
+        FlightController controller = getFlightController();
+        if (controller == null) {
+            emitCommandError(action, "Flight controller unavailable", "NO_FLIGHT_CONTROLLER");
+            return;
+        }
+        controller.startTakeoff(result -> handleCompletion(action, result));
+    }
+
+    private void handleLanding(String action) {
+        FlightController controller = getFlightController();
+        if (controller == null) {
+            emitCommandError(action, "Flight controller unavailable", "NO_FLIGHT_CONTROLLER");
+            return;
+        }
+        controller.startLanding(result -> handleCompletion(action, result));
+    }
+
+    private void handleGoHome(String action) {
+        FlightController controller = getFlightController();
+        if (controller == null) {
+            emitCommandError(action, "Flight controller unavailable", "NO_FLIGHT_CONTROLLER");
+            return;
+        }
+        controller.startGoHome(result -> handleCompletion(action, result));
+    }
+
+    private void handleCancelGoHome(String action) {
+        FlightController controller = getFlightController();
+        if (controller == null) {
+            emitCommandError(action, "Flight controller unavailable", "NO_FLIGHT_CONTROLLER");
+            return;
+        }
+        controller.cancelGoHome(result -> handleCompletion(action, result));
+    }
+
+    private void handleVirtualStick(String action, JSONObject command) throws JSONException {
+        FlightController controller = getFlightController();
+        if (controller == null) {
+            emitCommandError(action, "Flight controller unavailable", "NO_FLIGHT_CONTROLLER");
+            return;
+        }
+
+        float pitch = (float) command.optDouble("pitch", 0.0);
+        float roll = (float) command.optDouble("roll", 0.0);
+        float yaw = (float) command.optDouble("yaw", 0.0);
+        float throttle = (float) command.optDouble("throttle", 0.0);
+
+        ensureVirtualStickModeEnabled(controller, new CommonCallbacks.CompletionCallback() {
+            @Override
+            public void onResult(DJIError djiError) {
+                if (djiError != null) {
+                    emitCommandError(action, djiError.getDescription(), "VIRTUAL_STICK_ENABLE_FAILED");
+                    return;
+                }
+                FlightControlData data = new FlightControlData(pitch, roll, yaw, throttle);
+                controller.sendVirtualStickFlightControlData(data, result -> handleCompletion(action, result));
+            }
+        });
+    }
+
+    private void handleGimbalRotate(String action, JSONObject command) throws JSONException {
+        Gimbal gimbal = getGimbal();
+        if (gimbal == null) {
+            emitCommandError(action, "Gimbal unavailable", "NO_GIMBAL");
+            return;
+        }
+
+        float pitch = (float) command.optDouble("pitch", 0.0);
+        float roll = (float) command.optDouble("roll", 0.0);
+        float yaw = (float) command.optDouble("yaw", 0.0);
+        int time = command.optInt("duration", 1);
+
+        Rotation rotation = new Rotation.Builder()
+                .mode(RotationMode.ABSOLUTE_ANGLE)
+                .pitch(pitch)
+                .roll(roll)
+                .yaw(yaw)
+                .time(time)
+                .build();
+
+        gimbal.rotate(rotation, result -> handleCompletion(action, result));
+    }
+
+    private void ensureVirtualStickModeEnabled(FlightController controller, CommonCallbacks.CompletionCallback callback) {
+        if (virtualStickInitialized) {
+            callback.onResult(null);
+            return;
+        }
+
+        controller.setRollPitchCoordinateSystem(FlightCoordinateSystem.BODY);
+        controller.setRollPitchControlMode(RollPitchControlMode.VELOCITY);
+        controller.setYawControlMode(YawControlMode.ANGULAR_VELOCITY);
+        controller.setVerticalControlMode(VerticalControlMode.VELOCITY);
+
+        controller.setVirtualStickModeEnabled(true, result -> {
+            if (result == null) {
+                virtualStickInitialized = true;
+            }
+            callback.onResult(result);
+        });
+    }
+
+    private void handleCompletion(String action, DJIError error) {
+        if (error == null) {
+            emitCommandAck(action, "ok", null);
+        } else {
+            emitCommandError(action, error.getDescription(), action.toUpperCase() + "_FAILED");
+        }
+    }
+
+    private void emitTelemetry(FlightControllerState state) {
+        if (state == null) {
+            return;
+        }
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("timestamp", System.currentTimeMillis());
+            payload.put("frame_id", state.getFlightTimeInSeconds());
+            FlightMode flightMode = state.getFlightMode();
+            if (flightMode != null) {
+                payload.put("flight_mode", flightMode.name());
+            }
+            payload.put("satellites", state.getSatelliteCount());
+            payload.put("heading", state.getAircraftHeadDirection());
+
+            LocationCoordinate3D location = state.getAircraftLocation();
+            if (location != null) {
+                JSONObject loc = new JSONObject();
+                loc.put("latitude", location.getLatitude());
+                loc.put("longitude", location.getLongitude());
+                loc.put("altitude", location.getAltitude());
+                payload.put("location", loc);
+            }
+
+            JSONObject velocity = new JSONObject();
+            velocity.put("x", state.getVelocityX());
+            velocity.put("y", state.getVelocityY());
+            velocity.put("z", state.getVelocityZ());
+            payload.put("velocity", velocity);
+
+            Gimbal gimbal = getGimbal();
+            if (gimbal != null) {
+                GimbalState gimbalState = gimbal.getState();
+                if (gimbalState != null) {
+                    JSONObject gimbalJson = new JSONObject();
+                    gimbalJson.put("pitch", gimbalState.getAttitudeInDegrees().getPitch());
+                    gimbalJson.put("roll", gimbalState.getAttitudeInDegrees().getRoll());
+                    gimbalJson.put("yaw", gimbalState.getAttitudeInDegrees().getYaw());
+                    payload.put("gimbal", gimbalJson);
+                }
+            }
+
+            SocketConnection.getInstance().emit("gcs_telemetry", payload);
+        } catch (JSONException e) {
+            Log.e(TAG, "Failed to emit telemetry", e);
+        }
+    }
+
+    private void emitCommandAck(String action, String status, JSONObject data) {
+        try {
+            JSONObject response = new JSONObject();
+            response.put("action", action);
+            response.put("status", status);
+            if (data != null) {
+                response.put("data", data);
+            }
+            SocketConnection.getInstance().emit("gcs_command_ack", response);
+        } catch (JSONException e) {
+            Log.e(TAG, "Failed to emit command ack", e);
+        }
+    }
+
+    private void emitCommandError(String action, String description, String code) {
+        try {
+            JSONObject error = new JSONObject();
+            error.put("action", action);
+            error.put("error", description);
+            error.put("code", code);
+            SocketConnection.getInstance().emit("gcs_command_ack", error);
+        } catch (JSONException e) {
+            Log.e(TAG, "Failed to emit command error", e);
+        }
+    }
+
+    private void refreshProductHandles() {
+        BaseProduct product = DJISDKManager.getInstance().getProduct();
+        if (product instanceof Aircraft) {
+            Aircraft aircraft = (Aircraft) product;
+            flightController = aircraft.getFlightController();
+            gimbal = aircraft.getGimbal();
+        } else {
+            flightController = null;
+            gimbal = null;
+        }
+    }
+
+    private FlightController getFlightController() {
+        if (flightController == null) {
+            refreshProductHandles();
+        }
+        return flightController;
+    }
+
+    private Gimbal getGimbal() {
+        if (gimbal == null) {
+            refreshProductHandles();
+        }
+        return gimbal;
+    }
+}

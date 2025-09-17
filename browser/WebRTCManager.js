@@ -79,16 +79,36 @@ class DroneStream {
     handleIncomingSocketMsg(message) {
         // This client receives a message
         console.log('Client received message:', message);
-        // An 'answer' is the response of another client after making an 'offer'. 
-        if (message.type === 'answer') {
-            this.peerConnection.setRemoteDescription(new RTCSessionDescription(message));
+        if (message.error) {
+            console.error('Received signaling error', message);
+            return;
         }
-        else if (message.type === 'candidate') {
-            var candidate = new RTCIceCandidate({
-                sdpMLineIndex: message.label,
+
+        if (message.type === 'sdp') {
+            const description = new RTCSessionDescription({
+                type: message.sdpType || 'offer',
+                sdp: message.sdp
+            });
+            this.peerConnection.setRemoteDescription(description).then(() => {
+                if (description.type === 'offer') {
+                    return this.peerConnection.createAnswer().then(answer => {
+                        return this.peerConnection.setLocalDescription(answer).then(() => {
+                            this.sendMessage({ type: 'sdp', sdpType: answer.type, sdp: answer.sdp });
+                        });
+                    });
+                }
+                return null;
+            }).catch(reason => {
+                console.error('Failed to handle SDP', reason);
+            });
+        }
+        else if (message.type === 'ice') {
+            const candidate = new RTCIceCandidate({
+                sdpMLineIndex: message.sdpMLineIndex,
+                sdpMid: message.sdpMid,
                 candidate: message.candidate
             });
-            this.peerConnection.addIceCandidate(candidate);
+            this.peerConnection.addIceCandidate(candidate).catch(err => console.error('Failed to add ICE candidate', err));
         }
     }
 
@@ -100,7 +120,7 @@ class DroneStream {
             })
             .then(() => {
                 console.log("WebRTC local description set: " + this.peerConnection.localDescription);
-                this.sendMessage(this.peerConnection.localDescription);
+                this.sendMessage({ type: 'sdp', sdpType: this.peerConnection.localDescription.type, sdp: this.peerConnection.localDescription.sdp });
             })
             .catch((reason) => {
                 // An error occurred, so handle the failure to connect
@@ -144,9 +164,9 @@ class DroneStream {
             this.peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
                     this.sendMessage({
-                        type: 'candidate',
-                        label: event.candidate.sdpMLineIndex,
-                        id: event.candidate.sdpMid,
+                        type: 'ice',
+                        sdpMLineIndex: event.candidate.sdpMLineIndex,
+                        sdpMid: event.candidate.sdpMid,
                         candidate: event.candidate.candidate
                     });
                 } else {

@@ -48,6 +48,37 @@ If you are not familiar with WebRTC you should be aware of a third component - t
 The flow of information is as follows the client of both the browser and android must be connected to the signaling server. They will send messages to each other through the signaling server in order to start a WebRTC peer-to-peer connection. With the P2P started the android application will then extract the videofeed from the drone and transmit it using the established connection. Beaware if you put your android application to sleep to fly the drone the stream of video will pause as well. So either allow the application to run in the background or do not allow the application to sleep to fix this.
 <p align="center"><img src="images/webrtc-android.png"/></p>
 
+## Extended architecture for Mavic + Jetson
+
+This fork adds an end-to-end workflow tailored for DJI Mavic drones using Mobile SDK 4 and the Jetson analytics stack:
+
+- **Android ground control station (GCS)** – the `GCSCommandHandler` routes remote commands (take-off, land, return-to-home, virtual stick, gimbal rotation) from the signaling backend to the DJI flight controller and publishes telemetry/battery/gimbal state in real time.
+- **Adaptive video delivery** – `WebRTCClient` now produces SDP/ICE JSON messages with the structure `{ "type": "sdp" | "ice", ... }` and negotiates directly with the bundled [pion](https://github.com/pion/webrtc) relay. At the same time `RawH264TcpStreamer` exposes the camera feed as a custom TCP protocol (magic `DRNH`, frame type, length, frame number) for consumers that prefer raw H.264 access.
+- **Pion relay server** – `pion-server/main.go` keeps a publisher/subscriber registry, forwards RTP packets from the Android peer to any number of subscribers (Jetson, browser, etc.) and propagates errors using `{ "error": "...", "code": "..." }` objects.
+- **Jetson YOLO pipeline** – `jetson/webrtc_receiver.py` subscribes to the relay, decodes frames with `aiortc`, runs YOLOv8 inference (`yolo_processor.py`) and broadcasts detection metadata via a small WebSocket hub (`websocket_server.py`) using the agreed payload:
+  ```json
+  {
+    "frame_id": 123,
+    "detections": [{"bbox": [x, y, width, height], "class": "person", "confidence": 0.98}],
+    "timestamp": 1718192900000
+  }
+  ```
+- **Operator dashboard** – `browser/dashboard.html`/`dashboard.js` render the raw WebRTC track on the left and draw YOLO overlays on a canvas on the right. SDP/ICE exchange follows the same JSON format and errors are surfaced to the operator when `error`/`code` is received.
+
+To start the complete flow:
+
+1. Launch the Go relay (`go run pion-server/main.go --addr :8080`).
+2. Run the Jetson consumer (`python jetson/webrtc_receiver.py <streamId> --signaling-host <relay-host>`).
+3. Open `browser/dashboard.html?streamId=<streamId>&signalingHost=<relay-host>` in your browser to view both feeds.
+4. Send GCS commands or raw streaming requests to the Android app via the Socket.IO channel:
+   ```json
+   {"action":"takeoff"}
+   {"action":"virtual_stick","pitch":0.2,"roll":0.0,"yaw":0.0,"throttle":0.1}
+   {"action":"start","host":"<jetson-ip>","port":9000}
+   ```
+
+All control/data messages are UTF-8 encoded JSON to keep the interfaces consistent across Android, Jetson, Go and browser components.
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Prerequisites

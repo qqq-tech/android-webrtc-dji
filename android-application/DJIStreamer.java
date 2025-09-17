@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.util.Log;
 
+import org.json.JSONException;
 import org.json.JSONObject;
 import org.webrtc.VideoCapturer;
 
@@ -24,11 +25,15 @@ public class DJIStreamer {
     private String droneDisplayName = "";
     private final Context context;
     private final Hashtable<String, WebRTCClient> ongoingConnections = new Hashtable<>();
-    private final Socket socket;
+    private RawH264TcpStreamer rawTcpStreamer;
+    private final GCSCommandHandler gcsCommandHandler;
 
     public DJIStreamer(Context context){
         this.droneDisplayName = DJISDKManager.getInstance().getProduct().getModel().getDisplayName();
         this.context = context;
+
+        this.gcsCommandHandler = new GCSCommandHandler();
+        this.gcsCommandHandler.startTelemetry();
 
         setupSocketEvent();
     }
@@ -79,8 +84,95 @@ public class DJIStreamer {
                 }
             };
             mainHandler.post(myRunnable);
+        }).on("gcs_command", args -> {
+            Handler mainHandler = new Handler(context.getMainLooper());
+            mainHandler.post(() -> {
+                if (args.length == 0) {
+                    Log.w(TAG, "Received empty GCS command payload");
+                    return;
+                }
+                try {
+                    JSONObject command = (JSONObject) args[0];
+                    gcsCommandHandler.handleCommand(command);
+                } catch (JSONException e) {
+                    emitError("gcs_command_ack", "Invalid command payload", "INVALID_COMMAND");
+                }
+            });
+        }).on("raw_stream", args -> {
+            Handler mainHandler = new Handler(context.getMainLooper());
+            mainHandler.post(() -> {
+                if (args.length == 0) {
+                    emitError("raw_stream_ack", "Missing raw stream payload", "MISSING_PAYLOAD");
+                    return;
+                }
+                try {
+                    JSONObject payload = (JSONObject) args[0];
+                    handleRawStreamRequest(payload);
+                } catch (JSONException e) {
+                    emitError("raw_stream_ack", "Invalid raw stream payload", "INVALID_PAYLOAD");
+                }
+            });
         }).on(EVENT_DISCONNECT, args -> {
             Log.d(TAG, "connectToSignallingServer: disconnect");
         });
+    }
+
+    private synchronized void handleRawStreamRequest(JSONObject payload) throws JSONException {
+        String action = payload.optString("action", "start");
+        if (action.equals("stop")) {
+            stopRawTcpStream();
+            emitRawStreamAck("stopped", null, -1);
+            return;
+        }
+
+        String host = payload.getString("host");
+        int port = payload.getInt("port");
+
+        try {
+            startRawTcpStream(host, port);
+            emitRawStreamAck("started", host, port);
+        } catch (Exception e) {
+            emitError("raw_stream_ack", e.getMessage(), "RAW_STREAM_ERROR");
+        }
+    }
+
+    private synchronized void startRawTcpStream(String host, int port) throws Exception {
+        if (rawTcpStreamer != null) {
+            rawTcpStreamer.stop();
+        }
+        rawTcpStreamer = new RawH264TcpStreamer(host, port);
+        rawTcpStreamer.start();
+    }
+
+    private synchronized void stopRawTcpStream() {
+        if (rawTcpStreamer != null) {
+            rawTcpStreamer.stop();
+            rawTcpStreamer = null;
+        }
+    }
+
+    private void emitRawStreamAck(String status, String host, int port) {
+        try {
+            JSONObject response = new JSONObject();
+            response.put("status", status);
+            if (host != null) {
+                response.put("host", host);
+                response.put("port", port);
+            }
+            SocketConnection.getInstance().emit("raw_stream_ack", response);
+        } catch (JSONException e) {
+            Log.e(TAG, "Failed to emit raw stream ack", e);
+        }
+    }
+
+    private void emitError(String event, String description, String code) {
+        try {
+            JSONObject error = new JSONObject();
+            error.put("error", description);
+            error.put("code", code);
+            SocketConnection.getInstance().emit(event, error);
+        } catch (JSONException e) {
+            Log.e(TAG, "Failed to emit error", e);
+        }
     }
 }

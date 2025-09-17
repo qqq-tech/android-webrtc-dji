@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>DJI Drone Stream Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    header {
+      padding: 1rem 2rem;
+      background: rgba(15, 23, 42, 0.9);
+      border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+      padding: 1.5rem 2rem;
+      flex: 1;
+    }
+
+    .panel {
+      background: rgba(15, 23, 42, 0.6);
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);
+    }
+
+    .panel h2 {
+      margin: 0;
+      font-size: 1.1rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #a5b4fc;
+    }
+
+    video,
+    canvas {
+      width: 100%;
+      height: auto;
+      background: #000;
+      border-radius: 8px;
+    }
+
+    .overlay-container {
+      position: relative;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .overlay-container video {
+      position: relative;
+      z-index: 1;
+    }
+
+    .overlay-container canvas {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    footer {
+      padding: 0.75rem 2rem;
+      background: rgba(15, 23, 42, 0.9);
+      border-top: 1px solid rgba(148, 163, 184, 0.2);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      font-size: 0.9rem;
+    }
+
+    .status-label {
+      font-weight: 600;
+      color: #a5b4fc;
+      margin-right: 0.35rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Drone Operations Dashboard</h1>
+    <p>Left: real-time camera feed. Right: YOLO overlay rendered from Jetson analysis.</p>
+  </header>
+  <main>
+    <section class="panel">
+      <h2>Camera Feed</h2>
+      <video id="rawVideo" autoplay playsinline muted></video>
+    </section>
+    <section class="panel">
+      <h2>YOLO Overlay</h2>
+      <div class="overlay-container">
+        <video id="overlayVideo" autoplay playsinline muted></video>
+        <canvas id="overlayCanvas"></canvas>
+      </div>
+    </section>
+  </main>
+  <footer>
+    <div><span class="status-label">Stream ID:</span> <span id="streamId"></span></div>
+    <div><span class="status-label">Connection:</span> <span id="connectionStatus">disconnected</span></div>
+    <div><span class="status-label">Detections:</span> <span id="detectionStatus">0</span></div>
+    <div><span class="status-label">Last update:</span> <span id="detectionTimestamp">-</span></div>
+  </footer>
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>
