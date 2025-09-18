@@ -1,0 +1,2 @@
+rootProject.name = "android-webrtc-dji"
+include(":app")

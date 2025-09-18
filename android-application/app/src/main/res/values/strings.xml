@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SkyRoute GCS</string>
+    <string name="toggle_path_panel">경로 패널 열기</string>
+    <string name="toggle_path_panel_close">경로 패널 닫기</string>
+    <string name="flight_path_overview">비행 경로 요약</string>
+    <string name="next_waypoint">다음 웨이포인트</string>
+    <string name="bottom_sheet_handle">경로 패널 핸들</string>
+    <string name="flight_map_content_description">계획된 비행 경로와 실시간 위치를 표시하는 지도</string>
+    <string name="path_summary_format">%1$d개 웨이포인트 • %.2f km 계획</string>
+    <string name="no_next_waypoint">모든 웨이포인트 완료</string>
+</resources>

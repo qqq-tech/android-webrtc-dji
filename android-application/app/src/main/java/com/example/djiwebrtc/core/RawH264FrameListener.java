@@ -1,4 +1,4 @@
-package com.example;
+package com.example.djiwebrtc.core;
 
 /**
  * Listener that receives raw H.264 frames captured from the DJI drone.
