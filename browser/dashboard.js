@@ -9,8 +9,15 @@ const gcsPort = params.get('gcsPort') || signalingPort;
 const gcsProtocol = params.get('gcsProtocol') || (window.location.protocol === 'https:' ? 'https' : 'http');
 const gcsPathParam = params.get('gcsPath');
 
-const signalingUrl = `ws://${signalingHost}:${signalingPort}/ws?role=subscriber&streamId=${encodeURIComponent(streamId)}`;
-const detectionUrl = `ws://${detectionHost}:${detectionPort}/detections`;
+const isSecurePage = window.location.protocol === 'https:';
+const signalingProtocol = params.get('signalingProtocol') || (isSecurePage ? 'wss' : 'ws');
+const detectionProtocol = params.get('detectionProtocol') || (isSecurePage ? 'wss' : 'ws');
+
+const signalingPortSegment = signalingPort ? `:${signalingPort}` : '';
+const detectionPortSegment = detectionPort ? `:${detectionPort}` : '';
+
+const signalingUrl = `${signalingProtocol}://${signalingHost}${signalingPortSegment}/ws?role=subscriber&streamId=${encodeURIComponent(streamId)}`;
+const detectionUrl = `${detectionProtocol}://${detectionHost}${detectionPortSegment}/detections`;
 
 const rawVideo = document.getElementById('rawVideo');
 const overlayVideo = document.getElementById('overlayVideo');
@@ -193,7 +200,8 @@ function renderOverlay() {
     overlayCtx.fillStyle = 'rgba(15, 23, 42, 0.7)';
     overlayCtx.strokeRect(x, y, clampedWidth, clampedHeight);
 
-    const confidence = Number.isFinite(det.confidence) ? det.confidence : 0;
+    const confidenceValue = Number(det.confidence);
+    const confidence = Number.isFinite(confidenceValue) ? confidenceValue : 0;
     const normalizedConfidence = clampToRange(confidence, 0, 1);
     const label = `${det.class ?? 'object'} ${(normalizedConfidence * 100).toFixed(1)}%`;
     const metrics = overlayCtx.measureText(label);
