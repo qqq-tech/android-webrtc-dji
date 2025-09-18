@@ -125,7 +125,7 @@ signalingSocket.addEventListener('message', async (event) => {
 
 const detectionSocket = new WebSocket(detectionUrl);
 
-  detectionSocket.addEventListener('message', (event) => {
+detectionSocket.addEventListener('message', (event) => {
     try {
       const message = JSON.parse(event.data);
       latestDetections = message;
@@ -138,7 +138,7 @@ const detectionSocket = new WebSocket(detectionUrl);
     } catch (error) {
       console.error('Invalid detection payload', error);
     }
-  });
+});
 
 detectionSocket.addEventListener('close', () => {
   detectionTimestamp.textContent = 'connection lost';
@@ -169,25 +169,55 @@ function renderOverlay() {
   overlayCtx.font = '16px "Segoe UI", sans-serif';
 
   latestDetections.detections.forEach((det) => {
-    const [x, y, width, height] = det.bbox || [];
-    if (width <= 0 || height <= 0) {
+    if (!Array.isArray(det.bbox) || det.bbox.length < 4) {
       return;
     }
+
+    const [rawX, rawY, rawWidth, rawHeight] = det.bbox.map((value) => Number(value));
+    if (![rawX, rawY, rawWidth, rawHeight].every(Number.isFinite)) {
+      return;
+    }
+
+    const width = Math.max(0, rawWidth);
+    const height = Math.max(0, rawHeight);
+    if (width === 0 || height === 0) {
+      return;
+    }
+
+    const clampedWidth = Math.min(width, overlayCanvas.width);
+    const clampedHeight = Math.min(height, overlayCanvas.height);
+    const x = clampToRange(rawX, 0, overlayCanvas.width - clampedWidth);
+    const y = clampToRange(rawY, 0, overlayCanvas.height - clampedHeight);
+
     overlayCtx.strokeStyle = 'rgba(56, 189, 248, 0.95)';
     overlayCtx.fillStyle = 'rgba(15, 23, 42, 0.7)';
-    overlayCtx.strokeRect(x, y, width, height);
+    overlayCtx.strokeRect(x, y, clampedWidth, clampedHeight);
 
-    const label = `${det.class ?? 'object'} ${(det.confidence * 100).toFixed(1)}%`;
+    const confidence = Number.isFinite(det.confidence) ? det.confidence : 0;
+    const normalizedConfidence = clampToRange(confidence, 0, 1);
+    const label = `${det.class ?? 'object'} ${(normalizedConfidence * 100).toFixed(1)}%`;
     const metrics = overlayCtx.measureText(label);
     const padding = 6;
-    const labelY = Math.max(y - 24, 0);
-    overlayCtx.fillRect(x, labelY, metrics.width + padding, 24);
+    const labelWidth = metrics.width + padding;
+    const labelX = clampToRange(x, 0, Math.max(0, overlayCanvas.width - labelWidth));
+    const labelY = clampToRange(y - 24, 0, Math.max(0, overlayCanvas.height - 24));
+    overlayCtx.fillRect(labelX, labelY, labelWidth, 24);
     overlayCtx.fillStyle = '#e0f2fe';
-    overlayCtx.fillText(label, x + 3, labelY + 2);
+    overlayCtx.fillText(label, labelX + 3, labelY + 2);
   });
 }
 
-  renderOverlay();
+function clampToRange(value, min, max) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  if (max < min) {
+    return min;
+  }
+  return Math.min(Math.max(value, min), max);
+}
+
+renderOverlay();
 
 async function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) {
