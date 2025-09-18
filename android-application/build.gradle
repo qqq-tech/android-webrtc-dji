@@ -3,6 +3,7 @@ buildscript {
         google()
         mavenCentral()
         maven { url "https://jitpack.io" }
+        maven { url "https://developer.dji.com/sdk/repo/" }
     }
     dependencies {
         classpath "com.android.tools.build:gradle:8.2.2"
@@ -14,6 +15,7 @@ allprojects {
         google()
         mavenCentral()
         maven { url "https://jitpack.io" }
+        maven { url "https://developer.dji.com/sdk/repo/" }
     }
 }
 
