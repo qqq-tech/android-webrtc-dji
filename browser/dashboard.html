@@ -1,14 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>DJI Drone Stream Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    :root {
-      color-scheme: dark;
-      font-family: "Segoe UI", Roboto, sans-serif;
-      background: #0f172a;
+  <head>
+    <meta charset="UTF-8" />
+    <title>DJI Drone Stream Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-sA+e2atLYS4YdQ+gJ2z3S8so0m+GSO1r3gGIk5F0Xpw="
+      crossorigin=""
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", Roboto, sans-serif;
+        background: #0f172a;
       color: #e2e8f0;
     }
 
@@ -79,33 +87,188 @@
       pointer-events: none;
     }
 
-    footer {
-      padding: 0.75rem 2rem;
-      background: rgba(15, 23, 42, 0.9);
-      border-top: 1px solid rgba(148, 163, 184, 0.2);
-      display: flex;
-      flex-wrap: wrap;
-      gap: 1rem;
-      font-size: 0.9rem;
-    }
+      footer {
+        padding: 0.75rem 2rem;
+        background: rgba(15, 23, 42, 0.9);
+        border-top: 1px solid rgba(148, 163, 184, 0.2);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        font-size: 0.9rem;
+      }
 
-    .status-label {
-      font-weight: 600;
-      color: #a5b4fc;
-      margin-right: 0.35rem;
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Drone Operations Dashboard</h1>
-    <p>Left: real-time camera feed. Right: YOLO overlay rendered from Jetson analysis.</p>
-  </header>
-  <main>
-    <section class="panel">
-      <h2>Camera Feed</h2>
-      <video id="rawVideo" autoplay playsinline muted></video>
-    </section>
+      .status-label {
+        font-weight: 600;
+        color: #a5b4fc;
+        margin-right: 0.35rem;
+      }
+
+      .route-toggle {
+        position: fixed;
+        right: 1.5rem;
+        bottom: 1.5rem;
+        z-index: 30;
+        background: linear-gradient(135deg, #6366f1, #22d3ee);
+        color: #0f172a;
+        border: none;
+        border-radius: 999px;
+        padding: 0.9rem 1.4rem;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        cursor: pointer;
+        box-shadow: 0 20px 35px rgba(14, 116, 144, 0.35);
+      }
+
+      .route-toggle:focus {
+        outline: 3px solid rgba(34, 211, 238, 0.6);
+        outline-offset: 3px;
+      }
+
+      .route-panel {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(15, 23, 42, 0.98);
+        border-top-left-radius: 20px;
+        border-top-right-radius: 20px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        box-shadow: 0 -18px 40px rgba(2, 6, 23, 0.8);
+        transform: translateY(105%);
+        transition: transform 220ms ease-in-out;
+        padding: 1.25rem 1.5rem 1.75rem;
+        max-height: 75vh;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        z-index: 25;
+      }
+
+      .route-panel.open {
+        transform: translateY(0);
+      }
+
+      .route-panel header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+
+      .route-panel header h2 {
+        margin: 0;
+        font-size: 1rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #fef9c3;
+      }
+
+      .route-panel button.secondary {
+        background: transparent;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        color: #f8fafc;
+        border-radius: 999px;
+        padding: 0.45rem 0.9rem;
+        font-size: 0.85rem;
+        cursor: pointer;
+      }
+
+      .route-panel button.secondary:hover {
+        background: rgba(148, 163, 184, 0.14);
+      }
+
+      .route-panel .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+      }
+
+      .route-panel label {
+        font-size: 0.85rem;
+        color: #cbd5f5;
+      }
+
+      .route-panel input[type="number"] {
+        background: rgba(30, 41, 59, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        color: #e2e8f0;
+        border-radius: 8px;
+        padding: 0.4rem 0.6rem;
+        width: 5.5rem;
+      }
+
+      #routeMap {
+        height: 280px;
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+      }
+
+      .route-summary {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+        font-size: 0.85rem;
+        background: rgba(15, 23, 42, 0.7);
+        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        padding: 0.75rem 1rem;
+      }
+
+      .route-summary strong {
+        color: #86efac;
+      }
+
+      .route-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .route-actions .primary {
+        background: linear-gradient(135deg, #22d3ee, #38bdf8);
+        border: none;
+        color: #0f172a;
+        padding: 0.65rem 1.4rem;
+        border-radius: 999px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        cursor: pointer;
+        box-shadow: 0 16px 26px rgba(56, 189, 248, 0.35);
+      }
+
+      .route-status {
+        font-size: 0.85rem;
+        color: #f8fafc;
+      }
+
+      @media (max-width: 720px) {
+        .route-toggle {
+          right: 1rem;
+          bottom: 1rem;
+        }
+
+        .route-panel {
+          padding-inline: 1rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Drone Operations Dashboard</h1>
+      <p>Left: real-time camera feed. Right: YOLO overlay rendered from Jetson analysis.</p>
+    </header>
+    <main>
+      <section class="panel">
+        <h2>Camera Feed</h2>
+        <video id="rawVideo" autoplay playsinline muted></video>
+      </section>
     <section class="panel">
       <h2>YOLO Overlay</h2>
       <div class="overlay-container">
@@ -114,12 +277,46 @@
       </div>
     </section>
   </main>
-  <footer>
-    <div><span class="status-label">Stream ID:</span> <span id="streamId"></span></div>
-    <div><span class="status-label">Connection:</span> <span id="connectionStatus">disconnected</span></div>
-    <div><span class="status-label">Detections:</span> <span id="detectionStatus">0</span></div>
-    <div><span class="status-label">Last update:</span> <span id="detectionTimestamp">-</span></div>
-  </footer>
-  <script type="module" src="dashboard.js"></script>
-</body>
+    <footer>
+      <div><span class="status-label">Stream ID:</span> <span id="streamId"></span></div>
+      <div><span class="status-label">Connection:</span> <span id="connectionStatus">disconnected</span></div>
+      <div><span class="status-label">Detections:</span> <span id="detectionStatus">0</span></div>
+      <div><span class="status-label">Last update:</span> <span id="detectionTimestamp">-</span></div>
+    </footer>
+    <button class="route-toggle" id="toggleRoutePanel" aria-expanded="false" aria-controls="routePlanner">
+      Flight Path
+    </button>
+    <section class="route-panel" id="routePlanner" aria-hidden="true">
+      <header>
+        <h2>Route Planner</h2>
+        <button class="secondary" id="closeRoutePanel" type="button">Close</button>
+      </header>
+      <div class="controls">
+        <label for="defaultAltitude">Altitude (m)</label>
+        <input type="number" id="defaultAltitude" min="5" max="120" step="1" value="30" />
+        <button class="secondary" id="undoWaypoint" type="button">Undo</button>
+        <button class="secondary" id="clearRoute" type="button">Clear</button>
+      </div>
+      <div id="routeMap" role="presentation"></div>
+      <div class="route-summary">
+        <div>Waypoints: <strong id="waypointCount">0</strong></div>
+        <div>Total distance: <strong id="routeDistance">0 m</strong></div>
+      </div>
+      <div class="route-actions">
+        <button class="primary" id="startRoute" type="button">Send Flight Path</button>
+        <div class="route-status" id="gcsStatus">GCS: disconnected</div>
+      </div>
+    </section>
+    <script
+      src="https://cdn.socket.io/4.7.5/socket.io.min.js"
+      integrity="sha384-/iF2zraFMpNqivSpog6dy87SJM7QVRPSnx+HgFxKeEcRrwi+F2xy/XeexJ6RDigw"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-o9N1j7kGEC4zEA18gi3RL0tYSmEB5GdB4yjF0CI0h3s="
+      crossorigin=""
+    ></script>
+    <script type="module" src="dashboard.js"></script>
+  </body>
 </html>

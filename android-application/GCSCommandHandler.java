@@ -2,6 +2,7 @@ package com.example;
 
 import android.util.Log;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -23,6 +24,15 @@ import dji.sdk.flightcontroller.FlightController;
 import dji.sdk.gimbal.Gimbal;
 import dji.sdk.products.Aircraft;
 import dji.sdk.sdkmanager.DJISDKManager;
+import dji.sdk.mission.MissionControl;
+import dji.sdk.mission.waypoint.WaypointMissionOperator;
+
+import dji.common.mission.waypoint.Waypoint;
+import dji.common.mission.waypoint.WaypointMission;
+import dji.common.mission.waypoint.WaypointMissionFinishedAction;
+import dji.common.mission.waypoint.WaypointMissionFlightPathMode;
+import dji.common.mission.waypoint.WaypointMissionGotoWaypointMode;
+import dji.common.mission.waypoint.WaypointMissionHeadingMode;
 
 import com.example.SocketConnection;
 
@@ -36,6 +46,7 @@ public class GCSCommandHandler {
     private FlightController flightController;
     private Gimbal gimbal;
     private boolean virtualStickInitialized = false;
+    private WaypointMissionOperator waypointMissionOperator;
 
     public GCSCommandHandler() {
         refreshProductHandles();
@@ -77,6 +88,9 @@ public class GCSCommandHandler {
                 break;
             case "gimbal_rotate":
                 handleGimbalRotate(action, command);
+                break;
+            case "flight_path":
+                handleFlightPath(action, command);
                 break;
             default:
                 emitCommandError(action, "Unsupported command", "UNSUPPORTED_ACTION");
@@ -141,6 +155,79 @@ public class GCSCommandHandler {
                 }
                 FlightControlData data = new FlightControlData(pitch, roll, yaw, throttle);
                 controller.sendVirtualStickFlightControlData(data, result -> handleCompletion(action, result));
+            }
+        });
+    }
+
+    private void handleFlightPath(String action, JSONObject command) throws JSONException {
+        WaypointMissionOperator operator = getWaypointMissionOperator();
+        if (operator == null) {
+            emitCommandError(action, "Waypoint mission operator unavailable", "NO_MISSION_OPERATOR");
+            return;
+        }
+
+        JSONArray waypointsArray = command.optJSONArray("waypoints");
+        if (waypointsArray == null || waypointsArray.length() < 2) {
+            emitCommandError(action, "At least two waypoints are required", "INVALID_WAYPOINTS");
+            return;
+        }
+
+        JSONObject options = command.optJSONObject("options");
+        double requestedAltitude = options != null ? options.optDouble("altitude", 30.0) : 30.0;
+        float defaultAltitude = (float) clamp(requestedAltitude, 5.0, 500.0);
+
+        WaypointMission.Builder builder = new WaypointMission.Builder()
+                .finishedAction(WaypointMissionFinishedAction.NO_ACTION)
+                .headingMode(WaypointMissionHeadingMode.AUTO)
+                .flightPathMode(WaypointMissionFlightPathMode.NORMAL)
+                .gotoFirstWaypointMode(WaypointMissionGotoWaypointMode.SAFELY)
+                .autoFlightSpeed(5.0f)
+                .maxFlightSpeed(10.0f)
+                .setGimbalPitchRotationEnabled(true);
+
+        for (int i = 0; i < waypointsArray.length(); i++) {
+            JSONObject waypointJson = waypointsArray.getJSONObject(i);
+            double latitude = waypointJson.optDouble("latitude", Double.NaN);
+            double longitude = waypointJson.optDouble("longitude", Double.NaN);
+            double altitude = waypointJson.has("altitude")
+                    ? waypointJson.optDouble("altitude", defaultAltitude)
+                    : defaultAltitude;
+
+            if (Double.isNaN(latitude) || Double.isNaN(longitude)) {
+                emitCommandError(action, "Waypoint " + i + " missing coordinates", "INVALID_WAYPOINT");
+                return;
+            }
+
+            float waypointAltitude = (float) clamp(altitude, 5.0, 500.0);
+            Waypoint waypoint = new Waypoint(latitude, longitude, waypointAltitude);
+            builder.addWaypoint(waypoint);
+        }
+
+        WaypointMission mission = builder.build();
+
+        DJIError loadError = operator.loadMission(mission);
+        if (loadError != null) {
+            emitCommandError(action, loadError.getDescription(), "MISSION_LOAD_FAILED");
+            return;
+        }
+
+        operator.uploadMission(new CommonCallbacks.CompletionCallback() {
+            @Override
+            public void onResult(DJIError uploadError) {
+                if (uploadError != null) {
+                    emitCommandError(action, uploadError.getDescription(), "MISSION_UPLOAD_FAILED");
+                    return;
+                }
+                operator.startMission(new CommonCallbacks.CompletionCallback() {
+                    @Override
+                    public void onResult(DJIError startError) {
+                        if (startError != null) {
+                            emitCommandError(action, startError.getDescription(), "MISSION_START_FAILED");
+                        } else {
+                            emitCommandAck(action, "ok", null);
+                        }
+                    }
+                });
             }
         });
     }
@@ -275,9 +362,11 @@ public class GCSCommandHandler {
             Aircraft aircraft = (Aircraft) product;
             flightController = aircraft.getFlightController();
             gimbal = aircraft.getGimbal();
+            waypointMissionOperator = null;
         } else {
             flightController = null;
             gimbal = null;
+            waypointMissionOperator = null;
         }
     }
 
@@ -293,5 +382,19 @@ public class GCSCommandHandler {
             refreshProductHandles();
         }
         return gimbal;
+    }
+
+    private WaypointMissionOperator getWaypointMissionOperator() {
+        if (waypointMissionOperator == null) {
+            MissionControl missionControl = DJISDKManager.getInstance().getMissionControl();
+            if (missionControl != null) {
+                waypointMissionOperator = missionControl.getWaypointMissionOperator();
+            }
+        }
+        return waypointMissionOperator;
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
     }
 }
