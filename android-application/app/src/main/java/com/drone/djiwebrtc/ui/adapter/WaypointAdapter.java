@@ -1,4 +1,4 @@
-package com.example.djiwebrtc.ui.adapter;
+package com.drone.djiwebrtc.ui.adapter;
 
 import android.view.LayoutInflater;
 import android.view.View;
@@ -8,8 +8,8 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
 
-import com.example.djiwebrtc.R;
-import com.example.djiwebrtc.ui.model.Waypoint;
+import com.drone.djiwebrtc.R;
+import com.drone.djiwebrtc.ui.model.Waypoint;
 
 import java.util.ArrayList;
 import java.util.List;

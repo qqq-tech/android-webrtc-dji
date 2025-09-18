@@ -1,4 +1,4 @@
-package com.example.djiwebrtc.network;
+package com.drone.djiwebrtc.network;
 
 import android.util.Log;
 

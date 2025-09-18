@@ -2,7 +2,7 @@
 * https://chromium.googlesource.com/external/webrtc/+/b6760f9e4442410f2bcb6090b3b89bf709e2fce2/webrtc/api/android/java/src/org/webrtc/CameraVideoCapturer.java
 * and rewritten to work for DJI drones.
 *  */
-package com.example.djiwebrtc.core;
+package com.drone.djiwebrtc.core;
 
 import org.webrtc.CapturerObserver;
 import org.webrtc.NV12Buffer;

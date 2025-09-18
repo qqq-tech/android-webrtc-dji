@@ -1,4 +1,4 @@
-package com.example.djiwebrtc.core;
+package com.drone.djiwebrtc.core;
 
 import android.content.Context;
 import android.util.Log;
@@ -22,7 +22,7 @@ import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
 
-import com.example.djiwebrtc.network.SocketConnection;
+import com.drone.djiwebrtc.network.SocketConnection;
 
 public class WebRTCClient {
     private static final String TAG = "WebRTCClient";

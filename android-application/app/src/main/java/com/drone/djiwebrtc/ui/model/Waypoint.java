@@ -1,4 +1,4 @@
-package com.example.djiwebrtc.ui.model;
+package com.drone.djiwebrtc.ui.model;
 
 public class Waypoint {
     private final String name;

@@ -1,4 +1,4 @@
-package com.example.djiwebrtc.core;
+package com.drone.djiwebrtc.core;
 
 import org.json.JSONException;
 import org.json.JSONObject;

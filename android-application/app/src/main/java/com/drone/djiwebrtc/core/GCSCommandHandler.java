@@ -1,4 +1,4 @@
-package com.example.djiwebrtc.core;
+package com.drone.djiwebrtc.core;
 
 import android.util.Log;
 
@@ -34,7 +34,7 @@ import dji.common.mission.waypoint.WaypointMissionFlightPathMode;
 import dji.common.mission.waypoint.WaypointMissionGotoWaypointMode;
 import dji.common.mission.waypoint.WaypointMissionHeadingMode;
 
-import com.example.djiwebrtc.network.SocketConnection;
+import com.drone.djiwebrtc.network.SocketConnection;
 
 /**
  * Handles commands coming from the ground control station client and pushes telemetry updates

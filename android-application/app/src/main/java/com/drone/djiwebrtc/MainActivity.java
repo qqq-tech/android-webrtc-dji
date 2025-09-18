@@ -1,4 +1,4 @@
-package com.example.djiwebrtc;
+package com.drone.djiwebrtc;
 
 import android.os.Bundle;
 import android.view.View;
@@ -8,14 +8,14 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.LinearLayoutManager;
 
-import com.example.djiwebrtc.core.DJIVideoCapturer;
-import com.example.djiwebrtc.databinding.ActivityMainBinding;
-import com.example.djiwebrtc.ui.adapter.WaypointAdapter;
-import com.example.djiwebrtc.ui.map.RouteOverlayManager;
-import com.example.djiwebrtc.ui.model.Waypoint;
-import com.example.djiwebrtc.ui.viewmodel.FlightPathViewModel;
-import com.example.djiwebrtc.util.DjiProductHelper;
-import com.example.djiwebrtc.webrtc.DroneVideoPreview;
+import com.drone.djiwebrtc.core.DJIVideoCapturer;
+import com.drone.djiwebrtc.databinding.ActivityMainBinding;
+import com.drone.djiwebrtc.ui.adapter.WaypointAdapter;
+import com.drone.djiwebrtc.ui.map.RouteOverlayManager;
+import com.drone.djiwebrtc.ui.model.Waypoint;
+import com.drone.djiwebrtc.ui.viewmodel.FlightPathViewModel;
+import com.drone.djiwebrtc.util.DjiProductHelper;
+import com.drone.djiwebrtc.webrtc.DroneVideoPreview;
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
 
 import java.util.List;

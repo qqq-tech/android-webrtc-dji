@@ -1,9 +1,9 @@
-package com.example.djiwebrtc.webrtc;
+package com.drone.djiwebrtc.webrtc;
 
 import android.content.Context;
 import android.util.Log;
 
-import com.example.djiwebrtc.core.DJIVideoCapturer;
+import com.drone.djiwebrtc.core.DJIVideoCapturer;
 
 import org.webrtc.DefaultVideoDecoderFactory;
 import org.webrtc.DefaultVideoEncoderFactory;

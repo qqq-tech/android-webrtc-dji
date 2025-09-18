@@ -1,11 +1,11 @@
-package com.example.djiwebrtc.ui.map;
+package com.drone.djiwebrtc.ui.map;
 
 import android.graphics.Color;
 
 import androidx.core.content.ContextCompat;
 
-import com.example.djiwebrtc.R;
-import com.example.djiwebrtc.ui.model.Waypoint;
+import com.drone.djiwebrtc.R;
+import com.drone.djiwebrtc.ui.model.Waypoint;
 
 import org.osmdroid.util.GeoPoint;
 import org.osmdroid.views.MapView;

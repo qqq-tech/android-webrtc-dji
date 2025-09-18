@@ -1,4 +1,4 @@
-package com.example.djiwebrtc.core;
+package com.drone.djiwebrtc.core;
 
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;

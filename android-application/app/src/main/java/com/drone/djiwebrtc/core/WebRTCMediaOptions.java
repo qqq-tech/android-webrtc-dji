@@ -1,4 +1,4 @@
-package com.example.djiwebrtc.core;
+package com.drone.djiwebrtc.core;
 
 public class WebRTCMediaOptions {
     String MEDIA_STREAM_ID = "ARDAMS";

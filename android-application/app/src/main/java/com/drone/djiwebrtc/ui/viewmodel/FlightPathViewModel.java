@@ -1,10 +1,10 @@
-package com.example.djiwebrtc.ui.viewmodel;
+package com.drone.djiwebrtc.ui.viewmodel;
 
 import androidx.lifecycle.LiveData;
 import androidx.lifecycle.MutableLiveData;
 import androidx.lifecycle.ViewModel;
 
-import com.example.djiwebrtc.ui.model.Waypoint;
+import com.drone.djiwebrtc.ui.model.Waypoint;
 
 import org.osmdroid.util.GeoPoint;
 

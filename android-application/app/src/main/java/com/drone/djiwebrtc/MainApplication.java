@@ -1,4 +1,4 @@
-package com.example.djiwebrtc;
+package com.drone.djiwebrtc;
 
 import android.app.Application;
 import android.content.Context;

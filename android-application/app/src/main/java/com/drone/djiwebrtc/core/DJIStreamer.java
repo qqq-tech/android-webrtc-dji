@@ -1,4 +1,4 @@
-package com.example.djiwebrtc.core;
+package com.drone.djiwebrtc.core;
 
 import android.content.Context;
 import android.os.Handler;
@@ -13,9 +13,9 @@ import java.util.Hashtable;
 import dji.sdk.sdkmanager.DJISDKManager;
 import static io.socket.client.Socket.EVENT_DISCONNECT;
 
-import com.example.djiwebrtc.network.SocketConnection;
-import com.example.djiwebrtc.webrtc.WebRTCClient;
-import com.example.djiwebrtc.webrtc.WebRTCMediaOptions;
+import com.drone.djiwebrtc.network.SocketConnection;
+import com.drone.djiwebrtc.webrtc.WebRTCClient;
+import com.drone.djiwebrtc.webrtc.WebRTCMediaOptions;
 
 /**
  * The DJIStreamer class will manage all ongoing P2P connections

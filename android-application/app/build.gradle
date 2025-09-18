@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace "com.example.djiwebrtc"
+    namespace "com.drone.djiwebrtc"
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.example.djiwebrtc"
+        applicationId "com.drone.djiwebrtc"
         minSdk 26
         targetSdk 34
         versionCode 1
