@@ -331,7 +331,8 @@ public class MainActivity extends AppCompatActivity {
     private String buildSummary(List<Waypoint> waypoints) {
         int count = waypoints == null ? 0 : waypoints.size();
         double distanceKm = routeOverlayManager.getPlannedDistanceMeters() / 1000.0;
-        return String.format(Locale.getDefault(), getString(R.string.path_summary_format), count, distanceKm);
+        return String.format("ko_KR", getString(R.string.path_summary_format), count, distanceKm);
+        //return String.format(Locale.getDefault(), getString(R.string.path_summary_format), count, distanceKm);
     }
 
     @Override
