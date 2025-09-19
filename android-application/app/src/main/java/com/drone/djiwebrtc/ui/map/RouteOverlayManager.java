@@ -7,6 +7,7 @@ import androidx.core.content.ContextCompat;
 import com.drone.djiwebrtc.R;
 import com.drone.djiwebrtc.ui.model.Waypoint;
 
+import org.osmdroid.util.BoundingBox; // <--- 추가된 import
 import org.osmdroid.util.GeoPoint;
 import org.osmdroid.views.MapView;
 import org.osmdroid.views.overlay.Marker;
@@ -68,7 +69,8 @@ public class RouteOverlayManager {
         plannedPolyline.setPoints(geoPoints);
 
         if (geoPoints.size() > 1) {
-            mapView.zoomToBoundingBox(Polyline.boundingBoxFromGeoPoints(geoPoints), true);
+            // Polyline.boundingBoxFromGeoPoints(geoPoints)를 BoundingBox.fromGeoPoints(geoPoints)로 변경
+            mapView.zoomToBoundingBox(BoundingBox.fromGeoPoints(geoPoints), true);
         } else {
             mapView.getController().setCenter(geoPoints.get(0));
         }

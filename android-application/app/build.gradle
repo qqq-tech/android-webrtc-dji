@@ -36,7 +36,10 @@ android {
     }
 
     packagingOptions {
-        resources.exclude "META-INF/DEPENDENCIES"
+        resources {
+            excludes.add("META-INF/DEPENDENCIES")
+        }
+        //resources.exclude "META-INF/DEPENDENCIES"
     }
 }
 
@@ -53,7 +56,8 @@ dependencies {
     implementation("io.socket:socket.io-client:2.1.0") {
         exclude group: "org.json", module: "json"
     }
-    implementation "org.webrtc:google-webrtc:1.0.32006"
+    implementation 'org.webrtc:google-webrtc:1.0.+'
+    //implementation 'org.webrtc:google-webrtc:1.0.32006'
     implementation "com.dji:dji-sdk:4.16"
     compileOnly "com.dji:dji-sdk-provided:4.16"
 }

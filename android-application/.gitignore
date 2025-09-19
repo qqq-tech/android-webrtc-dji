@@ -1,0 +1,120 @@
+# -----------------------------
+# OS 공통
+# -----------------------------
+.DS_Store
+Thumbs.db
+
+# -----------------------------
+# Android/Gradle 빌드 산출물
+# -----------------------------
+/build/
+*/build/
+/app/build/
+/captures/
+/outputs/
+/outputs-metadata/
+/generated/
+/intermediates/
+/tmp/
+/obj/
+/libs/*.aar
+.libs/
+
+# NDK/외부 빌드
+.externalNativeBuild/
+.cxx/
+
+# Gradle
+.gradle/
+**/.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+# wrapper 실행 스크립트는 반드시 커밋!
+# (gradlew, gradlew.bat 는 ignore 하지 않음)
+
+# 캐시/로그
+*.log
+*.ctxt
+heapdump.hprof
+
+# -----------------------------
+# Android Studio / IntelliJ
+# -----------------------------
+.idea/
+# (필요 시 아래만 선택적으로 포함 가능)
+# !.idea/codeStyles/
+# !.idea/inspectionProfiles/
+# !.idea/runConfigurations/
+*.iml
+
+# -----------------------------
+# 환경 설정 / 머신 의존 파일
+# -----------------------------
+local.properties
+*.local
+*.bak
+*.tmp
+*.swp
+*.swo
+
+# -----------------------------
+# 비밀키/서명/자격증명
+# -----------------------------
+*.jks
+*.keystore
+*.pem
+*.key
+*.p12
+keystore.properties
+signing.properties
+
+# -----------------------------
+# 서비스 자격/비밀 설정
+# -----------------------------
+# Firebase/Google Services
+app/google-services.json
+# (다중 모듈 사용 시 모듈별 google-services.json 도 제외)
+**/google-services.json
+
+# 환경변수/시크릿
+.env
+.env.*
+.secrets/
+secret.properties
+
+# -----------------------------
+# 테스트/리포트/툴
+# -----------------------------
+/test-results/
+/reports/
+/lint-results.*
+/lint/outputs/
+/androidTest-results.xml
+/jacoco.exec
+/coverage/
+.hprof
+
+# -----------------------------
+# 번들/배포 산출물
+# -----------------------------
+*.apk
+*.ap_*
+*.aab
+*.aar
+*.ipa
+*.mapping
+mapping.txt
+app/release/
+app/debug/
+
+# -----------------------------
+# 기타 도구
+# -----------------------------
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+# Crashlytics / Firebase Crash
+fabric.properties
+crashlytics-build.properties

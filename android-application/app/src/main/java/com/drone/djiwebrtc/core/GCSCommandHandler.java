@@ -15,7 +15,7 @@ import dji.common.flightcontroller.virtualstick.FlightCoordinateSystem;
 import dji.common.flightcontroller.virtualstick.RollPitchControlMode;
 import dji.common.flightcontroller.virtualstick.VerticalControlMode;
 import dji.common.flightcontroller.virtualstick.YawControlMode;
-import dji.common.gimbal.GimbalState;
+import dji.common.gimbal.GimbalState; // 이미 존재
 import dji.common.gimbal.Rotation;
 import dji.common.gimbal.RotationMode;
 import dji.common.util.CommonCallbacks;
@@ -47,19 +47,39 @@ public class GCSCommandHandler {
     private Gimbal gimbal;
     private boolean virtualStickInitialized = false;
     private WaypointMissionOperator waypointMissionOperator;
+    private GimbalState latestGimbalState; // 최근 짐벌 상태를 저장할 변수
 
     public GCSCommandHandler() {
         refreshProductHandles();
+    }
+
+    // 짐벌 상태 업데이트를 처리하는 콜백 메서드
+    private void onGimbalStateUpdate(GimbalState gimbalState) {
+        if (gimbalState != null) {
+            this.latestGimbalState = gimbalState;
+        }
+    }
+
+    // 짐벌 객체를 얻거나 telemetry가 시작될 때 호출할 수 있습니다.
+    private void startGimbalStateUpdates() {
+        Gimbal currentGimbal = getGimbal(); // 기존 짐벌 가져오는 메서드
+        if (currentGimbal != null) {
+            currentGimbal.setStateCallback(this::onGimbalStateUpdate);
+        } else {
+            Log.w(TAG, "Gimbal state updates skipped - gimbal unavailable");
+        }
     }
 
     public void startTelemetry() {
         FlightController controller = getFlightController();
         if (controller == null) {
             Log.w(TAG, "Telemetry skipped - flight controller unavailable");
-            return;
+            // flight controller가 없어도 gimbal telemetry는 시도할 수 있도록 return 제거
+        } else {
+            controller.setStateCallback(this::emitTelemetry);
         }
-
-        controller.setStateCallback(this::emitTelemetry);
+        // 짐벌 상태 업데이트 시작
+        startGimbalStateUpdates();
     }
 
     public void handleCommand(JSONObject command) throws JSONException {
@@ -283,48 +303,53 @@ public class GCSCommandHandler {
     }
 
     private void emitTelemetry(FlightControllerState state) {
-        if (state == null) {
-            return;
-        }
+        // FlightControllerState가 null이어도 gimbal telemetry는 보낼 수 있도록 수정
+        // if (state == null) {
+        //     return;
+        // }
         try {
             JSONObject payload = new JSONObject();
             payload.put("timestamp", System.currentTimeMillis());
-            payload.put("frame_id", state.getFlightTimeInSeconds());
-            FlightMode flightMode = state.getFlightMode();
-            if (flightMode != null) {
-                payload.put("flight_mode", flightMode.name());
-            }
-            payload.put("satellites", state.getSatelliteCount());
-            payload.put("heading", state.getAircraftHeadDirection());
 
-            LocationCoordinate3D location = state.getAircraftLocation();
-            if (location != null) {
-                JSONObject loc = new JSONObject();
-                loc.put("latitude", location.getLatitude());
-                loc.put("longitude", location.getLongitude());
-                loc.put("altitude", location.getAltitude());
-                payload.put("location", loc);
-            }
-
-            JSONObject velocity = new JSONObject();
-            velocity.put("x", state.getVelocityX());
-            velocity.put("y", state.getVelocityY());
-            velocity.put("z", state.getVelocityZ());
-            payload.put("velocity", velocity);
-
-            Gimbal gimbal = getGimbal();
-            if (gimbal != null) {
-                GimbalState gimbalState = gimbal.getState();
-                if (gimbalState != null) {
-                    JSONObject gimbalJson = new JSONObject();
-                    gimbalJson.put("pitch", gimbalState.getAttitudeInDegrees().getPitch());
-                    gimbalJson.put("roll", gimbalState.getAttitudeInDegrees().getRoll());
-                    gimbalJson.put("yaw", gimbalState.getAttitudeInDegrees().getYaw());
-                    payload.put("gimbal", gimbalJson);
+            if (state != null) {
+                payload.put("frame_id", state.getFlightTimeInSeconds());
+                FlightMode flightMode = state.getFlightMode();
+                if (flightMode != null) {
+                    payload.put("flight_mode", flightMode.name());
                 }
+                payload.put("satellites", state.getSatelliteCount());
+                payload.put("heading", state.getAircraftHeadDirection());
+
+                LocationCoordinate3D location = state.getAircraftLocation();
+                if (location != null) {
+                    JSONObject loc = new JSONObject();
+                    loc.put("latitude", location.getLatitude());
+                    loc.put("longitude", location.getLongitude());
+                    loc.put("altitude", location.getAltitude());
+                    payload.put("location", loc);
+                }
+
+                JSONObject velocity = new JSONObject();
+                velocity.put("x", state.getVelocityX());
+                velocity.put("y", state.getVelocityY());
+                velocity.put("z", state.getVelocityZ());
+                payload.put("velocity", velocity);
             }
 
-            SocketConnection.getInstance().emit("gcs_telemetry", payload);
+            // 저장된 최신 짐벌 상태 사용
+            if (this.latestGimbalState != null) {
+                JSONObject gimbalJson = new JSONObject();
+                gimbalJson.put("pitch", this.latestGimbalState.getAttitudeInDegrees().getPitch());
+                gimbalJson.put("roll", this.latestGimbalState.getAttitudeInDegrees().getRoll());
+                gimbalJson.put("yaw", this.latestGimbalState.getAttitudeInDegrees().getYaw());
+                // 필요에 따라 gimbalState.getMode().name() 등 다른 정보 추가
+                payload.put("gimbal", gimbalJson);
+            }
+
+            // payload에 내용이 있을 때만 emit
+            if (payload.length() > 1) { // timestamp는 항상 있으므로 1 초과
+                SocketConnection.getInstance().emit("gcs_telemetry", payload);
+            }
         } catch (JSONException e) {
             Log.e(TAG, "Failed to emit telemetry", e);
         }
@@ -362,7 +387,8 @@ public class GCSCommandHandler {
             Aircraft aircraft = (Aircraft) product;
             flightController = aircraft.getFlightController();
             gimbal = aircraft.getGimbal();
-            waypointMissionOperator = null;
+            // waypointMissionOperator는 여기서 null로 초기화하고 getWaypointMissionOperator에서 필요시 생성
+            waypointMissionOperator = null; 
         } else {
             flightController = null;
             gimbal = null;

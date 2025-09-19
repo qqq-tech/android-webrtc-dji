@@ -14,8 +14,8 @@ import dji.sdk.sdkmanager.DJISDKManager;
 import static io.socket.client.Socket.EVENT_DISCONNECT;
 
 import com.drone.djiwebrtc.network.SocketConnection;
-import com.drone.djiwebrtc.webrtc.WebRTCClient;
-import com.drone.djiwebrtc.webrtc.WebRTCMediaOptions;
+import com.drone.djiwebrtc.core.WebRTCClient;
+import com.drone.djiwebrtc.core.WebRTCMediaOptions;
 
 /**
  * The DJIStreamer class will manage all ongoing P2P connections

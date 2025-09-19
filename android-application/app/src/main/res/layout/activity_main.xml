@@ -30,7 +30,7 @@
             android:layout_width="0dp"
             android:layout_height="0dp"
             android:background="@android:color/black"
-            app:layout_constraintTop_toBottomOf="@id/toolbar"
+            app:layout_constraintTop_toTopOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintHeight_percent="0.4" />
@@ -40,7 +40,7 @@
             android:layout_width="0dp"
             android:layout_height="0dp"
             android:contentDescription="@string/flight_map_content_description"
-            app:layout_constraintTop_toBottomOf="@id/videoRenderer"
+            app:layout_constraintTop_toBottomOf="@+id/videoRenderer"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintEnd_toEndOf="parent" />
@@ -52,7 +52,7 @@
             android:layout_margin="16dp"
             android:text="@string/toggle_path_panel"
             app:icon="@drawable/ic_route"
-            app:layout_constraintBottom_toTopOf="@id/flightPathSheet"
+            app:layout_constraintBottom_toTopOf="@+id/flightPathSheet"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent" />
 
@@ -65,7 +65,8 @@
             android:padding="16dp"
             app:behavior_hideable="true"
             app:behavior_peekHeight="64dp"
-            app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
+            app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior"
+            app:layout_constraintBottom_toBottomOf="parent">
 
             <View
                 android:layout_width="40dp"
