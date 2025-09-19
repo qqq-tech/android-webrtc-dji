@@ -11,12 +11,17 @@
 
     <application
         android:name=".MainApplication"
+        android:extractNativeLibs="false"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.AndroidWebrtcDji">
+        <meta-data
+            android:name="com.dji.sdk.API_KEY"
+            android:value="123"/>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

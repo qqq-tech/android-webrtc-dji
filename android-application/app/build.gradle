@@ -57,6 +57,7 @@ android {
         doNotStrip "*/*/libDJICSDKCommon.so"
         doNotStrip "*/*/libDJIUpgradeCore.so"
         doNotStrip "*/*/libDJIUpgradeJNI.so"
+        doNotStrip "*/*/libpenguin.so"
         exclude 'META-INF/rxjava.properties'
     }
 
