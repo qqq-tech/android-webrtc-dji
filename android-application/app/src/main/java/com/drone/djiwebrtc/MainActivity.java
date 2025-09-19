@@ -51,6 +51,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initializeBottomSheet() {
+        // XML 레이아웃 변경 후, 이 코드가 올바르게 작동해야 합니다.
         bottomSheetBehavior = BottomSheetBehavior.from(binding.flightPathSheet);
         bottomSheetBehavior.setState(BottomSheetBehavior.STATE_COLLAPSED);
         binding.togglePathButton.setText(getString(R.string.toggle_path_panel));
@@ -63,7 +64,8 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onSlide(@NonNull View bottomSheet, float slideOffset) {
-                // no-op
+                // 필요하다면 FloatingActionButton의 위치를 조정하는 로직을 여기에 추가할 수 있습니다.
+                // 예: binding.togglePathButton.setTranslationY(-slideOffset * someCalculatedValue);
             }
         });
     }

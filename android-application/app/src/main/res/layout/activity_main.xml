@@ -21,6 +21,7 @@
         app:titleTextAppearance="@style/TextAppearance.MaterialComponents.Headline6" />
 
     <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/main_content_constraint_layout"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         app:layout_behavior="@string/appbar_scrolling_view_behavior">
@@ -45,85 +46,88 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintEnd_toEndOf="parent" />
 
-        <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
-            android:id="@+id/togglePathButton"
-            android:layout_width="wrap_content"
+        <!-- togglePathButton는 CoordinatorLayout의 자식으로 이동됩니다. -->
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!-- flightPathSheet는 이제 CoordinatorLayout의 직접적인 자식입니다. -->
+    <LinearLayout
+        android:id="@+id/flightPathSheet"
+        android:layout_width="match_parent"
+        android:layout_height="360dp" 
+        android:background="@drawable/bg_bottom_sheet"
+        android:orientation="vertical"
+        android:padding="16dp"
+        app:behavior_hideable="true"
+        app:behavior_peekHeight="64dp"
+        app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
+
+        <View
+            android:layout_width="40dp"
+            android:layout_height="4dp"
+            android:layout_gravity="center_horizontal"
+            android:background="@drawable/bg_bottom_sheet_handle"
+            android:contentDescription="@string/bottom_sheet_handle" />
+
+        <TextView
+            android:id="@+id/flightPathTitle"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_margin="16dp"
-            android:text="@string/toggle_path_panel"
-            app:icon="@drawable/ic_route"
-            app:layout_constraintBottom_toTopOf="@+id/flightPathSheet"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent" />
+            android:paddingTop="12dp"
+            android:text="@string/flight_path_overview"
+            android:textAppearance="@style/TextAppearance.MaterialComponents.Subtitle1"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/pathSummary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="8dp"
+            android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
+            tools:text="3 waypoints • 1.5 km planned" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/waypointList"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:paddingBottom="8dp"
+            tools:listitem="@layout/item_waypoint" />
 
         <LinearLayout
-            android:id="@+id/flightPathSheet"
             android:layout_width="match_parent"
-            android:layout_height="360dp"
-            android:background="@drawable/bg_bottom_sheet"
-            android:orientation="vertical"
-            android:padding="16dp"
-            app:behavior_hideable="true"
-            app:behavior_peekHeight="64dp"
-            app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior"
-            app:layout_constraintBottom_toBottomOf="parent">
-
-            <View
-                android:layout_width="40dp"
-                android:layout_height="4dp"
-                android:layout_gravity="center_horizontal"
-                android:background="@drawable/bg_bottom_sheet_handle"
-                android:contentDescription="@string/bottom_sheet_handle" />
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
             <TextView
-                android:id="@+id/flightPathTitle"
-                android:layout_width="match_parent"
+                android:id="@+id/nextWaypointLabel"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:paddingTop="12dp"
-                android:text="@string/flight_path_overview"
-                android:textAppearance="@style/TextAppearance.MaterialComponents.Subtitle1"
+                android:text="@string/next_waypoint"
+                android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
                 android:textStyle="bold" />
 
             <TextView
-                android:id="@+id/pathSummary"
-                android:layout_width="match_parent"
+                android:id="@+id/nextWaypointValue"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:paddingBottom="8dp"
-                android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
-                tools:text="3 waypoints • 1.5 km planned" />
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/waypointList"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
+                android:layout_marginStart="8dp"
                 android:layout_weight="1"
-                android:clipToPadding="false"
-                android:paddingBottom="8dp"
-                tools:listitem="@layout/item_waypoint" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:id="@+id/nextWaypointLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/next_waypoint"
-                    android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/nextWaypointValue"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
-                    tools:text="WP-2" />
-            </LinearLayout>
+                android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
+                tools:text="WP-2" />
         </LinearLayout>
-    </androidx.constraintlayout.widget.ConstraintLayout>
+    </LinearLayout>
+
+    <!-- togglePathButton는 이제 CoordinatorLayout의 직접적인 자식입니다. -->
+    <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
+        android:id="@+id/togglePathButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="80dp"  
+        android:text="@string/toggle_path_panel"
+        app:icon="@drawable/ic_route" />
+
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

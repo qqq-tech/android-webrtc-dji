@@ -3,8 +3,8 @@ buildscript {
         maven { url "https://raw.githubusercontent.com/alexgreench/google-webrtc/master" }
         google()
         mavenCentral()
-        maven { url "https://jitpack.io" }
-        maven { url "https://developer.dji.com/sdk/repo/" }
+//        maven { url "https://jitpack.io" }
+        maven { url "https://developer.dji.com/maven/" }
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.13.0'
@@ -16,8 +16,8 @@ allprojects {
         maven { url "https://raw.githubusercontent.com/alexgreench/google-webrtc/master" }
         google()
         mavenCentral()
-        maven { url "https://jitpack.io" }
-        maven { url "https://developer.dji.com/sdk/repo/" }
+//        maven { url "https://jitpack.io" }
+        maven { url "https://developer.dji.com/maven/" }
     }
 }
 
