@@ -26,6 +26,9 @@ public class RouteOverlayManager {
     private Marker currentLocationMarker;
     private double plannedPathDistanceMeters;
 
+    private static final double TILE_SIZE = 256.0;
+    private static final double MERCATOR_LAT_BOUND = 85.05112878;
+
     public RouteOverlayManager(MapView mapView) {
         this.mapView = mapView;
     }
@@ -70,7 +73,7 @@ public class RouteOverlayManager {
 
         if (geoPoints.size() > 1) {
             // Polyline.boundingBoxFromGeoPoints(geoPoints)를 BoundingBox.fromGeoPoints(geoPoints)로 변경
-            mapView.zoomToBoundingBox(BoundingBox.fromGeoPoints(geoPoints), true);
+            adjustViewportToBoundingBox(BoundingBox.fromGeoPoints(geoPoints));
         } else {
             mapView.getController().setCenter(geoPoints.get(0));
         }
@@ -157,5 +160,57 @@ public class RouteOverlayManager {
 
     private GeoPoint toGeoPoint(Waypoint waypoint) {
         return new GeoPoint(waypoint.getLatitude(), waypoint.getLongitude(), waypoint.getAltitude());
+    }
+
+    private void adjustViewportToBoundingBox(BoundingBox boundingBox) {
+        if (boundingBox == null) {
+            return;
+        }
+
+        if (mapView.getWidth() == 0 || mapView.getHeight() == 0) {
+            mapView.post(() -> adjustViewportToBoundingBox(boundingBox));
+            return;
+        }
+
+        double latNorth = boundingBox.getLatNorth();
+        double latSouth = boundingBox.getLatSouth();
+        double lonEast = boundingBox.getLonEast();
+        double lonWest = boundingBox.getLonWest();
+
+        double centerLat = (latNorth + latSouth) / 2d;
+        double centerLon = (lonEast + lonWest) / 2d;
+
+        double paddingFactor = 1.1; // 살짝 여백을 두고 화면을 맞추기 위한 배율
+
+        double lonDiff = Math.max(Math.abs(lonEast - lonWest), 1e-6) * paddingFactor;
+        double lonFraction = Math.min(lonDiff / 360d, 1d);
+
+        double latFraction = Math.abs(latToMercatorFraction(latNorth) - latToMercatorFraction(latSouth));
+        latFraction = Math.min(Math.max(latFraction, 1e-6) * paddingFactor, 1d);
+
+        double mapWidth = Math.max(mapView.getWidth(), 1);
+        double mapHeight = Math.max(mapView.getHeight(), 1);
+
+        double zoomForWidth = Math.log(mapWidth / (TILE_SIZE * lonFraction)) / Math.log(2);
+        double zoomForHeight = Math.log(mapHeight / (TILE_SIZE * latFraction)) / Math.log(2);
+        double targetZoom = Math.min(zoomForWidth, zoomForHeight);
+
+        Double maxZoomLevel = mapView.getMaxZoomLevel();
+        if (maxZoomLevel != null) {
+            targetZoom = Math.min(targetZoom, maxZoomLevel);
+        }
+        Double minZoomLevel = mapView.getMinZoomLevel();
+        if (minZoomLevel != null) {
+            targetZoom = Math.max(targetZoom, minZoomLevel);
+        }
+
+        mapView.getController().setZoom(targetZoom);
+        mapView.getController().setCenter(new GeoPoint(centerLat, centerLon));
+    }
+
+    private double latToMercatorFraction(double latitude) {
+        double constrainedLat = Math.max(Math.min(latitude, MERCATOR_LAT_BOUND), -MERCATOR_LAT_BOUND);
+        double sinLat = Math.sin(Math.toRadians(constrainedLat));
+        return 0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI);
     }
 }
