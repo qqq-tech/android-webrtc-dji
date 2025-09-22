@@ -9,4 +9,16 @@
     <string name="flight_map_content_description">계획된 비행 경로와 실시간 위치를 표시하는 지도</string>
     <string name="path_summary_format">%1$d개 웨이포인트 • %.2f km 계획</string>
     <string name="no_next_waypoint">모든 웨이포인트 완료</string>
+    <string name="menu_configure_pion">Pion 릴레이 설정</string>
+    <string name="pion_settings_title">Pion 릴레이 연결</string>
+    <string name="pion_settings_description">릴레이 서버에 연결하기 위한 시그널링 URL과 스트림 ID를 입력하세요.</string>
+    <string name="pion_signaling_url_label">시그널링 URL</string>
+    <string name="pion_signaling_url_hint">예: ws://10.0.2.2:8080</string>
+    <string name="pion_stream_id_label">스트림 ID</string>
+    <string name="pion_stream_id_hint">예: mavic-stream</string>
+    <string name="pion_settings_saved">Pion 릴레이 설정이 저장되었습니다.</string>
+    <string name="action_save">저장</string>
+    <string name="error_required_field">필수 항목입니다.</string>
+    <string name="pion_signaling_url_default">ws://10.0.2.2:8080</string>
+    <string name="pion_stream_id_default">mavic-stream</string>
 </resources>

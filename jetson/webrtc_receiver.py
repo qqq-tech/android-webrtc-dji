@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.signaling import BYE
 from av import VideoFrame
@@ -22,14 +23,18 @@ class WebRTCYOLOPipeline:
         stream_id: str,
         signaling_host: str = "localhost",
         signaling_port: int = 8080,
+        signaling_url: Optional[str] = None,
         detection_host: str = "0.0.0.0",
         detection_port: int = 8765,
         model_path: str = "yolov8n.pt",
         confidence_threshold: float = 0.25,
     ) -> None:
         self._stream_id = stream_id
-        self._signaling_url = (
-            f"ws://{signaling_host}:{signaling_port}/ws?role=subscriber&streamId={stream_id}"
+        self._signaling_url = self._build_signaling_url(
+            stream_id=stream_id,
+            explicit_url=signaling_url,
+            host=signaling_host,
+            port=signaling_port,
         )
         self._pc = RTCPeerConnection()
         self._yolo = YoloProcessor(model_path=model_path, confidence_threshold=confidence_threshold)
@@ -146,12 +151,42 @@ class WebRTCYOLOPipeline:
         await self._pc.close()
         await self._broadcaster.stop()
 
+    @staticmethod
+    def _build_signaling_url(
+        stream_id: str,
+        explicit_url: Optional[str],
+        host: str,
+        port: int,
+    ) -> str:
+        if explicit_url:
+            parsed = urlparse(explicit_url)
+            if not parsed.scheme:
+                parsed = urlparse(f"ws://{explicit_url}")
+        else:
+            parsed = urlparse(f"ws://{host}:{port}/ws")
+
+        query_params = dict(parse_qsl(parsed.query))
+        query_params.update({"role": "subscriber", "streamId": stream_id})
+
+        path = parsed.path or "/ws"
+        if path == "/":
+            path = "/ws"
+
+        rebuilt = parsed._replace(path=path, query=urlencode(query_params))
+        return urlunparse(rebuilt)
+
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Jetson WebRTC -> YOLO pipeline")
     parser.add_argument("stream_id", help="Identifier of the stream to subscribe to")
     parser.add_argument("--signaling-host", default="localhost")
     parser.add_argument("--signaling-port", type=int, default=8080)
+    parser.add_argument(
+        "--signaling-url",
+        help=(
+            "Complete WebSocket URL to the Pion relay. Overrides --signaling-host/--signaling-port"
+        ),
+    )
     parser.add_argument("--detection-host", default="0.0.0.0")
     parser.add_argument("--detection-port", type=int, default=8765)
     parser.add_argument("--model", default="yolov8n.pt")
@@ -165,6 +200,7 @@ async def main() -> None:
         stream_id=args.stream_id,
         signaling_host=args.signaling_host,
         signaling_port=args.signaling_port,
+        signaling_url=args.signaling_url,
         detection_host=args.detection_host,
         detection_port=args.detection_port,
         model_path=args.model,

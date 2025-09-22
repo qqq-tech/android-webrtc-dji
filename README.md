@@ -68,7 +68,7 @@ This fork adds an end-to-end workflow tailored for DJI Mavic drones using Mobile
 To start the complete flow:
 
 1. Launch the Go relay (`go run pion-server/main.go --addr :8080`).
-2. Run the Jetson consumer (`python jetson/webrtc_receiver.py <streamId> --signaling-host <relay-host>`).
+2. Run the Jetson consumer (`python jetson/webrtc_receiver.py <streamId> --signaling-url ws://<relay-host>:8080/ws`).
 3. Open `browser/dashboard.html?streamId=<streamId>&signalingHost=<relay-host>` in your browser to view both feeds.
 4. Send GCS commands or raw streaming requests to the Android app via the Socket.IO channel:
    ```json
@@ -109,7 +109,8 @@ Follow the component-specific notes below to compile and launch each part of the
    ```
 2. **Configure DJI keys** – register your application on the DJI developer portal, download the `DJISDKLIB` AAR if required, and add your `dji.sdk.key` to `AndroidManifest.xml` together with the required permissions (USB, internet, location, etc.).
 3. **Build** – run `./gradlew assembleDebug` (or use the Android Studio *Build > Make Project* action) to produce an APK that contains the GCS logic plus the WebRTC/raw H.264 streamers.
-4. **Run** – deploy the app to a DJI-supported device, connect the drone, and launch the activity that instantiates `DJIStreamer`. Confirm your signaling server URL, drone ID, and optional raw TCP streaming targets are set before requesting a stream from the browser dashboard.
+4. **Configure Pion relay** – launch the ground control app, swipe in from the right edge, and choose **Pion 릴레이 설정** to update the signaling URL/stream ID. The values are persisted in shared preferences and applied by the embedded publisher. If you want to change the shipped defaults before installing the APK, edit `android-application/app/src/main/res/values/strings.xml` (`pion_signaling_url_default`, `pion_stream_id_default`).
+5. **Run** – deploy the app to a DJI-supported device, connect the drone, and launch the activity that instantiates `DJIStreamer`. Confirm your signaling server URL, drone ID, and optional raw TCP streaming targets are set before requesting a stream from the browser dashboard.
 
 ### Browser dashboard
 
@@ -140,11 +141,12 @@ Follow the component-specific notes below to compile and launch each part of the
 
    # Terminal 2 – subscribe to the Android stream via the Pion relay
    python webrtc_receiver.py <STREAM_ID> \
-       --signaling-host ws://<RELAY_HOST>:8080 \
+       --signaling-url ws://<RELAY_HOST>:8080/ws \
        --overlay-ws ws://<JETSON_HOST>:8765 \
        --model yolov8n.pt
    ```
    The receiver relays detection metadata that matches the agreed JSON format, enabling the dashboard to render overlays in real time.
+   If you prefer to specify the relay host/port separately, continue using `--signaling-host` and `--signaling-port` (provide them without the `ws://` prefix).
 
 ### Pion relay server
 

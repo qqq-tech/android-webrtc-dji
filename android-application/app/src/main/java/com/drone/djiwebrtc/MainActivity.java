@@ -9,19 +9,23 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.TextUtils;
 import android.util.Log;
 import android.view.View;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.GravityCompat;
 import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.LinearLayoutManager;
 
 import com.drone.djiwebrtc.core.DJIVideoCapturer;
 import com.drone.djiwebrtc.databinding.ActivityMainBinding;
+import com.drone.djiwebrtc.util.PionConfigStore;
 import com.drone.djiwebrtc.ui.adapter.WaypointAdapter;
 import com.drone.djiwebrtc.ui.map.RouteOverlayManager;
 import com.drone.djiwebrtc.ui.model.Waypoint;
@@ -29,6 +33,9 @@ import com.drone.djiwebrtc.ui.viewmodel.FlightPathViewModel;
 import com.drone.djiwebrtc.util.DjiProductHelper;
 import com.drone.djiwebrtc.webrtc.DroneVideoPreview;
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
 
 import org.osmdroid.config.Configuration;
 
@@ -51,6 +58,7 @@ public class MainActivity extends AppCompatActivity {
     private FlightPathViewModel flightPathViewModel;
     private WaypointAdapter waypointAdapter;
     private DroneVideoPreview droneVideoPreview;
+    private PionConfigStore pionConfigStore;
 
     private static final String TAG = MainActivity.class.getName();
     public static final String FLAG_CONNECTION_CHANGE = "dji_sdk_connection_change";
@@ -91,9 +99,11 @@ public class MainActivity extends AppCompatActivity {
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
         mHandler = new Handler(Looper.getMainLooper());
+        pionConfigStore = new PionConfigStore(this);
 
         setSupportActionBar(binding.toolbar);
 
+        initializeSettingsDrawer();
         initializeBottomSheet();
         initializeRecycler();
         initializeMap();
@@ -301,6 +311,17 @@ public class MainActivity extends AppCompatActivity {
         routeOverlayManager.initialize();
     }
 
+    private void initializeSettingsDrawer() {
+        binding.settingsNavigationView.setNavigationItemSelectedListener(item -> {
+            if (item.getItemId() == R.id.menu_configure_pion) {
+                binding.drawerLayout.closeDrawer(GravityCompat.END);
+                binding.drawerLayout.post(this::showPionSettingsDialog);
+                return true;
+            }
+            return false;
+        });
+    }
+
     private void initializeVideo() {
         String droneDisplayName = DjiProductHelper.resolveDisplayName();
         DJIVideoCapturer capturer = new DJIVideoCapturer(droneDisplayName);
@@ -370,5 +391,63 @@ public class MainActivity extends AppCompatActivity {
             droneVideoPreview.destroy();
         }
         super.onDestroy();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (binding.drawerLayout.isDrawerOpen(GravityCompat.END)) {
+            binding.drawerLayout.closeDrawer(GravityCompat.END);
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    private void showPionSettingsDialog() {
+        View dialogView = getLayoutInflater().inflate(R.layout.dialog_pion_settings, null, false);
+        TextInputLayout signalingUrlLayout = dialogView.findViewById(R.id.pionSignalingUrlLayout);
+        TextInputLayout streamIdLayout = dialogView.findViewById(R.id.pionStreamIdLayout);
+        TextInputEditText signalingUrlInput = dialogView.findViewById(R.id.pionSignalingUrlInput);
+        TextInputEditText streamIdInput = dialogView.findViewById(R.id.pionStreamIdInput);
+
+        signalingUrlInput.setText(pionConfigStore.getSignalingUrl());
+        streamIdInput.setText(pionConfigStore.getStreamId());
+
+        AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.pion_settings_title)
+                .setView(dialogView)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.action_save, null)
+                .create();
+
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String signalingUrl = signalingUrlInput.getText() != null ? signalingUrlInput.getText().toString().trim() : "";
+            String streamId = streamIdInput.getText() != null ? streamIdInput.getText().toString().trim() : "";
+            boolean valid = true;
+
+            if (TextUtils.isEmpty(signalingUrl)) {
+                signalingUrlLayout.setError(getString(R.string.error_required_field));
+                valid = false;
+            } else {
+                signalingUrlLayout.setError(null);
+            }
+
+            if (TextUtils.isEmpty(streamId)) {
+                streamIdLayout.setError(getString(R.string.error_required_field));
+                valid = false;
+            } else {
+                streamIdLayout.setError(null);
+            }
+
+            if (!valid) {
+                return;
+            }
+
+            pionConfigStore.setSignalingUrl(signalingUrl);
+            pionConfigStore.setStreamId(streamId);
+            Toast.makeText(this, getString(R.string.pion_settings_saved), Toast.LENGTH_SHORT).show();
+            dialog.dismiss();
+        }));
+
+        dialog.show();
     }
 }

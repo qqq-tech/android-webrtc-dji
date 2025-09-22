@@ -362,10 +362,14 @@ func (s *stream) createPeerConnection(c *client) (*webrtc.PeerConnection, error)
 			v := uint16(*init.SDPMLineIndex)
 			lineIndex = &v
 		}
+		var sdpMid string
+		if init.SDPMid != nil {
+			sdpMid = *init.SDPMid
+		}
 		msg := signalMessage{
 			Type:          "ice",
 			Candidate:     init.Candidate,
-			SDPMid:        init.SDPMid,
+			SDPMid:        sdpMid,
 			SDPMLineIndex: lineIndex,
 		}
 		if err := c.sendSignal(msg); err != nil {
