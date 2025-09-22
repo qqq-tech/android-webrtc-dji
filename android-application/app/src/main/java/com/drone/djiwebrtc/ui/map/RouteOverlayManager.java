@@ -2,6 +2,7 @@ package com.drone.djiwebrtc.ui.map;
 
 import android.graphics.Color;
 
+import androidx.annotation.Nullable;
 import androidx.core.content.ContextCompat;
 
 import com.drone.djiwebrtc.R;
@@ -127,8 +128,13 @@ public class RouteOverlayManager {
         mapView.invalidate();
     }
 
-    public void updateCurrentLocation(GeoPoint location) {
+    public void updateCurrentLocation(@Nullable GeoPoint location) {
         if (location == null) {
+            if (currentLocationMarker != null) {
+                mapView.getOverlayManager().remove(currentLocationMarker);
+                currentLocationMarker = null;
+                mapView.invalidate();
+            }
             return;
         }
         if (currentLocationMarker == null) {

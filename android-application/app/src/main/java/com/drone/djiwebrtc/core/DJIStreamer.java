@@ -78,6 +78,7 @@ public class DJIStreamer {
                 mainHandler.post(() -> {
                     if (webRtcClient != null) {
                         Log.d(TAG, "Signaling channel closed; resetting WebRTC client");
+                        webRtcClient.dispose();
                         webRtcClient = null;
                     }
                 });
@@ -119,6 +120,9 @@ public class DJIStreamer {
         webRtcClient = new WebRTCClient(context, videoCapturer, new WebRTCMediaOptions(), signalingClient);
         webRtcClient.setConnectionChangedListener(() -> {
             Log.d(TAG, "Peer disconnected from stream " + streamId);
+            if (webRtcClient != null) {
+                webRtcClient.dispose();
+            }
             webRtcClient = null;
         });
         Log.i(TAG, "Publishing stream '" + streamId + "' via Pion relay");

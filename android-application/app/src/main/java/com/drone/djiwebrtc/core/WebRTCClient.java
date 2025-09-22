@@ -3,6 +3,8 @@ package com.drone.djiwebrtc.core;
 import android.content.Context;
 import android.util.Log;
 
+import androidx.annotation.Nullable;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.webrtc.DataChannel;
@@ -16,11 +18,15 @@ import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RtpReceiver;
 import org.webrtc.SessionDescription;
+import org.webrtc.SurfaceTextureHelper;
 import org.webrtc.VideoCapturer;
+import org.webrtc.VideoSink;
 import org.webrtc.VideoSource;
 import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArraySet;
 
 
 public class WebRTCClient {
@@ -30,6 +36,10 @@ public class WebRTCClient {
     // WebRTC related variables
     private PeerConnection peerConnection;
     private VideoTrack videoTrackFromCamera;
+    private VideoSource videoSource;
+    private final SurfaceTextureHelper surfaceTextureHelper;
+    private final Set<VideoSink> localVideoSinks = new CopyOnWriteArraySet<>();
+    private boolean disposed = false;
     private final WebRTCMediaOptions options;
     private final VideoCapturer videoCapturer;
 
@@ -46,11 +56,17 @@ public class WebRTCClient {
         return factory;
     }
 
-    public WebRTCClient(Context context, VideoCapturer videoCapturer, WebRTCMediaOptions options, SignalingTransport signalingTransport){
+    public WebRTCClient(Context context, VideoCapturer videoCapturer, WebRTCMediaOptions options, SignalingTransport signalingTransport) {
+        this(context, videoCapturer, options, signalingTransport, null);
+    }
+
+    public WebRTCClient(Context context, VideoCapturer videoCapturer, WebRTCMediaOptions options,
+                        SignalingTransport signalingTransport, @Nullable SurfaceTextureHelper surfaceTextureHelper) {
         this.context = context;
         this.options = options;
         this.videoCapturer = videoCapturer;
         this.signalingTransport = signalingTransport;
+        this.surfaceTextureHelper = surfaceTextureHelper;
 
         createVideoTrackFromVideoCapturer();
         initializePeerConnection();
@@ -151,13 +167,23 @@ public class WebRTCClient {
     }
 
     private void createVideoTrackFromVideoCapturer() {
-        VideoSource videoSource = getFactory(context).createVideoSource(false);
+        videoSource = getFactory(context).createVideoSource(false);
 
-        // Instantiate our custom video capturer to get video from our drone
-        videoCapturer.initialize(null, context, videoSource.getCapturerObserver());
-        videoCapturer.startCapture(options.VIDEO_RESOLUTION_WIDTH, options.VIDEO_RESOLUTION_HEIGHT, options.FPS);
+        if (surfaceTextureHelper != null) {
+            videoCapturer.initialize(surfaceTextureHelper, context, videoSource.getCapturerObserver());
+        } else {
+            videoCapturer.initialize(null, context, videoSource.getCapturerObserver());
+        }
+        try {
+            videoCapturer.startCapture(options.getVideoResolutionWidth(), options.getVideoResolutionHeight(), options.getFps());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            Log.e(TAG, "Capture start interrupted", e);
+        } catch (Exception e) {
+            Log.e(TAG, "Unable to start capture", e);
+        }
 
-        videoTrackFromCamera = getFactory(context).createVideoTrack(options.VIDEO_SOURCE_ID, videoSource);
+        videoTrackFromCamera = getFactory(context).createVideoTrack(options.getVideoSourceId(), videoSource);
         videoTrackFromCamera.setEnabled(true);
     }
 
@@ -166,7 +192,7 @@ public class WebRTCClient {
     }
 
     private void startStreamingVideo() {
-        MediaStream mediaStream = getFactory(context).createLocalMediaStream(options.MEDIA_STREAM_ID);
+        MediaStream mediaStream = getFactory(context).createLocalMediaStream(options.getMediaStreamId());
         mediaStream.addTrack(videoTrackFromCamera);
         peerConnection.addStream(mediaStream);
     }
@@ -188,10 +214,9 @@ public class WebRTCClient {
                 switch (iceConnectionState){
                     case DISCONNECTED:
                         Log.d(TAG, "PEER HAS DISCONNECTED");
+                        dispose();
                         if (connectionChangedListener != null)
                             connectionChangedListener.onDisconnected();
-                        // Dispose of the capturer and then the peer connection to clean up properly
-                        videoCapturer.dispose();
                         break;
                 }
             }
@@ -247,6 +272,62 @@ public class WebRTCClient {
         };
 
         return getFactory(context).createPeerConnection(rtcConfig, pcObserver);
+    }
+
+    public void addVideoSink(VideoSink sink) {
+        if (sink == null || videoTrackFromCamera == null) {
+            return;
+        }
+        videoTrackFromCamera.addSink(sink);
+        localVideoSinks.add(sink);
+    }
+
+    public void removeVideoSink(VideoSink sink) {
+        if (sink == null || videoTrackFromCamera == null) {
+            return;
+        }
+        videoTrackFromCamera.removeSink(sink);
+        localVideoSinks.remove(sink);
+    }
+
+    public synchronized void dispose() {
+        if (disposed) {
+            return;
+        }
+        disposed = true;
+
+        if (videoTrackFromCamera != null) {
+            for (VideoSink sink : localVideoSinks) {
+                videoTrackFromCamera.removeSink(sink);
+            }
+            localVideoSinks.clear();
+            videoTrackFromCamera.dispose();
+            videoTrackFromCamera = null;
+        }
+
+        try {
+            videoCapturer.stopCapture();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            Log.w(TAG, "Error stopping capture", e);
+        }
+        videoCapturer.dispose();
+
+        if (videoSource != null) {
+            videoSource.dispose();
+            videoSource = null;
+        }
+
+        if (peerConnection != null) {
+            peerConnection.close();
+            peerConnection.dispose();
+            peerConnection = null;
+        }
+
+        if (surfaceTextureHelper != null) {
+            surfaceTextureHelper.dispose();
+        }
     }
 
     public interface PeerConnectionChangedListener {

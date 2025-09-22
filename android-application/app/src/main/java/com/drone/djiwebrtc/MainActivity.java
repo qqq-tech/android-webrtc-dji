@@ -313,9 +313,17 @@ public class MainActivity extends AppCompatActivity {
 
     private void initializeSettingsDrawer() {
         binding.settingsNavigationView.setNavigationItemSelectedListener(item -> {
-            if (item.getItemId() == R.id.menu_configure_pion) {
+            int itemId = item.getItemId();
+            if (itemId == R.id.menu_configure_pion) {
                 binding.drawerLayout.closeDrawer(GravityCompat.END);
                 binding.drawerLayout.post(this::showPionSettingsDialog);
+                return true;
+            } else if (itemId == R.id.menu_open_mobile_stream) {
+                binding.drawerLayout.closeDrawer(GravityCompat.END);
+                binding.drawerLayout.post(() -> {
+                    Intent intent = new Intent(this, CameraStreamActivity.class);
+                    startActivity(intent);
+                });
                 return true;
             }
             return false;
