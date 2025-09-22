@@ -155,9 +155,13 @@ class DetectionBroadcaster:
 
         if request_path in {"", "/"}:
             # Serve a default landing page for root requests, preferring a
-            # conventional ``index.html`` before falling back to the legacy
-            # ``dashboard.html`` used by earlier builds.
-            for default_name in ("index.html", "dashboard.html"):
+            # conventional ``index.html`` before falling back to legacy pages
+            # used by earlier builds.
+            for default_name in (
+                "index.html",
+                "pion-screen-publisher.html",
+                "dashboard.html",
+            ):
                 candidate = self._static_dir / default_name
                 if candidate.is_file():
                     return candidate
@@ -185,6 +189,21 @@ class DetectionBroadcaster:
             request_path = getattr(connection, "path", None)
             if request_headers is None:
                 request_headers = getattr(connection, "request_headers", None)
+
+            # websockets 12+ exposes the HTTP request on the connection object.
+            # ``connection.path`` may be another object (including the
+            # ``ServerConnection`` itself) which later ends up stringified into
+            # a representation like ``<ServerConnection ...>``. Use the nested
+            # request object if available to recover the original HTTP path and
+            # headers provided by the client.
+            request_obj = getattr(connection, "request", None)
+            if request_obj is None:
+                request_obj = getattr(connection, "_request", None)
+            if request_obj is not None:
+                if request_path is None or request_path is connection:
+                    request_path = getattr(request_obj, "path", request_path)
+                if request_headers is None:
+                    request_headers = getattr(request_obj, "headers", None)
         else:
             request_path = path_or_connection
 
@@ -218,9 +237,24 @@ class DetectionBroadcaster:
                 value = raw_path
                 continue
 
+            request_obj = getattr(value, "request", None)
+            if request_obj is not None and request_obj is not value:
+                value = request_obj
+                continue
+
+            request_obj = getattr(value, "_request", None)
+            if request_obj is not None and request_obj is not value:
+                value = request_obj
+                continue
+
             nested_path = getattr(value, "path", None)
             if nested_path is not None and nested_path is not value:
                 value = nested_path
+                continue
+
+            target = getattr(value, "target", None)
+            if target is not None and target is not value:
+                value = target
                 continue
 
             if callable(value):
@@ -241,6 +275,13 @@ class DetectionBroadcaster:
 
         if not isinstance(value, str):
             value = str(value)
+
+        if " " in value:
+            method, _, remainder = value.partition(" ")
+            if method.upper() in {"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"}:
+                candidate_path, _, _ = remainder.partition(" ")
+                if candidate_path:
+                    value = candidate_path
 
         parsed = urlsplit(value)
         path_value = parsed.path or "/"
