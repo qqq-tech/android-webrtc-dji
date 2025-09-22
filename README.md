@@ -114,7 +114,7 @@ Follow the component-specific notes below to compile and launch each part of the
 
 ### Browser dashboard
 
-1. **Install dependencies** – the dashboard uses vanilla HTML/JS; no build step is required. To simplify local testing you can serve the `browser/` directory with any static file server, e.g.:
+1. **Install dependencies** – the dashboard uses vanilla HTML/JS; no build step is required. If you already have the Jetson detection broadcaster running (see below) it will now serve the `browser/` directory automatically, so you can simply open `http://<JETSON_HOST>:8765/` and the updated `dashboard.html` will be delivered with all static assets. For standalone testing you can still serve the files with any static file server, e.g.:
    ```bash
    cd browser
    python -m http.server 8081
@@ -136,7 +136,7 @@ Follow the component-specific notes below to compile and launch each part of the
 2. **Provision YOLO weights** – download or copy the desired YOLOv8 model (e.g., `yolov8n.pt`) into the `jetson/` directory or adjust `yolo_processor.py` to point at your custom weights.
 3. **Run** – start the WebSocket broadcast service and WebRTC receiver:
    ```bash
-   # Terminal 1 – WebSocket hub for browser overlays
+   # Terminal 1 – WebSocket hub for browser overlays and static dashboard assets
    python websocket_server.py --host 0.0.0.0 --port 8765
 
    # Terminal 2 – subscribe to the Android stream via the Pion relay
@@ -145,7 +145,7 @@ Follow the component-specific notes below to compile and launch each part of the
        --overlay-ws ws://<JETSON_HOST>:8765 \
        --model yolov8n.pt
    ```
-   The receiver relays detection metadata that matches the agreed JSON format, enabling the dashboard to render overlays in real time.
+   The receiver relays detection metadata that matches the agreed JSON format, enabling the dashboard to render overlays in real time. With the bundled static file handler you can load the dashboard directly from the broadcaster at `http://<JETSON_HOST>:8765/dashboard.html?streamId=<STREAM_ID>&signalingHost=<RELAY_HOST>`, which already reflects the latest compatibility fixes for serving HTML alongside WebSocket upgrades.
    If you prefer to specify the relay host/port separately, continue using `--signaling-host` and `--signaling-port` (provide them without the `ws://` prefix).
 
 ### Pion relay server
