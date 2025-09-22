@@ -1,6 +1,8 @@
 """Utility WebSocket server to push YOLO detections to browser clients."""
 from __future__ import annotations
 
+import importlib
+import inspect
 import asyncio
 import http
 import json
@@ -17,10 +19,40 @@ try:  # websockets >= 12 exposes an explicit HTTP response type
 except Exception:  # pragma: no cover - optional dependency across versions
     WebsocketsHeaders = None
 
-try:
-    from websockets.http import Response as WebsocketsResponse
-except Exception:  # pragma: no cover - optional dependency across versions
-    WebsocketsResponse = None
+def _load_websockets_response():
+    """Best-effort import of the websockets HTTP ``Response`` type."""
+
+    module_names = (
+        "websockets.http",
+        "websockets.http11",
+        "websockets.asyncio.http11",
+        "websockets.server",
+    )
+    for module_name in module_names:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:  # pragma: no cover - optional dependency across versions
+            continue
+        response = getattr(module, "Response", None)
+        if response is not None:
+            return response
+    return None
+
+
+WebsocketsResponse = _load_websockets_response()
+if WebsocketsResponse is not None:
+    try:
+        _WebsocketsResponseParameters = inspect.signature(WebsocketsResponse).parameters
+    except (TypeError, ValueError):  # pragma: no cover - depends on websockets internals
+        _WebsocketsResponseParameters = {}
+else:  # pragma: no cover - Response discovery failed
+    _WebsocketsResponseParameters = {}
+
+_WEBSOCKETS_REASON_PARAM = None
+for _candidate in ("reason_phrase", "reason"):
+    if _candidate in _WebsocketsResponseParameters:
+        _WEBSOCKETS_REASON_PARAM = _candidate
+        break
 
 
 class DetectionBroadcaster:
@@ -229,11 +261,55 @@ class DetectionBroadcaster:
                 for key, value in header_items:
                     headers_obj[key] = value
                 headers_value = headers_obj
-            return WebsocketsResponse(
-                status_code=status_code,
-                headers=headers_value,
-                body=body,
+
+            reason_phrase = ""
+            if isinstance(status, http.HTTPStatus):
+                reason_phrase = status.phrase
+            else:
+                try:
+                    reason_phrase = http.HTTPStatus(status_code).phrase
+                except ValueError:
+                    reason_phrase = ""
+
+            return self._create_websockets_response(
+                status_code, headers_value, body, reason_phrase
             )
 
         return status_code, header_items, body
+
+    def _create_websockets_response(self, status_code, headers_value, body, reason_phrase):
+        """Instantiate websockets' ``Response`` regardless of signature changes."""
+
+        if WebsocketsResponse is None:
+            raise RuntimeError("websockets Response type is unavailable")
+
+        base_kwargs = {
+            "status_code": status_code,
+            "headers": headers_value,
+            "body": body,
+        }
+
+        attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+        if _WEBSOCKETS_REASON_PARAM:
+            attempts.append(((), {**base_kwargs, _WEBSOCKETS_REASON_PARAM: reason_phrase}))
+
+        attempts.append(((), base_kwargs))
+
+        positional_base = (status_code, headers_value, body)
+        attempts.append((positional_base + (reason_phrase,), {}))
+        attempts.append((positional_base, {}))
+
+        last_error: Optional[Exception] = None
+        for args, kwargs in attempts:
+            try:
+                return WebsocketsResponse(*args, **kwargs)
+            except TypeError as exc:
+                last_error = exc
+                continue
+
+        if last_error is not None:
+            raise last_error
+
+        raise RuntimeError("Unable to instantiate websockets Response")
 
