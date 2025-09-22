@@ -22,7 +22,7 @@ class DetectionBroadcaster:
     async def start(self) -> None:
         if self._server is not None:
             return
-        self._server = await websockets.serve(self._handler, self._host, self._port, path=self._path)
+        self._server = await websockets.serve(self._handler, self._host, self._port)
 
     async def stop(self) -> None:
         if self._server is None:
@@ -38,6 +38,10 @@ class DetectionBroadcaster:
         await asyncio.gather(*(self._send(client, message) for client in list(self._clients)))
 
     async def _handler(self, websocket: WebSocketServerProtocol):
+        if self._path and getattr(websocket, "path", self._path) != self._path:
+            await websocket.close(code=1008, reason="Invalid path")
+            return
+
         self._clients.add(websocket)
         try:
             await websocket.wait_closed()
