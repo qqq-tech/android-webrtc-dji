@@ -121,7 +121,11 @@ signalingSocket.addEventListener('message', async (event) => {
     const message = JSON.parse(event.data);
     if (message.error) {
       console.error('Signaling error', message);
-      connectionStatus.textContent = `error: ${message.code}`;
+      const details = [message.code, message.error]
+        .map((part) => (typeof part === 'string' ? part.trim() : ''))
+        .filter(Boolean)
+        .join(' ');
+      connectionStatus.textContent = details ? `error: ${details}` : 'error';
       return;
     }
 
@@ -146,6 +150,14 @@ signalingSocket.addEventListener('message', async (event) => {
     }
   } catch (error) {
     console.error('Failed to process signaling message', error, event.data);
+    if (typeof event.data === 'string') {
+      const trimmed = event.data.trim();
+      if (trimmed.length > 0) {
+        connectionStatus.textContent = `error: ${trimmed}`;
+        return;
+      }
+    }
+    connectionStatus.textContent = 'error: invalid signaling message';
   }
 });
 

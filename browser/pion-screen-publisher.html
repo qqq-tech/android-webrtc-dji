@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Pion Screen Publisher</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", Roboto, sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+
+      body {
+        margin: 0;
+        display: flex;
+        min-height: 100vh;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+      }
+
+      .panel {
+        width: min(720px, 100%);
+        background: rgba(15, 23, 42, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 16px;
+        padding: 1.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+        box-shadow: 0 25px 45px rgba(15, 23, 42, 0.4);
+      }
+
+      header h1 {
+        margin: 0;
+        font-size: 1.6rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #a5b4fc;
+      }
+
+      header p {
+        margin: 0.3rem 0 0;
+        color: rgba(226, 232, 240, 0.75);
+      }
+
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.75rem;
+      }
+
+      .status-item {
+        background: rgba(30, 41, 59, 0.7);
+        border-radius: 12px;
+        padding: 0.85rem 1rem;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+      }
+
+      .status-item dt {
+        margin: 0;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: rgba(165, 180, 252, 0.9);
+      }
+
+      .status-item dd {
+        margin: 0.45rem 0 0;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #f8fafc;
+      }
+
+      .preview {
+        position: relative;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(2, 6, 23, 0.8);
+        min-height: 220px;
+      }
+
+      video {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+      }
+
+      button {
+        border: none;
+        border-radius: 999px;
+        padding: 0.7rem 1.4rem;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+
+      #startButton {
+        background: linear-gradient(135deg, #22d3ee, #38bdf8);
+        color: #0f172a;
+      }
+
+      #stopButton {
+        background: rgba(148, 163, 184, 0.2);
+        color: #e2e8f0;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.5;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="panel">
+      <header>
+        <h1>Pion Screen Publisher</h1>
+        <p>Share this device's screen with the Pion relay and downstream subscribers.</p>
+      </header>
+      <dl class="status-grid">
+        <div class="status-item">
+          <dt>Stream ID</dt>
+          <dd id="streamIdLabel">-</dd>
+        </div>
+        <div class="status-item">
+          <dt>Signaling</dt>
+          <dd id="signalingStatus">disconnected</dd>
+        </div>
+        <div class="status-item">
+          <dt>Peer connection</dt>
+          <dd id="peerStatus">idle</dd>
+        </div>
+      </dl>
+      <section class="preview">
+        <video id="preview" autoplay playsinline muted></video>
+      </section>
+      <div class="controls">
+        <button type="button" id="startButton">Start publishing</button>
+        <button type="button" id="stopButton" disabled>Stop</button>
+      </div>
+    </main>
+    <script type="module">
+      const params = new URLSearchParams(window.location.search);
+      const streamId = params.get('streamId') || 'mavic-stream';
+      const signalingHost = params.get('signalingHost') || window.location.hostname;
+      const signalingPort = params.get('signalingPort') || '8080';
+      const isSecurePage = window.location.protocol === 'https:';
+      const signalingProtocol = params.get('signalingProtocol') || (isSecurePage ? 'wss' : 'ws');
+      const signalingPortSegment = signalingPort ? `:${signalingPort}` : '';
+      const signalingUrl = `${signalingProtocol}://${signalingHost}${signalingPortSegment}/ws?role=publisher&streamId=${encodeURIComponent(
+        streamId,
+      )}`;
+
+      const streamIdLabel = document.getElementById('streamIdLabel');
+      const signalingStatusLabel = document.getElementById('signalingStatus');
+      const peerStatusLabel = document.getElementById('peerStatus');
+      const preview = document.getElementById('preview');
+      const startButton = document.getElementById('startButton');
+      const stopButton = document.getElementById('stopButton');
+
+      streamIdLabel.textContent = streamId;
+
+      const peerConnection = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      });
+
+      let localStream = null;
+      let offerSent = false;
+      const pendingSignals = [];
+      const queuedRemoteCandidates = [];
+
+      const signalingSocket = new WebSocket(signalingUrl);
+
+      function setSignalingStatus(text) {
+        signalingStatusLabel.textContent = text;
+      }
+
+      function setPeerStatus(text) {
+        peerStatusLabel.textContent = text;
+      }
+
+      function updatePeerStatusFromState() {
+        setPeerStatus(peerConnection.connectionState || 'unknown');
+      }
+
+      function sendSignalingMessage(payload) {
+        const message = JSON.stringify(payload);
+        if (signalingSocket.readyState === WebSocket.OPEN) {
+          signalingSocket.send(message);
+        } else {
+          pendingSignals.push(message);
+        }
+      }
+
+      async function handleRemoteDescription(message) {
+        const description = new RTCSessionDescription({
+          type: message.sdpType || 'answer',
+          sdp: message.sdp,
+        });
+        await peerConnection.setRemoteDescription(description);
+        while (queuedRemoteCandidates.length > 0) {
+          const candidateInit = queuedRemoteCandidates.shift();
+          try {
+            await peerConnection.addIceCandidate(candidateInit);
+          } catch (error) {
+            console.error('Failed to add queued ICE candidate', error, candidateInit);
+          }
+        }
+      }
+
+      async function handleRemoteCandidate(message) {
+        const candidateInit = {
+          candidate: message.candidate,
+          sdpMid: message.sdpMid ?? null,
+          sdpMLineIndex: message.sdpMLineIndex ?? null,
+        };
+        if (!candidateInit.candidate) {
+          // Signal end-of-candidates after the answer is applied.
+          if (peerConnection.remoteDescription) {
+            try {
+              await peerConnection.addIceCandidate(null);
+            } catch (error) {
+              console.error('Failed to add end-of-candidates marker', error);
+            }
+          } else {
+            queuedRemoteCandidates.push(null);
+          }
+          return;
+        }
+        if (peerConnection.remoteDescription) {
+          try {
+            await peerConnection.addIceCandidate(candidateInit);
+          } catch (error) {
+            console.error('Failed to add ICE candidate', error, candidateInit);
+          }
+        } else {
+          queuedRemoteCandidates.push(candidateInit);
+        }
+      }
+
+      async function negotiateIfPossible() {
+        if (!localStream || offerSent) {
+          return;
+        }
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        sendSignalingMessage({ type: 'sdp', sdpType: offer.type, sdp: offer.sdp });
+        offerSent = true;
+      }
+
+      function setErrorStatus(prefix, detail) {
+        const suffix = typeof detail === 'string' && detail.trim().length > 0 ? `: ${detail.trim()}` : '';
+        setSignalingStatus(`${prefix}${suffix}`);
+      }
+
+      signalingSocket.addEventListener('open', () => {
+        setSignalingStatus('connected');
+        while (pendingSignals.length > 0) {
+          const message = pendingSignals.shift();
+          signalingSocket.send(message);
+        }
+        negotiateIfPossible().catch((error) => {
+          console.error('Failed to negotiate after socket open', error);
+          setErrorStatus('error', error.message);
+        });
+      });
+
+      signalingSocket.addEventListener('close', (event) => {
+        const reason = event.reason ? ` (${event.reason})` : '';
+        setSignalingStatus(`disconnected${reason}`);
+      });
+
+      signalingSocket.addEventListener('error', () => {
+        setErrorStatus('error', 'signaling socket');
+      });
+
+      signalingSocket.addEventListener('message', async (event) => {
+        let message;
+        try {
+          message = JSON.parse(event.data);
+        } catch (error) {
+          console.error('Failed to parse signaling message', error, event.data);
+          if (typeof event.data === 'string' && event.data.trim().length > 0) {
+            setErrorStatus('error', event.data.trim());
+          }
+          return;
+        }
+
+        if (message.error) {
+          console.error('Received signaling error', message);
+          const details = [message.code, message.error]
+            .map((part) => (typeof part === 'string' ? part.trim() : ''))
+            .filter(Boolean)
+            .join(' ');
+          setErrorStatus('error', details);
+          return;
+        }
+
+        if (message.type === 'sdp' && message.sdp) {
+          try {
+            await handleRemoteDescription(message);
+          } catch (error) {
+            console.error('Failed to apply remote description', error, message);
+            setErrorStatus('error', error.message);
+          }
+        } else if (message.type === 'ice' && message.candidate !== undefined) {
+          try {
+            await handleRemoteCandidate(message);
+          } catch (error) {
+            console.error('Failed to process ICE candidate', error, message);
+          }
+        }
+      });
+
+      peerConnection.addEventListener('icecandidate', (event) => {
+        if (event.candidate) {
+          sendSignalingMessage({
+            type: 'ice',
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+          });
+        } else {
+          sendSignalingMessage({ type: 'ice', candidate: '' });
+        }
+      });
+
+      peerConnection.addEventListener('connectionstatechange', updatePeerStatusFromState);
+      updatePeerStatusFromState();
+
+      async function startPublishing() {
+        if (localStream) {
+          return;
+        }
+        try {
+          localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+        } catch (error) {
+          console.error('Failed to capture display media', error);
+          setErrorStatus('error', error.message);
+          return;
+        }
+        offerSent = false;
+        queuedRemoteCandidates.length = 0;
+        preview.srcObject = localStream;
+        localStream.getTracks().forEach((track) => {
+          peerConnection.addTrack(track, localStream);
+        });
+        startButton.disabled = true;
+        stopButton.disabled = false;
+        setPeerStatus('negotiating');
+        negotiateIfPossible().catch((error) => {
+          console.error('Failed to negotiate after starting capture', error);
+          setErrorStatus('error', error.message);
+        });
+      }
+
+      function stopPublishing() {
+        if (!localStream) {
+          return;
+        }
+        localStream.getTracks().forEach((track) => track.stop());
+        preview.srcObject = null;
+        localStream = null;
+        offerSent = false;
+        queuedRemoteCandidates.length = 0;
+        peerConnection.getSenders().forEach((sender) => {
+          try {
+            peerConnection.removeTrack(sender);
+          } catch (error) {
+            console.warn('Failed to remove sender', error);
+          }
+        });
+        setPeerStatus('stopped');
+        startButton.disabled = false;
+        stopButton.disabled = true;
+      }
+
+      startButton.addEventListener('click', () => {
+        startPublishing().catch((error) => {
+          console.error('Unexpected failure while starting publishing', error);
+          setErrorStatus('error', error.message);
+        });
+      });
+
+      stopButton.addEventListener('click', () => {
+        stopPublishing();
+      });
+
+      window.addEventListener('beforeunload', () => {
+        signalingSocket.close();
+        peerConnection.close();
+        if (localStream) {
+          localStream.getTracks().forEach((track) => track.stop());
+        }
+      });
+    </script>
+  </body>
+</html>
