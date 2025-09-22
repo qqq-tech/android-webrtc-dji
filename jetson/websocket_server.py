@@ -5,11 +5,22 @@ import asyncio
 import http
 import json
 import mimetypes
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Optional, Set, Union
+from typing import Any, Optional, Set, Union
 
 import websockets
 from websockets.server import WebSocketServer, WebSocketServerProtocol
+
+try:  # websockets >= 12 exposes an explicit HTTP response type
+    from websockets.datastructures import Headers as WebsocketsHeaders
+except Exception:  # pragma: no cover - optional dependency across versions
+    WebsocketsHeaders = None
+
+try:
+    from websockets.http import Response as WebsocketsResponse
+except Exception:  # pragma: no cover - optional dependency across versions
+    WebsocketsResponse = None
 
 
 class DetectionBroadcaster:
@@ -73,13 +84,15 @@ class DetectionBroadcaster:
         except Exception:
             self._clients.discard(websocket)
 
-    async def _process_http_request(self, path: str, request_headers):
-        upgrade_header = request_headers.get("Upgrade", "")
+    async def _process_http_request(self, path_or_connection, request_headers=None):
+        request_path, request_headers = self._normalise_http_request(path_or_connection, request_headers)
+
+        upgrade_header = self._get_header_value(request_headers, "Upgrade")
         if "websocket" in upgrade_header.lower():
             return None
 
         if self._static_dir is not None:
-            file_path = self._resolve_static_path(path)
+            file_path = self._resolve_static_path(request_path)
             if file_path is not None:
                 body = file_path.read_bytes()
                 content_type, _ = mimetypes.guess_type(str(file_path))
@@ -88,7 +101,7 @@ class DetectionBroadcaster:
                     ("Content-Length", str(len(body))),
                     ("Cache-Control", "no-cache"),
                 ]
-                return http.HTTPStatus.OK, headers, body
+                return self._build_http_response(http.HTTPStatus.OK, headers, body)
 
         body = (
             "Detection broadcaster is running. Connect with a WebSocket client at "
@@ -99,7 +112,7 @@ class DetectionBroadcaster:
             ("Content-Length", str(len(body))),
             ("Cache-Control", "no-cache"),
         ]
-        return http.HTTPStatus.OK, headers, body
+        return self._build_http_response(http.HTTPStatus.OK, headers, body)
 
     def _resolve_static_path(self, request_path: str) -> Optional[Path]:
         if self._static_dir is None:
@@ -120,4 +133,107 @@ class DetectionBroadcaster:
         if candidate.is_file():
             return candidate
         return None
+
+    def _normalise_http_request(self, path_or_connection, request_headers) -> tuple[str, Any]:
+        """Return a ``(path, headers)`` tuple that works across websockets versions."""
+
+        # websockets >= 12 passes the ServerConnection instance as the first argument.
+        if hasattr(path_or_connection, "path") and hasattr(path_or_connection, "request_headers"):
+            connection = path_or_connection
+            request_path = getattr(connection, "path", None)
+            if request_headers is None:
+                request_headers = getattr(connection, "request_headers", None)
+        else:
+            request_path = path_or_connection
+
+        # When only the connection is provided fall back to attributes available on the
+        # headers-like object if it exposes the request path.
+        if request_path is None and hasattr(request_headers, "path"):
+            request_path = getattr(request_headers, "path")
+
+        if isinstance(request_path, bytes):
+            request_path = request_path.decode("utf-8", "ignore")
+        elif request_path is None:
+            request_path = "/"
+        elif not isinstance(request_path, str):
+            request_path = str(request_path)
+
+        return request_path, request_headers
+
+    def _get_header_value(self, headers_like, name: str) -> str:
+        """Best-effort retrieval of a HTTP header from websockets request objects."""
+
+        if headers_like is None:
+            return ""
+
+        # websockets >= 11 passes a Request object with a ``headers`` attribute.
+        if hasattr(headers_like, "headers"):
+            return self._get_header_value(headers_like.headers, name)
+
+        # Headers behave like a Mapping but the keys can be case-sensitive depending
+        # on the implementation, so we normalise while searching.
+        if isinstance(headers_like, Mapping):
+            for key in (name, name.lower(), name.upper()):
+                value = headers_like.get(key)
+                if value:
+                    return value
+
+        items = getattr(headers_like, "items", None)
+        if callable(items):
+            for key, value in items():
+                if isinstance(key, str) and key.lower() == name.lower() and value:
+                    return value
+
+        # websockets.datastructures.Headers implements ``get_all`` for case-insensitive
+        # lookups. Use it if available before falling back to an iterable search.
+        get_all = getattr(headers_like, "get_all", None)
+        if callable(get_all):
+            values = get_all(name)
+            if values:
+                return values[0]
+
+        if hasattr(headers_like, "get"):
+            value = headers_like.get(name)
+            if value:
+                return value
+
+        if isinstance(headers_like, Iterable):
+            for item in headers_like:
+                if isinstance(item, tuple):
+                    if not item:
+                        continue
+                    key = item[0]
+                    value = item[1] if len(item) > 1 else ""
+                else:
+                    key = item
+                    value = getattr(headers_like, "__getitem__", lambda *_: "")(item)
+                if isinstance(key, str) and key.lower() == name.lower() and value:
+                    return value
+
+        return ""
+
+    def _build_http_response(self, status, headers, body):
+        """Return a websockets-compatible HTTP response object or tuple."""
+
+        status_code = int(status)
+        header_items = []
+        for key, value in headers or []:
+            if key is None:
+                continue
+            header_items.append((str(key), "" if value is None else str(value)))
+
+        if WebsocketsResponse is not None:
+            headers_value = header_items
+            if WebsocketsHeaders is not None:
+                headers_obj = WebsocketsHeaders()
+                for key, value in header_items:
+                    headers_obj[key] = value
+                headers_value = headers_obj
+            return WebsocketsResponse(
+                status_code=status_code,
+                headers=headers_value,
+                body=body,
+            )
+
+        return status_code, header_items, body
 

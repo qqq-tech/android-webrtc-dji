@@ -64,15 +64,23 @@
     canvas {
       width: 100%;
       height: auto;
-      background: #000;
       border-radius: 8px;
+      display: block;
     }
 
-    .overlay-container {
+    .video-container {
       position: relative;
       display: flex;
       justify-content: center;
       align-items: center;
+      background: #020617;
+      border-radius: 8px;
+      overflow: hidden;
+      min-height: 220px;
+    }
+
+    .overlay-container {
+      position: relative;
     }
 
     .overlay-container video {
@@ -85,6 +93,27 @@
       inset: 0;
       z-index: 2;
       pointer-events: none;
+    }
+
+    .video-placeholder {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      font-weight: 600;
+      letter-spacing: 0.35em;
+      color: rgba(148, 163, 184, 0.85);
+      text-transform: uppercase;
+      background: linear-gradient(135deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.6));
+      z-index: 3;
+      transition: opacity 160ms ease-in-out, visibility 160ms ease-in-out;
+    }
+
+    .video-placeholder.hidden {
+      opacity: 0;
+      visibility: hidden;
     }
 
       footer {
@@ -267,13 +296,33 @@
     <main>
       <section class="panel">
         <h2>Camera Feed</h2>
-        <video id="rawVideo" autoplay playsinline muted></video>
+        <div class="video-container">
+          <video id="rawVideo" autoplay playsinline muted></video>
+          <div
+            class="video-placeholder"
+            id="rawPlaceholder"
+            role="status"
+            aria-live="polite"
+            aria-hidden="false"
+          >
+            NO DATA
+          </div>
+        </div>
       </section>
     <section class="panel">
       <h2>YOLO Overlay</h2>
-      <div class="overlay-container">
+      <div class="video-container overlay-container">
         <video id="overlayVideo" autoplay playsinline muted></video>
         <canvas id="overlayCanvas"></canvas>
+        <div
+          class="video-placeholder"
+          id="overlayPlaceholder"
+          role="status"
+          aria-live="polite"
+          aria-hidden="false"
+        >
+          NO DATA
+        </div>
       </div>
     </section>
   </main>

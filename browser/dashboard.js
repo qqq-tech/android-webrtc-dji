@@ -23,6 +23,8 @@ const rawVideo = document.getElementById('rawVideo');
 const overlayVideo = document.getElementById('overlayVideo');
 const overlayCanvas = document.getElementById('overlayCanvas');
 const overlayCtx = overlayCanvas.getContext('2d');
+const rawPlaceholder = document.getElementById('rawPlaceholder');
+const overlayPlaceholder = document.getElementById('overlayPlaceholder');
 const connectionStatus = document.getElementById('connectionStatus');
 const detectionStatus = document.getElementById('detectionStatus');
 const detectionTimestamp = document.getElementById('detectionTimestamp');
@@ -48,6 +50,9 @@ let routePolyline = null;
 let waypointMarkers = [];
 let waypoints = [];
 let gcsSocket = null;
+let rawVideoAvailable = false;
+let overlayVideoAvailable = false;
+const trackedVideoTracks = new WeakSet();
 
 const pc = new RTCPeerConnection({
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -71,11 +76,25 @@ pc.ontrack = (event) => {
   if (overlayVideo.srcObject !== stream) {
     overlayVideo.srcObject = stream;
   }
+  updateVideoAvailabilityFromStream(stream);
+  stream.getVideoTracks().forEach((track) => {
+    if (trackedVideoTracks.has(track)) {
+      return;
+    }
+    trackedVideoTracks.add(track);
+    track.addEventListener('ended', () => updateVideoAvailabilityFromStream(stream));
+    track.addEventListener('mute', () => updateVideoAvailabilityFromStream(stream));
+    track.addEventListener('unmute', () => updateVideoAvailabilityFromStream(stream));
+  });
   connectionStatus.textContent = 'media-connected';
 };
 
 pc.onconnectionstatechange = () => {
   connectionStatus.textContent = pc.connectionState;
+  if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+    setRawVideoAvailability(false);
+    setOverlayVideoAvailability(false);
+  }
 };
 
 pc.onicecandidate = (event) => {
@@ -150,6 +169,11 @@ detectionSocket.addEventListener('message', (event) => {
 detectionSocket.addEventListener('close', () => {
   detectionTimestamp.textContent = 'connection lost';
 });
+
+rawVideo.addEventListener('loadeddata', () => setRawVideoAvailability(true));
+rawVideo.addEventListener('emptied', () => setRawVideoAvailability(false));
+overlayVideo.addEventListener('loadeddata', () => setOverlayVideoAvailability(true));
+overlayVideo.addEventListener('emptied', () => setOverlayVideoAvailability(false));
 
 function renderOverlay() {
   requestAnimationFrame(renderOverlay);
@@ -226,6 +250,46 @@ function clampToRange(value, min, max) {
 }
 
 renderOverlay();
+
+function streamHasLiveVideoTrack(stream) {
+  if (!stream || typeof stream.getVideoTracks !== 'function') {
+    return false;
+  }
+  if (typeof MediaStream !== 'undefined' && !(stream instanceof MediaStream)) {
+    return false;
+  }
+  return stream.getVideoTracks().some((track) => track.readyState === 'live' && !track.muted);
+}
+
+function updateVideoAvailabilityFromStream(stream) {
+  const available = streamHasLiveVideoTrack(stream);
+  setRawVideoAvailability(available);
+  setOverlayVideoAvailability(available);
+}
+
+function togglePlaceholder(placeholder, shouldShow) {
+  if (!placeholder) {
+    return;
+  }
+  placeholder.classList.toggle('hidden', !shouldShow);
+  placeholder.setAttribute('aria-hidden', String(!shouldShow));
+}
+
+function setRawVideoAvailability(isAvailable) {
+  if (rawVideoAvailable === isAvailable) {
+    return;
+  }
+  rawVideoAvailable = isAvailable;
+  togglePlaceholder(rawPlaceholder, !isAvailable);
+}
+
+function setOverlayVideoAvailability(isAvailable) {
+  if (overlayVideoAvailable === isAvailable) {
+    return;
+  }
+  overlayVideoAvailable = isAvailable;
+  togglePlaceholder(overlayPlaceholder, !isAvailable);
+}
 
 async function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) {
