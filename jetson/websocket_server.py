@@ -7,6 +7,7 @@ import asyncio
 import http
 import json
 import mimetypes
+from urllib.parse import unquote, urlsplit
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Optional, Set, Union
@@ -117,7 +118,9 @@ class DetectionBroadcaster:
             self._clients.discard(websocket)
 
     async def _process_http_request(self, path_or_connection, request_headers=None):
-        request_path, request_headers = self._normalise_http_request(path_or_connection, request_headers)
+        request_path, request_headers = self._normalise_http_request(
+            path_or_connection, request_headers
+        )
 
         upgrade_header = self._get_header_value(request_headers, "Upgrade")
         if "websocket" in upgrade_header.lower():
@@ -151,14 +154,21 @@ class DetectionBroadcaster:
             return None
 
         if request_path in {"", "/"}:
-            candidate = self._static_dir / "dashboard.html"
-        else:
-            relative = request_path.lstrip("/")
-            candidate = (self._static_dir / relative).resolve()
-            try:
-                candidate.relative_to(self._static_dir)
-            except ValueError:
-                return None
+            # Serve a default landing page for root requests, preferring a
+            # conventional ``index.html`` before falling back to the legacy
+            # ``dashboard.html`` used by earlier builds.
+            for default_name in ("index.html", "dashboard.html"):
+                candidate = self._static_dir / default_name
+                if candidate.is_file():
+                    return candidate
+            return None
+
+        relative = request_path.lstrip("/")
+        candidate = (self._static_dir / relative).resolve()
+        try:
+            candidate.relative_to(self._static_dir)
+        except ValueError:
+            return None
 
         if candidate.is_dir():
             candidate = candidate / "index.html"
@@ -183,14 +193,63 @@ class DetectionBroadcaster:
         if request_path is None and hasattr(request_headers, "path"):
             request_path = getattr(request_headers, "path")
 
-        if isinstance(request_path, bytes):
-            request_path = request_path.decode("utf-8", "ignore")
-        elif request_path is None:
-            request_path = "/"
-        elif not isinstance(request_path, str):
-            request_path = str(request_path)
+        request_path = self._coerce_request_path(request_path)
 
         return request_path, request_headers
+
+    def _coerce_request_path(self, request_path: Any) -> str:
+        """Best-effort conversion of ``request_path`` to a normalised string."""
+
+        visited: set[int] = set()
+        value = request_path
+
+        while value is not None and id(value) not in visited:
+            visited.add(id(value))
+
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", "ignore")
+                break
+
+            if isinstance(value, str):
+                break
+
+            raw_path = getattr(value, "raw_path", None)
+            if raw_path is not None and raw_path is not value:
+                value = raw_path
+                continue
+
+            nested_path = getattr(value, "path", None)
+            if nested_path is not None and nested_path is not value:
+                value = nested_path
+                continue
+
+            if callable(value):
+                try:
+                    value = value()
+                    continue
+                except TypeError:
+                    pass
+
+            try:
+                value = str(value)
+            except Exception:
+                value = None
+            break
+
+        if value is None:
+            return "/"
+
+        if not isinstance(value, str):
+            value = str(value)
+
+        parsed = urlsplit(value)
+        path_value = parsed.path or "/"
+        normalised = unquote(path_value)
+
+        if not normalised.startswith("/"):
+            normalised = "/" + normalised
+
+        return normalised
 
     def _get_header_value(self, headers_like, name: str) -> str:
         """Best-effort retrieval of a HTTP header from websockets request objects."""
