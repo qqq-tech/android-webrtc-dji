@@ -6,6 +6,7 @@ import inspect
 import asyncio
 import http
 import json
+import logging
 import mimetypes
 from urllib.parse import unquote, urlsplit
 from collections.abc import Iterable, Mapping
@@ -56,6 +57,25 @@ for _candidate in ("reason_phrase", "reason"):
         break
 
 
+class _StaticRequestSilencingLogger:
+    """Filter websockets info logs for successful HTTP responses."""
+
+    def __init__(self, base_logger: logging.Logger):
+        self._base_logger = base_logger
+
+    def info(self, message: str, *args, **kwargs):
+        if (
+            message == "connection rejected (%d %s)"
+            and args
+            and args[0] == http.HTTPStatus.OK.value
+        ):
+            return
+        self._base_logger.info(message, *args, **kwargs)
+
+    def __getattr__(self, name):  # pragma: no cover - passthrough helper
+        return getattr(self._base_logger, name)
+
+
 class DetectionBroadcaster:
     """Simple WebSocket pub-sub helper for detection results."""
 
@@ -80,11 +100,14 @@ class DetectionBroadcaster:
     async def start(self) -> None:
         if self._server is not None:
             return
+        base_logger = getattr(websockets.server, "logger", logging.getLogger("websockets.server"))
+        websocket_logger = _StaticRequestSilencingLogger(base_logger)
         self._server = await websockets.serve(
             self._handler,
             self._host,
             self._port,
             process_request=self._process_http_request,
+            logger=websocket_logger,
         )
 
     async def stop(self) -> None:
