@@ -2,92 +2,131 @@ package com.drone.djiwebrtc.core;
 
 import android.content.Context;
 import android.os.Handler;
+import android.text.TextUtils;
 import android.util.Log;
+
+import androidx.annotation.Nullable;
+
+import com.drone.djiwebrtc.network.PionSignalingClient;
+import com.drone.djiwebrtc.network.SocketConnection;
+import com.drone.djiwebrtc.util.PionConfigStore;
 
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.webrtc.VideoCapturer;
 
-import java.util.Hashtable;
+import java.util.Locale;
 
 import dji.sdk.sdkmanager.DJISDKManager;
+
 import static io.socket.client.Socket.EVENT_DISCONNECT;
 
-import com.drone.djiwebrtc.network.SocketConnection;
-import com.drone.djiwebrtc.core.WebRTCClient;
-import com.drone.djiwebrtc.core.WebRTCMediaOptions;
-
 /**
- * The DJIStreamer class will manage all ongoing P2P connections
- * with clients, who desire videofeed.
+ * The DJIStreamer class manages the Android -> Pion WebRTC publication and bridges auxiliary
+ * control channels (GCS commands, raw TCP streaming requests).
  */
 public class DJIStreamer {
     private static final String TAG = "DJIStreamer";
 
-    private String droneDisplayName = "";
     private final Context context;
-    private final Hashtable<String, WebRTCClient> ongoingConnections = new Hashtable<>();
-    private RawH264TcpStreamer rawTcpStreamer;
+    private final Handler mainHandler;
     private final GCSCommandHandler gcsCommandHandler;
+    private final PionConfigStore pionConfigStore;
+    private final String streamId;
+    private final PionSignalingClient signalingClient;
+
+    private RawH264TcpStreamer rawTcpStreamer;
+    private WebRTCClient webRtcClient;
+    private String droneDisplayName = "";
 
     public DJIStreamer(Context context){
-        this.droneDisplayName = DJISDKManager.getInstance().getProduct().getModel().getDisplayName();
         this.context = context;
+        this.mainHandler = new Handler(context.getMainLooper());
+        this.pionConfigStore = new PionConfigStore(context);
+        this.droneDisplayName = resolveDroneDisplayName();
+        this.streamId = resolveStreamId(pionConfigStore.getStreamId(), droneDisplayName);
 
         this.gcsCommandHandler = new GCSCommandHandler();
         this.gcsCommandHandler.startTelemetry();
 
+        String signalingUrl = pionConfigStore.getSignalingUrl();
+        this.signalingClient = new PionSignalingClient(signalingUrl, "publisher", streamId);
+        this.signalingClient.setListener(new PionSignalingClient.Listener() {
+            @Override
+            public void onOpen() {
+                mainHandler.post(DJIStreamer.this::ensureWebRtcClient);
+            }
+
+            @Override
+            public void onMessage(JSONObject message) {
+                mainHandler.post(() -> {
+                    if (webRtcClient == null) {
+                        Log.w(TAG, "Dropping signaling message before WebRTC client ready: " + message);
+                        return;
+                    }
+                    webRtcClient.handleWebRTCMessage(message);
+                });
+            }
+
+            @Override
+            public void onError(String description, @Nullable String code) {
+                Log.e(TAG, "Signaling error: " + description + (code != null ? " (" + code + ")" : ""));
+            }
+
+            @Override
+            public void onClosed() {
+                mainHandler.post(() -> {
+                    if (webRtcClient != null) {
+                        Log.d(TAG, "Signaling channel closed; resetting WebRTC client");
+                        webRtcClient = null;
+                    }
+                });
+            }
+        });
+        this.signalingClient.connect();
+
         setupSocketEvent();
     }
 
-    private WebRTCClient getClient(String socketID){
-        return ongoingConnections.getOrDefault(socketID, null);
-    }
-
-    private void removeClient(String socketID){
-        // TODO: Any other cleanup necessary?.. Let the client stop the VideoCapturer though.
-        ongoingConnections.remove(socketID);
-    }
-
-    private WebRTCClient addNewClient(String socketID){
-        VideoCapturer videoCapturer = new DJIVideoCapturer(droneDisplayName);
-        WebRTCClient client = new WebRTCClient(socketID, context, videoCapturer, new WebRTCMediaOptions());
-        client.setConnectionChangedListener(new WebRTCClient.PeerConnectionChangedListener() {
-            @Override
-            public void onDisconnected() {
-                removeClient(client.peerSocketID);
-                Log.d(TAG, "DJIStreamer has removed connection from table. Remaining active sessions: " + ongoingConnections.size());
+    private String resolveDroneDisplayName() {
+        try {
+            if (DJISDKManager.getInstance().getProduct() != null
+                    && DJISDKManager.getInstance().getProduct().getModel() != null) {
+                return DJISDKManager.getInstance().getProduct().getModel().getDisplayName();
             }
+        } catch (Exception e) {
+            Log.w(TAG, "Unable to determine drone model", e);
+        }
+        return "";
+    }
+
+    private String resolveStreamId(String configured, String fallbackName) {
+        if (!TextUtils.isEmpty(configured)) {
+            return configured;
+        }
+        if (TextUtils.isEmpty(fallbackName)) {
+            return "android-stream";
+        }
+        String normalised = fallbackName.trim().toLowerCase(Locale.US).replaceAll("[^a-z0-9-_]", "-");
+        return normalised.isEmpty() ? "android-stream" : normalised;
+    }
+
+    private void ensureWebRtcClient() {
+        if (webRtcClient != null) {
+            return;
+        }
+        VideoCapturer videoCapturer = new DJIVideoCapturer(droneDisplayName);
+        webRtcClient = new WebRTCClient(context, videoCapturer, new WebRTCMediaOptions(), signalingClient);
+        webRtcClient.setConnectionChangedListener(() -> {
+            Log.d(TAG, "Peer disconnected from stream " + streamId);
+            webRtcClient = null;
         });
-        ongoingConnections.put(socketID, client);
-        return client;
+        Log.i(TAG, "Publishing stream '" + streamId + "' via Pion relay");
     }
 
     private void setupSocketEvent(){
-        SocketConnection.getInstance().on("webrtc_msg", args -> {
-
-            Handler mainHandler = new Handler(context.getMainLooper());
-            Runnable myRunnable = new Runnable() {
-                @Override
-                public void run() {
-                    String peerSocketID = (String)args[0]; // The web-client sending a message
-                    Log.d(TAG, "Received WebRTCMessage: " + peerSocketID);
-
-                    WebRTCClient client = getClient(peerSocketID);
-
-                    if (client == null){
-                        // A new client wants to establish a P2P
-                        client = addNewClient(peerSocketID);
-                    }
-
-                    // Then just pass the message to the client
-                    JSONObject message = (JSONObject) args[1];
-                    client.handleWebRTCMessage(message);
-                }
-            };
-            mainHandler.post(myRunnable);
-        }).on("gcs_command", args -> {
-            Handler mainHandler = new Handler(context.getMainLooper());
+        SocketConnection connection = SocketConnection.getInstance();
+        connection.on("gcs_command", args -> {
             mainHandler.post(() -> {
                 if (args.length == 0) {
                     Log.w(TAG, "Received empty GCS command payload");
@@ -100,8 +139,8 @@ public class DJIStreamer {
                     emitError("gcs_command_ack", "Invalid command payload", "INVALID_COMMAND");
                 }
             });
-        }).on("raw_stream", args -> {
-            Handler mainHandler = new Handler(context.getMainLooper());
+        });
+        connection.on("raw_stream", args -> {
             mainHandler.post(() -> {
                 if (args.length == 0) {
                     emitError("raw_stream_ack", "Missing raw stream payload", "MISSING_PAYLOAD");
@@ -114,9 +153,8 @@ public class DJIStreamer {
                     emitError("raw_stream_ack", "Invalid raw stream payload", "INVALID_PAYLOAD");
                 }
             });
-        }).on(EVENT_DISCONNECT, args -> {
-            Log.d(TAG, "connectToSignallingServer: disconnect");
         });
+        connection.on(EVENT_DISCONNECT, args -> Log.d(TAG, "connectToSignallingServer: disconnect"));
     }
 
     private synchronized void handleRawStreamRequest(JSONObject payload) throws JSONException {

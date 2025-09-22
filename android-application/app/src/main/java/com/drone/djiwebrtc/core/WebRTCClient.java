@@ -22,7 +22,6 @@ import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
 
-import com.drone.djiwebrtc.network.SocketConnection;
 
 public class WebRTCClient {
     private static final String TAG = "WebRTCClient";
@@ -37,8 +36,7 @@ public class WebRTCClient {
     private PeerConnectionChangedListener connectionChangedListener;
     public void setConnectionChangedListener(PeerConnectionChangedListener connectionChangedListener) { this.connectionChangedListener = connectionChangedListener; }
 
-    // Peer variables of the client requesting a stream
-    public final String peerSocketID;
+    private final SignalingTransport signalingTransport;
 
     private static PeerConnectionFactory factory;
     private static PeerConnectionFactory getFactory(Context context){
@@ -48,11 +46,11 @@ public class WebRTCClient {
         return factory;
     }
 
-    public WebRTCClient(String peerSocketID, Context context, VideoCapturer videoCapturer, WebRTCMediaOptions options){
-        this.peerSocketID = peerSocketID;
+    public WebRTCClient(Context context, VideoCapturer videoCapturer, WebRTCMediaOptions options, SignalingTransport signalingTransport){
         this.context = context;
         this.options = options;
         this.videoCapturer = videoCapturer;
+        this.signalingTransport = signalingTransport;
 
         createVideoTrackFromVideoCapturer();
         initializePeerConnection();
@@ -138,8 +136,18 @@ public class WebRTCClient {
     }
 
     private void sendMessage(Object message) {
-        Log.d(TAG, "Emitting message to " + peerSocketID);
-        SocketConnection.getInstance().emit("webrtc_msg", peerSocketID, message);
+        if (!(message instanceof JSONObject)) {
+            Log.w(TAG, "Ignoring non-JSON signaling payload: " + message);
+            return;
+        }
+        if (signalingTransport == null) {
+            Log.w(TAG, "No signaling transport available, dropping message: " + message);
+            return;
+        }
+        if (!signalingTransport.isConnected()) {
+            Log.d(TAG, "Queueing signaling message until transport connects: " + message);
+        }
+        signalingTransport.send((JSONObject) message);
     }
 
     private void createVideoTrackFromVideoCapturer() {
