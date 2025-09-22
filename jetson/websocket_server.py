@@ -7,7 +7,6 @@ import asyncio
 import http
 import json
 import mimetypes
-from urllib.parse import unquote, urlsplit
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Optional, Set, Union
@@ -118,9 +117,7 @@ class DetectionBroadcaster:
             self._clients.discard(websocket)
 
     async def _process_http_request(self, path_or_connection, request_headers=None):
-        request_path, request_headers = self._normalise_http_request(
-            path_or_connection, request_headers
-        )
+        request_path, request_headers = self._normalise_http_request(path_or_connection, request_headers)
 
         upgrade_header = self._get_header_value(request_headers, "Upgrade")
         if "websocket" in upgrade_header.lower():
@@ -172,167 +169,28 @@ class DetectionBroadcaster:
     def _normalise_http_request(self, path_or_connection, request_headers) -> tuple[str, Any]:
         """Return a ``(path, headers)`` tuple that works across websockets versions."""
 
-        request_path_candidate = path_or_connection
-
-        connection = None
         # websockets >= 12 passes the ServerConnection instance as the first argument.
-        if hasattr(path_or_connection, "request_headers") and hasattr(
-            path_or_connection, "handshake"
-        ):
+        if hasattr(path_or_connection, "path") and hasattr(path_or_connection, "request_headers"):
             connection = path_or_connection
-        elif hasattr(path_or_connection, "path") and hasattr(
-            path_or_connection, "request_headers"
-        ):
-            connection = path_or_connection
-
-        if connection is not None:
+            request_path = getattr(connection, "path", None)
             if request_headers is None:
                 request_headers = getattr(connection, "request_headers", None)
-
-            # Prefer attributes that directly expose the HTTP target/path.
-            for attr in ("raw_path", "path", "target", "full_path"):
-                candidate = getattr(connection, attr, None)
-                if candidate:
-                    request_path_candidate = candidate
-                    break
-            else:
-                request = getattr(connection, "request", None)
-                if request is not None:
-                    for attr in ("raw_path", "path", "target", "uri", "full_path"):
-                        candidate = getattr(request, attr, None)
-                        if candidate:
-                            request_path_candidate = candidate
-                            break
+        else:
+            request_path = path_or_connection
 
         # When only the connection is provided fall back to attributes available on the
         # headers-like object if it exposes the request path.
-        if request_path_candidate is None and hasattr(request_headers, "path"):
-            request_path_candidate = getattr(request_headers, "path")
+        if request_path is None and hasattr(request_headers, "path"):
+            request_path = getattr(request_headers, "path")
 
-        request_path = self._coerce_request_path(request_path_candidate)
-
-        # ``request_path`` may include a query string or fragment when
-        # ``dashboard.html?streamId=...`` style URLs are used. Split the URL to
-        # ensure only the path portion is used for static file resolution and
-        # decode any percent-encoded characters.
-        split_path = urlsplit(request_path)
-        extracted_path = split_path.path
-
-        if not extracted_path:
-            extracted_path = self._extract_path_from_repr(request_path)
-
-        request_path = unquote(extracted_path or "/")
+        if isinstance(request_path, bytes):
+            request_path = request_path.decode("utf-8", "ignore")
+        elif request_path is None:
+            request_path = "/"
+        elif not isinstance(request_path, str):
+            request_path = str(request_path)
 
         return request_path, request_headers
-
-    def _coerce_request_path(self, raw_path: Any) -> str:
-        """Best-effort conversion of websockets request path wrappers to strings."""
-
-        seen: set[int] = set()
-        value: Any = raw_path
-
-        while True:
-            if id(value) in seen:
-                break
-            seen.add(id(value))
-
-            if value is None:
-                return "/"
-
-            if isinstance(value, str):
-                return value or "/"
-
-            if isinstance(value, bytes):
-                value = value.decode("utf-8", "ignore")
-                continue
-
-            fspath = getattr(value, "__fspath__", None)
-            if callable(fspath):
-                try:
-                    value = fspath()
-                    continue
-                except Exception:
-                    pass
-
-            if callable(value):
-                try:
-                    value = value()
-                    continue
-                except TypeError:
-                    pass
-
-            extracted = None
-            for attr in ("raw_path", "path", "target", "full_path"):
-                try:
-                    candidate = getattr(value, attr)
-                except Exception:
-                    continue
-                if candidate is None:
-                    continue
-                extracted = candidate
-                break
-
-            if extracted is None:
-                break
-
-            value = extracted
-
-        if isinstance(value, bytes):
-            value = value.decode("utf-8", "ignore")
-
-        if isinstance(value, str):
-            return value or "/"
-
-        if value is None:
-            return "/"
-
-        try:
-            text_value = str(value)
-        except Exception:
-            return "/"
-
-        return text_value or "/"
-
-    def _extract_path_from_repr(self, text: str) -> Optional[str]:
-        """Parse a path-like value from repr strings e.g. ``path='/index.html'``."""
-
-        if not text:
-            return None
-
-        markers = ("raw_path", "path", "target", "uri", "full_path")
-        for marker in markers:
-            token = f"{marker}="
-            index = text.find(token)
-            if index == -1:
-                continue
-
-            remainder = text[index + len(token) :]
-            if not remainder:
-                continue
-
-            remainder = remainder.lstrip()
-            if not remainder:
-                continue
-
-            quote = remainder[0]
-            if quote in {'"', "'"}:
-                end_index = remainder.find(quote, 1)
-                if end_index == -1:
-                    continue
-                candidate = remainder[1:end_index]
-            else:
-                end_index = len(remainder)
-                for terminator in (" ", ",", ")"):
-                    terminator_index = remainder.find(terminator)
-                    if terminator_index != -1:
-                        end_index = min(end_index, terminator_index)
-                candidate = remainder[:end_index]
-
-            candidate = candidate.strip()
-            if candidate:
-                return candidate
-
-        return None
 
     def _get_header_value(self, headers_like, name: str) -> str:
         """Best-effort retrieval of a HTTP header from websockets request objects."""
