@@ -136,13 +136,45 @@ public class PionSignalingClient extends WebSocketListener implements SignalingT
     }
 
     private static String buildRequestUrl(String baseUrl, String role, String streamId) {
-        Uri baseUri = Uri.parse(Objects.requireNonNull(baseUrl, "Base URL is null"));
+        Objects.requireNonNull(baseUrl, "Base URL is null");
+
+        Uri baseUri = Uri.parse(baseUrl);
+        if (baseUri.getScheme() == null) {
+            baseUri = Uri.parse("ws://" + baseUrl);
+        }
+
         Uri.Builder builder = baseUri.buildUpon();
+        String scheme = baseUri.getScheme();
+        if (scheme == null || scheme.isEmpty()) {
+            builder.scheme("ws");
+        } else if (scheme.equalsIgnoreCase("http")) {
+            builder.scheme("ws");
+        } else if (scheme.equalsIgnoreCase("https")) {
+            builder.scheme("wss");
+        } else if (!scheme.equalsIgnoreCase("ws") && !scheme.equalsIgnoreCase("wss")) {
+            builder.scheme("ws");
+        }
+
+        builder.encodedFragment(null);
         builder.clearQuery();
-        String path = baseUri.getPath();
-        if (path == null || path.isEmpty() || "/".equals(path)) {
+
+        builder.path("");
+        boolean appendedWs = false;
+        for (String segment : baseUri.getPathSegments()) {
+            if (segment == null || segment.isEmpty()) {
+                continue;
+            }
+            if ("socket.io".equals(segment)) {
+                appendedWs = false;
+                break;
+            }
+            builder.appendPath(segment);
+            appendedWs = "ws".equals(segment);
+        }
+        if (!appendedWs) {
             builder.appendPath("ws");
         }
+
         builder.appendQueryParameter("role", role);
         builder.appendQueryParameter("streamId", streamId);
         return builder.build().toString();
