@@ -31,18 +31,19 @@ var upgrader = websocket.Upgrader{
 }
 
 type signalMessage struct {
-	Type          string   `json:"type"`
-	SDP           string   `json:"sdp,omitempty"`
-	SDPType       string   `json:"sdpType,omitempty"`
-	Candidate     string   `json:"candidate,omitempty"`
-	SDPMid        string   `json:"sdpMid,omitempty"`
-	SDPMLineIndex *uint16  `json:"sdpMLineIndex,omitempty"`
-	Latitude      *float64 `json:"latitude,omitempty"`
-	Longitude     *float64 `json:"longitude,omitempty"`
-	Altitude      *float64 `json:"altitude,omitempty"`
-	Accuracy      *float64 `json:"accuracy,omitempty"`
-	Timestamp     *int64   `json:"timestamp,omitempty"`
-	Source        string   `json:"source,omitempty"`
+	Type          string          `json:"type"`
+	SDP           string          `json:"sdp,omitempty"`
+	SDPType       string          `json:"sdpType,omitempty"`
+	Candidate     string          `json:"candidate,omitempty"`
+	SDPMid        string          `json:"sdpMid,omitempty"`
+	SDPMLineIndex *uint16         `json:"sdpMLineIndex,omitempty"`
+	Latitude      *float64        `json:"latitude,omitempty"`
+	Longitude     *float64        `json:"longitude,omitempty"`
+	Altitude      *float64        `json:"altitude,omitempty"`
+	Accuracy      *float64        `json:"accuracy,omitempty"`
+	Timestamp     *int64          `json:"timestamp,omitempty"`
+	Source        string          `json:"source,omitempty"`
+	Payload       json.RawMessage `json:"payload,omitempty"`
 }
 
 type client struct {
@@ -277,6 +278,32 @@ func (c *client) handleSignal(msg signalMessage) error {
 			data.Timestamp = time.Now().UnixMilli()
 		}
 		c.stream.updateTelemetry(data)
+	case "gcs_command":
+		if c.role != "subscriber" {
+			return fmt.Errorf("gcs_command messages only accepted from subscribers")
+		}
+		if len(msg.Payload) == 0 {
+			return fmt.Errorf("gcs_command message missing payload")
+		}
+		return c.stream.forwardToPublisher(msg, c)
+	case "raw_stream":
+		if c.role != "subscriber" {
+			return fmt.Errorf("raw_stream messages only accepted from subscribers")
+		}
+		if len(msg.Payload) == 0 {
+			return fmt.Errorf("raw_stream message missing payload")
+		}
+		return c.stream.forwardToPublisher(msg, c)
+	case "gcs_command_ack":
+		if c.role != "publisher" {
+			return fmt.Errorf("gcs_command_ack messages only accepted from publishers")
+		}
+		return c.stream.broadcastToSubscribers(msg, c)
+	case "raw_stream_ack":
+		if c.role != "publisher" {
+			return fmt.Errorf("raw_stream_ack messages only accepted from publishers")
+		}
+		return c.stream.broadcastToSubscribers(msg, c)
 	default:
 		return fmt.Errorf("unsupported signal type: %s", msg.Type)
 	}
@@ -544,6 +571,53 @@ func (s *stream) updateTelemetry(data telemetryData) {
 			log.Printf("failed to deliver telemetry to subscriber: %v", err)
 		}
 	}
+}
+
+func (s *stream) forwardToPublisher(msg signalMessage, sender *client) error {
+	if msg.Source == "" && sender != nil {
+		msg.Source = sender.role
+	}
+	s.mu.Lock()
+	publisher := s.publisher
+	s.mu.Unlock()
+	if publisher == nil {
+		return fmt.Errorf("publisher not connected")
+	}
+	return publisher.sendSignal(msg)
+}
+
+func (s *stream) broadcastToSubscribers(msg signalMessage, sender *client) error {
+	if msg.Source == "" && sender != nil {
+		msg.Source = sender.role
+	}
+	s.mu.Lock()
+	recipients := make([]*client, 0, len(s.subscribers)+len(s.pending))
+	for subscriber := range s.subscribers {
+		if subscriber != sender {
+			recipients = append(recipients, subscriber)
+		}
+	}
+	for _, pending := range s.pending {
+		if pending != sender {
+			recipients = append(recipients, pending)
+		}
+	}
+	s.mu.Unlock()
+
+	if len(recipients) == 0 {
+		return nil
+	}
+
+	var firstErr error
+	for _, subscriber := range recipients {
+		if err := subscriber.sendSignal(msg); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			log.Printf("failed to deliver control message to subscriber: %v", err)
+		}
+	}
+	return firstErr
 }
 
 func (data telemetryData) toSignalMessage() signalMessage {

@@ -34,7 +34,8 @@ import dji.common.mission.waypoint.WaypointMissionFlightPathMode;
 import dji.common.mission.waypoint.WaypointMissionGotoWaypointMode;
 import dji.common.mission.waypoint.WaypointMissionHeadingMode;
 
-import com.drone.djiwebrtc.network.SocketConnection;
+import com.drone.djiwebrtc.core.SignalingMessageBuilder;
+import com.drone.djiwebrtc.core.SignalingTransport;
 
 /**
  * Handles commands coming from the ground control station client and pushes telemetry updates
@@ -43,13 +44,15 @@ import com.drone.djiwebrtc.network.SocketConnection;
 public class GCSCommandHandler {
     private static final String TAG = "GCSCommandHandler";
 
+    private final SignalingTransport signalingTransport;
     private FlightController flightController;
     private Gimbal gimbal;
     private boolean virtualStickInitialized = false;
     private WaypointMissionOperator waypointMissionOperator;
     private GimbalState latestGimbalState; // 최근 짐벌 상태를 저장할 변수
 
-    public GCSCommandHandler() {
+    public GCSCommandHandler(SignalingTransport signalingTransport) {
+        this.signalingTransport = signalingTransport;
         refreshProductHandles();
     }
 
@@ -80,6 +83,17 @@ public class GCSCommandHandler {
         }
         // 짐벌 상태 업데이트 시작
         startGimbalStateUpdates();
+    }
+
+    public void stopTelemetry() {
+        FlightController controller = getFlightController();
+        if (controller != null) {
+            controller.setStateCallback(null);
+        }
+        Gimbal currentGimbal = getGimbal();
+        if (currentGimbal != null) {
+            currentGimbal.setStateCallback(null);
+        }
     }
 
     public void handleCommand(JSONObject command) throws JSONException {
@@ -303,53 +317,64 @@ public class GCSCommandHandler {
     }
 
     private void emitTelemetry(FlightControllerState state) {
-        // FlightControllerState가 null이어도 gimbal telemetry는 보낼 수 있도록 수정
-        // if (state == null) {
-        //     return;
-        // }
+        if (signalingTransport == null) {
+            return;
+        }
         try {
-            JSONObject payload = new JSONObject();
-            payload.put("timestamp", System.currentTimeMillis());
+            LocationCoordinate3D location = state != null ? state.getAircraftLocation() : null;
+            if (location == null) {
+                return;
+            }
 
+            double latitude = location.getLatitude();
+            double longitude = location.getLongitude();
+            double altitude = location.getAltitude();
+
+            if (Double.isNaN(latitude) || Double.isNaN(longitude)) {
+                return;
+            }
+
+            float accuracy = Float.NaN;
+            long timestamp = System.currentTimeMillis();
+            JSONObject message = SignalingMessageBuilder.buildTelemetryMessage(
+                    latitude,
+                    longitude,
+                    altitude,
+                    accuracy,
+                    timestamp,
+                    "drone"
+            );
+
+            JSONObject extras = new JSONObject();
             if (state != null) {
-                payload.put("frame_id", state.getFlightTimeInSeconds());
+                extras.put("frame_id", state.getFlightTimeInSeconds());
                 FlightMode flightMode = state.getFlightMode();
                 if (flightMode != null) {
-                    payload.put("flight_mode", flightMode.name());
+                    extras.put("flight_mode", flightMode.name());
                 }
-                payload.put("satellites", state.getSatelliteCount());
-                payload.put("heading", state.getAircraftHeadDirection());
-
-                LocationCoordinate3D location = state.getAircraftLocation();
-                if (location != null) {
-                    JSONObject loc = new JSONObject();
-                    loc.put("latitude", location.getLatitude());
-                    loc.put("longitude", location.getLongitude());
-                    loc.put("altitude", location.getAltitude());
-                    payload.put("location", loc);
-                }
+                extras.put("satellites", state.getSatelliteCount());
+                extras.put("heading", state.getAircraftHeadDirection());
 
                 JSONObject velocity = new JSONObject();
                 velocity.put("x", state.getVelocityX());
                 velocity.put("y", state.getVelocityY());
                 velocity.put("z", state.getVelocityZ());
-                payload.put("velocity", velocity);
+                extras.put("velocity", velocity);
             }
 
-            // 저장된 최신 짐벌 상태 사용
             if (this.latestGimbalState != null) {
                 JSONObject gimbalJson = new JSONObject();
                 gimbalJson.put("pitch", this.latestGimbalState.getAttitudeInDegrees().getPitch());
                 gimbalJson.put("roll", this.latestGimbalState.getAttitudeInDegrees().getRoll());
                 gimbalJson.put("yaw", this.latestGimbalState.getAttitudeInDegrees().getYaw());
-                // 필요에 따라 gimbalState.getMode().name() 등 다른 정보 추가
-                payload.put("gimbal", gimbalJson);
+                extras.put("gimbal", gimbalJson);
             }
 
-            // payload에 내용이 있을 때만 emit
-            if (payload.length() > 1) { // timestamp는 항상 있으므로 1 초과
-                SocketConnection.getInstance().emit("gcs_telemetry", payload);
+            if (extras.length() > 0) {
+                message.put("payload", extras);
             }
+
+            signalingTransport.send(message);
         } catch (JSONException e) {
             Log.e(TAG, "Failed to emit telemetry", e);
         }
@@ -363,7 +388,7 @@ public class GCSCommandHandler {
             if (data != null) {
                 response.put("data", data);
             }
-            SocketConnection.getInstance().emit("gcs_command_ack", response);
+            sendEnvelope("gcs_command_ack", response);
         } catch (JSONException e) {
             Log.e(TAG, "Failed to emit command ack", e);
         }
@@ -375,7 +400,7 @@ public class GCSCommandHandler {
             error.put("action", action);
             error.put("error", description);
             error.put("code", code);
-            SocketConnection.getInstance().emit("gcs_command_ack", error);
+            sendEnvelope("gcs_command_ack", error);
         } catch (JSONException e) {
             Log.e(TAG, "Failed to emit command error", e);
         }
@@ -422,5 +447,22 @@ public class GCSCommandHandler {
 
     private double clamp(double value, double min, double max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private void sendEnvelope(String type, JSONObject payload) {
+        if (signalingTransport == null) {
+            Log.w(TAG, "No signaling transport available for " + type);
+            return;
+        }
+        try {
+            JSONObject message = new JSONObject();
+            message.put("type", type);
+            if (payload != null) {
+                message.put("payload", payload);
+            }
+            signalingTransport.send(message);
+        } catch (JSONException e) {
+            Log.e(TAG, "Failed to build signaling envelope", e);
+        }
     }
 }

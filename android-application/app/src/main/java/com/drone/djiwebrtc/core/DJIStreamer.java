@@ -8,7 +8,6 @@ import android.util.Log;
 import androidx.annotation.Nullable;
 
 import com.drone.djiwebrtc.network.PionSignalingClient;
-import com.drone.djiwebrtc.network.SocketConnection;
 import com.drone.djiwebrtc.util.PionConfigStore;
 
 import org.json.JSONException;
@@ -18,8 +17,6 @@ import org.webrtc.VideoCapturer;
 import java.util.Locale;
 
 import dji.sdk.sdkmanager.DJISDKManager;
-
-import static io.socket.client.Socket.EVENT_DISCONNECT;
 
 /**
  * The DJIStreamer class manages the Android -> Pion WebRTC publication and bridges auxiliary
@@ -46,26 +43,23 @@ public class DJIStreamer {
         this.droneDisplayName = resolveDroneDisplayName();
         this.streamId = resolveStreamId(pionConfigStore.getStreamId(), droneDisplayName);
 
-        this.gcsCommandHandler = new GCSCommandHandler();
-        this.gcsCommandHandler.startTelemetry();
-
         String signalingUrl = pionConfigStore.getSignalingUrl();
         this.signalingClient = new PionSignalingClient(signalingUrl, "publisher", streamId);
+        this.gcsCommandHandler = new GCSCommandHandler(this.signalingClient);
+        this.gcsCommandHandler.startTelemetry();
+
         this.signalingClient.setListener(new PionSignalingClient.Listener() {
             @Override
             public void onOpen() {
-                mainHandler.post(DJIStreamer.this::ensureWebRtcClient);
+                mainHandler.post(() -> {
+                    gcsCommandHandler.startTelemetry();
+                    ensureWebRtcClient();
+                });
             }
 
             @Override
             public void onMessage(JSONObject message) {
-                mainHandler.post(() -> {
-                    if (webRtcClient == null) {
-                        Log.w(TAG, "Dropping signaling message before WebRTC client ready: " + message);
-                        return;
-                    }
-                    webRtcClient.handleWebRTCMessage(message);
-                });
+                mainHandler.post(() -> handleSignalMessage(message));
             }
 
             @Override
@@ -76,6 +70,7 @@ public class DJIStreamer {
             @Override
             public void onClosed() {
                 mainHandler.post(() -> {
+                    gcsCommandHandler.stopTelemetry();
                     if (webRtcClient != null) {
                         Log.d(TAG, "Signaling channel closed; resetting WebRTC client");
                         webRtcClient.dispose();
@@ -85,8 +80,6 @@ public class DJIStreamer {
             }
         });
         this.signalingClient.connect();
-
-        setupSocketEvent();
     }
 
     private String resolveDroneDisplayName() {
@@ -128,37 +121,48 @@ public class DJIStreamer {
         Log.i(TAG, "Publishing stream '" + streamId + "' via Pion relay");
     }
 
-    private void setupSocketEvent(){
-        SocketConnection connection = SocketConnection.getInstance();
-        connection.on("gcs_command", args -> {
-            mainHandler.post(() -> {
-                if (args.length == 0) {
-                    Log.w(TAG, "Received empty GCS command payload");
+    private void handleSignalMessage(JSONObject message) {
+        if (message == null) {
+            return;
+        }
+        String type = message.optString("type", "");
+        switch (type) {
+            case "gcs_command":
+                JSONObject commandPayload = message.optJSONObject("payload");
+                if (commandPayload == null) {
+                    sendGcsCommandError(null, "Missing command payload", "INVALID_COMMAND");
                     return;
                 }
                 try {
-                    JSONObject command = (JSONObject) args[0];
-                    gcsCommandHandler.handleCommand(command);
+                    gcsCommandHandler.handleCommand(commandPayload);
                 } catch (JSONException e) {
-                    emitError("gcs_command_ack", "Invalid command payload", "INVALID_COMMAND");
+                    Log.w(TAG, "Invalid GCS command payload", e);
+                    String action = commandPayload.optString("action", null);
+                    sendGcsCommandError(action, "Invalid command payload", "INVALID_COMMAND");
                 }
-            });
-        });
-        connection.on("raw_stream", args -> {
-            mainHandler.post(() -> {
-                if (args.length == 0) {
-                    emitError("raw_stream_ack", "Missing raw stream payload", "MISSING_PAYLOAD");
+                return;
+            case "raw_stream":
+                JSONObject rawPayload = message.optJSONObject("payload");
+                if (rawPayload == null) {
+                    sendControlError("raw_stream_ack", "Missing raw stream payload", "MISSING_PAYLOAD");
                     return;
                 }
                 try {
-                    JSONObject payload = (JSONObject) args[0];
-                    handleRawStreamRequest(payload);
+                    handleRawStreamRequest(rawPayload);
                 } catch (JSONException e) {
-                    emitError("raw_stream_ack", "Invalid raw stream payload", "INVALID_PAYLOAD");
+                    Log.w(TAG, "Invalid raw stream payload", e);
+                    sendControlError("raw_stream_ack", "Invalid raw stream payload", "INVALID_PAYLOAD");
                 }
-            });
-        });
-        connection.on(EVENT_DISCONNECT, args -> Log.d(TAG, "connectToSignallingServer: disconnect"));
+                return;
+            default:
+                break;
+        }
+
+        if (webRtcClient == null) {
+            Log.w(TAG, "Dropping signaling message before WebRTC client ready: " + message);
+            return;
+        }
+        webRtcClient.handleWebRTCMessage(message);
     }
 
     private synchronized void handleRawStreamRequest(JSONObject payload) throws JSONException {
@@ -177,6 +181,47 @@ public class DJIStreamer {
             emitRawStreamAck("started", host, port);
         } catch (Exception e) {
             emitError("raw_stream_ack", e.getMessage(), "RAW_STREAM_ERROR");
+        }
+    }
+
+    private void sendControlMessage(String type, @Nullable JSONObject payload) {
+        if (signalingClient == null) {
+            return;
+        }
+        try {
+            JSONObject envelope = new JSONObject();
+            envelope.put("type", type);
+            if (payload != null) {
+                envelope.put("payload", payload);
+            }
+            signalingClient.send(envelope);
+        } catch (JSONException e) {
+            Log.e(TAG, "Failed to send control message", e);
+        }
+    }
+
+    private void sendControlError(String type, String description, String code) {
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("error", description);
+            payload.put("code", code);
+            sendControlMessage(type, payload);
+        } catch (JSONException e) {
+            Log.e(TAG, "Failed to send control error", e);
+        }
+    }
+
+    private void sendGcsCommandError(@Nullable String action, String description, String code) {
+        try {
+            JSONObject payload = new JSONObject();
+            if (action != null) {
+                payload.put("action", action);
+            }
+            payload.put("error", description);
+            payload.put("code", code);
+            sendControlMessage("gcs_command_ack", payload);
+        } catch (JSONException e) {
+            Log.e(TAG, "Failed to send GCS command error", e);
         }
     }
 
@@ -203,20 +248,13 @@ public class DJIStreamer {
                 response.put("host", host);
                 response.put("port", port);
             }
-            SocketConnection.getInstance().emit("raw_stream_ack", response);
+            sendControlMessage("raw_stream_ack", response);
         } catch (JSONException e) {
             Log.e(TAG, "Failed to emit raw stream ack", e);
         }
     }
 
     private void emitError(String event, String description, String code) {
-        try {
-            JSONObject error = new JSONObject();
-            error.put("error", description);
-            error.put("code", code);
-            SocketConnection.getInstance().emit(event, error);
-        } catch (JSONException e) {
-            Log.e(TAG, "Failed to emit error", e);
-        }
+        sendControlError(event, description, code);
     }
 }
