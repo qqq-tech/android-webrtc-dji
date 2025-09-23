@@ -1,408 +1,303 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>Pion Screen Publisher</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      :root {
-        color-scheme: dark;
-        font-family: "Segoe UI", Roboto, sans-serif;
-        background: #0f172a;
-        color: #e2e8f0;
-      }
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pion Relay – Desktop Screen Publisher (Demo)</title>
+  <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+  <style>
+    :root { --bg:#0b0f14; --panel:#121821; --muted:#8692a0; --accent:#4ea3ff; --ok:#2ecc71; --bad:#ff5c5c; }
+    body { margin:0; font:14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:#e8eef6; }
+    header { padding:18px 20px; border-bottom:1px solid #1d2734; background:linear-gradient(180deg, #10151d, #0b0f14); position:sticky; top:0; z-index:2; }
+    h1 { font-size:18px; margin:0 0 6px; }
+    .sub { color:var(--muted); font-size:12px; }
+    main { display:grid; grid-template-columns:380px 1fr; gap:14px; padding:14px; }
+    .card { background:var(--panel); border:1px solid #1d2734; border-radius:14px; box-shadow:0 8px 18px rgba(0,0,0,.35); }
+    .left { padding:14px; }
+    .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
+    label { width:100px; color:#b9c5d6; font-size:12px; }
+    input[type=text], input[type=url], select { flex:1; padding:8px 10px; border-radius:10px; border:1px solid #243247; background:#0f141c; color:#e8eef6; }
+    input[type=checkbox]{ transform:scale(1.15); }
+    button { border:0; padding:10px 12px; border-radius:12px; background:#1a2433; color:#e9f3ff; cursor:pointer; }
+    button.primary { background:var(--accent); color:#001225; font-weight:700; }
+    button.danger { background:#2a1a1a; color:#ffd7d7; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; border:1px solid #2b3a51; color:#a9b7c8; }
+    .ok{ color:var(--ok); border-color:var(--ok); }
+    .bad{ color:var(--bad); border-color:var(--bad); }
+    .right { padding:10px; display:grid; grid-template-rows:auto 1fr; gap:10px; }
+    .videoWrap { position:relative; aspect-ratio:16/9; background:#0f141c; border-radius:12px; overflow:hidden; border:1px solid #223049; }
+    video { width:100%; height:100%; object-fit:contain; background:#0f141c; }
+    pre.log { margin:0; padding:12px; background:#0f141c; border-radius:12px; border:1px solid #223049; white-space:pre-wrap; word-wrap:break-word; max-height:260px; overflow:auto; font-size:12px; }
+    .footer { padding:10px 14px 16px; color:#8ea0b6; font-size:12px; }
+    code { color:#c6e2ff; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Pion Relay – Desktop Screen Publisher <span class="pill" id="statePill">IDLE</span></h1>
+    <div class="sub">URL 쿼리로 <code>streamId</code>, <code>signalingHost</code>를 넘겨 사용할 수 있어요. 예) <code>?streamId=desktop-1&signalingHost=ws://127.0.0.1:8080</code></div>
+  </header>
 
-      body {
-        margin: 0;
-        display: flex;
-        min-height: 100vh;
-        align-items: center;
-        justify-content: center;
-        padding: 2rem;
-      }
-
-      .panel {
-        width: min(720px, 100%);
-        background: rgba(15, 23, 42, 0.8);
-        border: 1px solid rgba(148, 163, 184, 0.25);
-        border-radius: 16px;
-        padding: 1.75rem;
-        display: flex;
-        flex-direction: column;
-        gap: 1.25rem;
-        box-shadow: 0 25px 45px rgba(15, 23, 42, 0.4);
-      }
-
-      header h1 {
-        margin: 0;
-        font-size: 1.6rem;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: #a5b4fc;
-      }
-
-      header p {
-        margin: 0.3rem 0 0;
-        color: rgba(226, 232, 240, 0.75);
-      }
-
-      .status-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 0.75rem;
-      }
-
-      .status-item {
-        background: rgba(30, 41, 59, 0.7);
-        border-radius: 12px;
-        padding: 0.85rem 1rem;
-        border: 1px solid rgba(148, 163, 184, 0.18);
-      }
-
-      .status-item dt {
-        margin: 0;
-        font-size: 0.85rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: rgba(165, 180, 252, 0.9);
-      }
-
-      .status-item dd {
-        margin: 0.45rem 0 0;
-        font-size: 1rem;
-        font-weight: 600;
-        color: #f8fafc;
-      }
-
-      .preview {
-        position: relative;
-        border-radius: 12px;
-        overflow: hidden;
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        background: rgba(2, 6, 23, 0.8);
-        min-height: 220px;
-      }
-
-      video {
-        width: 100%;
-        height: auto;
-        display: block;
-      }
-
-      .controls {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.75rem;
-      }
-
-      button {
-        border: none;
-        border-radius: 999px;
-        padding: 0.7rem 1.4rem;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        cursor: pointer;
-      }
-
-      #startButton {
-        background: linear-gradient(135deg, #22d3ee, #38bdf8);
-        color: #0f172a;
-      }
-
-      #stopButton {
-        background: rgba(148, 163, 184, 0.2);
-        color: #e2e8f0;
-      }
-
-      button:disabled {
-        cursor: not-allowed;
-        opacity: 0.5;
-      }
-    </style>
-  </head>
-  <body>
-    <main class="panel">
-      <header>
-        <h1>Pion Screen Publisher</h1>
-        <p>Share this device's screen with the Pion relay and downstream subscribers.</p>
-      </header>
-      <dl class="status-grid">
-        <div class="status-item">
-          <dt>Stream ID</dt>
-          <dd id="streamIdLabel">-</dd>
-        </div>
-        <div class="status-item">
-          <dt>Signaling</dt>
-          <dd id="signalingStatus">disconnected</dd>
-        </div>
-        <div class="status-item">
-          <dt>Peer connection</dt>
-          <dd id="peerStatus">idle</dd>
-        </div>
-      </dl>
-      <section class="preview">
-        <video id="preview" autoplay playsinline muted></video>
-      </section>
-      <div class="controls">
-        <button type="button" id="startButton">Start publishing</button>
-        <button type="button" id="stopButton" disabled>Stop</button>
+  <main>
+    <section class="card left">
+      <div class="row"><label>Signaling</label><input id="signalingHost" type="url" placeholder="ws://localhost:8080" /></div>
+      <div class="row"><label>Stream ID</label><input id="streamId" type="text" placeholder="desktop-1" /></div>
+      <div class="row"><label>ICE 서버</label><input id="iceServers" type="text" placeholder="stun:stun.l.google.com:19302" /></div>
+      <div class="row"><label>오디오 포함</label><input id="withAudio" type="checkbox" /> <span class="sub">(Chrome 탭/시스템 오디오는 브라우저 정책에 따라 제한될 수 있음)</span></div>
+      <div class="row"><label>비트레이트</label><input id="bitrate" type="text" value="4000000" /> <span class="sub">bps (예: 4,000,000 = 4Mbps)</span></div>
+      <div class="row"><label>코덱 고정</label>
+        <select id="codec">
+          <option value="">브라우저 기본</option>
+          <option value="video/H264">H.264 (권장)</option>
+          <option value="video/VP8">VP8</option>
+          <option value="video/VP9">VP9</option>
+          <option value="video/AV1">AV1</option>
+        </select>
       </div>
-    </main>
-    <script type="module">
-      const params = new URLSearchParams(window.location.search);
-      const streamId = params.get('streamId') || 'mavic-stream';
-      const signalingHost = params.get('signalingHost') || window.location.hostname;
-      const signalingPort = params.get('signalingPort') || '8080';
-      const isSecurePage = window.location.protocol === 'https:';
-      const signalingProtocol = params.get('signalingProtocol') || (isSecurePage ? 'wss' : 'ws');
-      const signalingPortSegment = signalingPort ? `:${signalingPort}` : '';
-      const signalingUrl = `${signalingProtocol}://${signalingHost}${signalingPortSegment}/ws?role=publisher&streamId=${encodeURIComponent(
-        streamId,
-      )}`;
+      <div class="row" style="gap:12px; margin-top:16px;">
+        <button id="btnStart" class="primary">화면 공유 시작 & Publish</button>
+        <button id="btnStop" class="danger" disabled>중지</button>
+      </div>
+      <div class="row" style="margin-top:16px;">
+        <span class="pill" id="wsPill">WS: -</span>
+        <span class="pill" id="pcPill">PC: -</span>
+      </div>
+    </section>
 
-      const streamIdLabel = document.getElementById('streamIdLabel');
-      const signalingStatusLabel = document.getElementById('signalingStatus');
-      const peerStatusLabel = document.getElementById('peerStatus');
-      const preview = document.getElementById('preview');
-      const startButton = document.getElementById('startButton');
-      const stopButton = document.getElementById('stopButton');
+    <section class="card right">
+      <div class="videoWrap"><video id="preview" autoplay playsinline muted></video></div>
+      <pre class="log" id="log"></pre>
+      <div class="footer">Tip: <code>Ctrl/Cmd+Shift+X</code>로 화면 공유 전환(브라우저 단축키) · 문제 시 콘솔 열어 로그를 확인하세요.</div>
+    </section>
+  </main>
 
-      streamIdLabel.textContent = streamId;
+  <script>
+  (function(){
+    const $ = sel => document.querySelector(sel);
+    const log = (...args) => { console.log(...args); const el=$('#log'); el.textContent += args.map(a=> typeof a==='string'? a: JSON.stringify(a)).join(' ') + '\n'; el.scrollTop = el.scrollHeight; };
+    const setPill = (id, text, cls) => { const el=$(id); el.textContent = text; el.className = 'pill ' + (cls||''); };
 
-      const peerConnection = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-      });
+    // URL 파라미터 적용
+    const params = new URLSearchParams(location.search);
+    $('#signalingHost').value = params.get('signalingHost') || 'ws://localhost:8080';
+    $('#streamId').value      = params.get('streamId') || 'desktop-1';
+    $('#iceServers').value    = params.get('ice') || 'stun:stun.l.google.com:19302';
 
-      let localStream = null;
-      let offerSent = false;
-      const pendingSignals = [];
-      const queuedRemoteCandidates = [];
+    let pc, ws, screenStream, sender, currentCodec;
+    let pendingRemoteCandidates = [];
+    let pendingOutboundMessages = [];
 
-      const signalingSocket = new WebSocket(signalingUrl);
+    async function start() {
+      const signaling = $('#signalingHost').value.trim();
+      const streamId  = $('#streamId').value.trim();
+      const iceUrl    = $('#iceServers').value.trim();
+      const withAudio = $('#withAudio').checked;
+      currentCodec    = $('#codec').value;
+      pendingRemoteCandidates = [];
+      pendingOutboundMessages = [];
 
-      function setSignalingStatus(text) {
-        signalingStatusLabel.textContent = text;
+      if (!signaling.startsWith('ws://') && !signaling.startsWith('wss://')) {
+        alert('signalingHost 는 ws:// 또는 wss:// 로 시작해야 합니다.'); return;
       }
+      setPill('#statePill', 'STARTING', '');
 
-      function setPeerStatus(text) {
-        peerStatusLabel.textContent = text;
+      // 1) WS 연결
+      let baseWsUrl;
+      try {
+        baseWsUrl = new URL(signaling);
+      } catch (err) {
+        baseWsUrl = new URL(signaling, window.location.href);
       }
-
-      function updatePeerStatusFromState() {
-        setPeerStatus(peerConnection.connectionState || 'unknown');
+      const pathSegments = baseWsUrl.pathname.split('/').filter(Boolean);
+      if (pathSegments[pathSegments.length - 1] !== 'ws') {
+        pathSegments.push('ws');
       }
+      baseWsUrl.pathname = `/${pathSegments.join('/')}`;
+      const baseWs = baseWsUrl.toString();
+      const wsUrlObject = new URL(baseWs);
+      wsUrlObject.searchParams.set('role', 'publisher');
+      wsUrlObject.searchParams.set('streamId', streamId);
+      ws = new WebSocket(wsUrlObject.toString());
 
-      function sendSignalingMessage(payload) {
-        const message = JSON.stringify(payload);
-        if (signalingSocket.readyState === WebSocket.OPEN) {
-          signalingSocket.send(message);
-        } else {
-          pendingSignals.push(message);
+      const flushOutbound = () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        while (pendingOutboundMessages.length) {
+          const item = pendingOutboundMessages.shift();
+          ws.send(item.payload);
+          if (item.label) log(item.label, item.dataForLog);
         }
-      }
+      };
 
-      async function handleRemoteDescription(message) {
-        const description = new RTCSessionDescription({
-          type: message.sdpType || 'answer',
-          sdp: message.sdp,
+      const sendSignal = (message, label) => {
+        if (!ws) return;
+        const payload = JSON.stringify(message);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(payload);
+          if (label) log(label, message);
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+          pendingOutboundMessages.push({ payload, label, dataForLog: message });
+        } else {
+          log('WS 전송 실패: 연결 상태가 닫혀 있음', message);
+        }
+      };
+
+      ws.onopen = () => {
+        setPill('#wsPill', 'WS: OPEN', 'ok');
+        log('WS open:', ws.url);
+        ws.send(JSON.stringify({ type:'register', role:'publisher', streamId }));
+        flushOutbound();
+      };
+      ws.onerror = (e) => { setPill('#wsPill', 'WS: ERROR', 'bad'); log('WS error', e); };
+      ws.onclose = () => { setPill('#wsPill', 'WS: CLOSED'); };
+
+      // 2) RTCPeerConnection 생성
+      pc = new RTCPeerConnection({
+        sdpSemantics: 'unified-plan',
+        iceServers: iceUrl ? [{ urls: iceUrl }] : []
+      });
+      setPill('#pcPill', 'PC: NEW');
+
+      pc.oniceconnectionstatechange = () => { setPill('#pcPill', 'PC: ' + pc.iceConnectionState, pc.iceConnectionState==='connected'?'ok': (pc.iceConnectionState==='failed'?'bad':'')); };
+      pc.onconnectionstatechange = () => { setPill('#statePill', pc.connectionState.toUpperCase(), pc.connectionState==='connected'?'ok': (pc.connectionState==='failed'?'bad':'')); };
+      pc.onicecandidate = ({ candidate }) => {
+        if (!ws) return;
+        const base = { type:'ice', role:'publisher', streamId };
+        if (candidate) {
+          const msg = { ...base, candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex };
+          sendSignal(msg, '→ ICE');
+        } else {
+          const msg = { ...base, candidate: '' };
+          sendSignal(msg, '→ ICE (end)');
+        }
+      };
+
+      // 3) 화면 공유 캡처
+      try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: 30, max: 60 } },
+          audio: withAudio
         });
-        await peerConnection.setRemoteDescription(description);
-        while (queuedRemoteCandidates.length > 0) {
-          const candidateInit = queuedRemoteCandidates.shift();
-          try {
-            await peerConnection.addIceCandidate(candidateInit);
-          } catch (error) {
-            console.error('Failed to add queued ICE candidate', error, candidateInit);
+      } catch (err) {
+        log('getDisplayMedia 실패:', err.toString());
+        setPill('#statePill', 'ERROR', 'bad');
+        return;
+      }
+      $('#preview').srcObject = screenStream;
+
+      // 4) 비디오 트랙 송신 추가
+      const [videoTrack] = screenStream.getVideoTracks();
+      sender = pc.addTrack(videoTrack, screenStream);
+
+      // 4-1) 비트레이트 설정
+      try {
+        const params = sender.getParameters();
+        params.encodings = [{ maxBitrate: parseInt($('#bitrate').value||'0', 10) || undefined }];
+        await sender.setParameters(params);
+      } catch(e) { log('setParameters 경고:', e.toString()); }
+
+      // 4-2) 코덱 우선순위(H264 권장)
+      try {
+        if (pc.getTransceivers) {
+          const tx = pc.getTransceivers().find(t => t.sender === sender);
+          if (tx) {
+            const caps = RTCRtpSender.getCapabilities('video');
+            if (caps && caps.codecs && caps.codecs.length) {
+              let pref = caps.codecs;
+              if (currentCodec) {
+                const primary = caps.codecs.filter(c => (c.mimeType || c.mimeType).toLowerCase() === currentCodec.toLowerCase());
+                const rest    = caps.codecs.filter(c => (c.mimeType || c.mimeType).toLowerCase() !== currentCodec.toLowerCase());
+                if (primary.length) pref = [...primary, ...rest];
+              } else {
+                const h264 = caps.codecs.filter(c => (c.mimeType||'').toLowerCase()==='video/h264');
+                const others = caps.codecs.filter(c => (c.mimeType||'').toLowerCase()!=='video/h264');
+                if (h264.length) pref = [...h264, ...others];
+              }
+              if (tx.setCodecPreferences) tx.setCodecPreferences(pref);
+            }
           }
         }
-      }
+      } catch(e) { log('codecPreferences 경고:', e.toString()); }
 
-      async function handleRemoteCandidate(message) {
-        const candidateInit = {
-          candidate: message.candidate,
-          sdpMid: message.sdpMid ?? null,
-          sdpMLineIndex: message.sdpMLineIndex ?? null,
-        };
-        if (!candidateInit.candidate) {
-          // Signal end-of-candidates after the answer is applied.
-          if (peerConnection.remoteDescription) {
-            try {
-              await peerConnection.addIceCandidate(null);
-            } catch (error) {
-              console.error('Failed to add end-of-candidates marker', error);
+      // 5) Offer 생성/전달
+      const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+      await pc.setLocalDescription(offer);
+      sendSignal({ type:'sdp', role:'publisher', streamId, sdp: offer.sdp, sdpType: offer.type }, '→ SDP (offer) 전송');
+
+      // 6) 메시지 수신(Answer/ICE)
+      ws.onmessage = async (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.error) { log('⚠️ 오류:', msg); setPill('#statePill', 'ERROR', 'bad'); return; }
+
+          if (msg.type === 'sdp' && msg.sdp) {
+            const remoteType = msg.sdpType || (typeof msg.sdp === 'object' && msg.sdp.type) || 'answer';
+            const remoteSdp = typeof msg.sdp === 'object' ? msg.sdp.sdp : msg.sdp;
+            if (!remoteSdp) {
+              log('⚠️ SDP 형식 오류:', msg);
+              return;
+            }
+            await pc.setRemoteDescription({ type: remoteType, sdp: remoteSdp });
+            log('← SDP (answer) 적용');
+            while (pendingRemoteCandidates.length) {
+              const cand = pendingRemoteCandidates.shift();
+              try {
+                await pc.addIceCandidate(cand);
+                log('← 대기 ICE 적용');
+              } catch (e) {
+                log('대기 ICE 적용 실패', e.toString());
+              }
+            }
+          } else if (msg.type === 'ice' && msg.candidate !== undefined) {
+            const candidateInit = msg.candidate ? { candidate: msg.candidate, sdpMid: msg.sdpMid ?? null, sdpMLineIndex: msg.sdpMLineIndex ?? null } : null;
+            if (pc.remoteDescription) {
+              try {
+                await pc.addIceCandidate(candidateInit);
+                log(msg.candidate ? '← ICE 추가' : '← ICE 종료');
+              } catch (e) {
+                log('ICE 추가 실패', e.toString());
+              }
+            } else {
+              pendingRemoteCandidates.push(candidateInit);
             }
           } else {
-            queuedRemoteCandidates.push(null);
+            log('알 수 없는 메시지:', msg);
           }
-          return;
+        } catch(e) {
+          log('메시지 파싱 실패:', e.toString(), ev.data);
         }
-        if (peerConnection.remoteDescription) {
-          try {
-            await peerConnection.addIceCandidate(candidateInit);
-          } catch (error) {
-            console.error('Failed to add ICE candidate', error, candidateInit);
-          }
-        } else {
-          queuedRemoteCandidates.push(candidateInit);
+      };
+
+      // 7) 버튼 상태
+      $('#btnStart').disabled = true; $('#btnStop').disabled = false;
+    }
+
+    async function stop() {
+      try {
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+          ws.close();
         }
+      } catch {}
+      ws = null;
+      try { if (pc) pc.close(); } catch {}
+      pc = null;
+      if (screenStream) {
+        screenStream.getTracks().forEach(t => t.stop());
       }
+      screenStream = null;
+      sender = null;
+      pendingRemoteCandidates = [];
+      pendingOutboundMessages = [];
+      $('#preview').srcObject = null;
+      setPill('#statePill', 'IDLE'); setPill('#wsPill','WS: -'); setPill('#pcPill','PC: -');
+      $('#btnStart').disabled = false; $('#btnStop').disabled = true;
+    }
 
-      async function negotiateIfPossible() {
-        if (!localStream || offerSent) {
-          return;
-        }
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        sendSignalingMessage({ type: 'sdp', sdpType: offer.type, sdp: offer.sdp });
-        offerSent = true;
-      }
+    $('#btnStart').addEventListener('click', start);
+    $('#btnStop').addEventListener('click', stop);
 
-      function setErrorStatus(prefix, detail) {
-        const suffix = typeof detail === 'string' && detail.trim().length > 0 ? `: ${detail.trim()}` : '';
-        setSignalingStatus(`${prefix}${suffix}`);
-      }
-
-      signalingSocket.addEventListener('open', () => {
-        setSignalingStatus('connected');
-        while (pendingSignals.length > 0) {
-          const message = pendingSignals.shift();
-          signalingSocket.send(message);
-        }
-        negotiateIfPossible().catch((error) => {
-          console.error('Failed to negotiate after socket open', error);
-          setErrorStatus('error', error.message);
-        });
-      });
-
-      signalingSocket.addEventListener('close', (event) => {
-        const reason = event.reason ? ` (${event.reason})` : '';
-        setSignalingStatus(`disconnected${reason}`);
-      });
-
-      signalingSocket.addEventListener('error', () => {
-        setErrorStatus('error', 'signaling socket');
-      });
-
-      signalingSocket.addEventListener('message', async (event) => {
-        let message;
-        try {
-          message = JSON.parse(event.data);
-        } catch (error) {
-          console.error('Failed to parse signaling message', error, event.data);
-          if (typeof event.data === 'string' && event.data.trim().length > 0) {
-            setErrorStatus('error', event.data.trim());
-          }
-          return;
-        }
-
-        if (message.error) {
-          console.error('Received signaling error', message);
-          const details = [message.code, message.error]
-            .map((part) => (typeof part === 'string' ? part.trim() : ''))
-            .filter(Boolean)
-            .join(' ');
-          setErrorStatus('error', details);
-          return;
-        }
-
-        if (message.type === 'sdp' && message.sdp) {
-          try {
-            await handleRemoteDescription(message);
-          } catch (error) {
-            console.error('Failed to apply remote description', error, message);
-            setErrorStatus('error', error.message);
-          }
-        } else if (message.type === 'ice' && message.candidate !== undefined) {
-          try {
-            await handleRemoteCandidate(message);
-          } catch (error) {
-            console.error('Failed to process ICE candidate', error, message);
-          }
-        }
-      });
-
-      peerConnection.addEventListener('icecandidate', (event) => {
-        if (event.candidate) {
-          sendSignalingMessage({
-            type: 'ice',
-            candidate: event.candidate.candidate,
-            sdpMid: event.candidate.sdpMid,
-            sdpMLineIndex: event.candidate.sdpMLineIndex,
-          });
-        } else {
-          sendSignalingMessage({ type: 'ice', candidate: '' });
-        }
-      });
-
-      peerConnection.addEventListener('connectionstatechange', updatePeerStatusFromState);
-      updatePeerStatusFromState();
-
-      async function startPublishing() {
-        if (localStream) {
-          return;
-        }
-        try {
-          localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-        } catch (error) {
-          console.error('Failed to capture display media', error);
-          setErrorStatus('error', error.message);
-          return;
-        }
-        offerSent = false;
-        queuedRemoteCandidates.length = 0;
-        preview.srcObject = localStream;
-        localStream.getTracks().forEach((track) => {
-          peerConnection.addTrack(track, localStream);
-        });
-        startButton.disabled = true;
-        stopButton.disabled = false;
-        setPeerStatus('negotiating');
-        negotiateIfPossible().catch((error) => {
-          console.error('Failed to negotiate after starting capture', error);
-          setErrorStatus('error', error.message);
-        });
-      }
-
-      function stopPublishing() {
-        if (!localStream) {
-          return;
-        }
-        localStream.getTracks().forEach((track) => track.stop());
-        preview.srcObject = null;
-        localStream = null;
-        offerSent = false;
-        queuedRemoteCandidates.length = 0;
-        peerConnection.getSenders().forEach((sender) => {
-          try {
-            peerConnection.removeTrack(sender);
-          } catch (error) {
-            console.warn('Failed to remove sender', error);
-          }
-        });
-        setPeerStatus('stopped');
-        startButton.disabled = false;
-        stopButton.disabled = true;
-      }
-
-      startButton.addEventListener('click', () => {
-        startPublishing().catch((error) => {
-          console.error('Unexpected failure while starting publishing', error);
-          setErrorStatus('error', error.message);
-        });
-      });
-
-      stopButton.addEventListener('click', () => {
-        stopPublishing();
-      });
-
-      window.addEventListener('beforeunload', () => {
-        signalingSocket.close();
-        peerConnection.close();
-        if (localStream) {
-          localStream.getTracks().forEach((track) => track.stop());
-        }
-      });
-    </script>
-  </body>
+    navigator.mediaDevices.addEventListener?.('devicechange', () => log('devicechange 감지'));
+  })();
+  </script>
+</body>
 </html>
