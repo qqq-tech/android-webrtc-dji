@@ -220,13 +220,13 @@ func (c *client) handleSignal(msg signalMessage) error {
 			return c.sendSignal(signalMessage{Type: "sdp", SDP: answer.SDP, SDPType: answer.Type.String()})
 		}
 	case "ice":
-		if msg.Candidate == "" {
-			return fmt.Errorf("missing ICE candidate")
-		}
-		candidate := webrtc.ICECandidateInit{
-			Candidate:     msg.Candidate,
-			SDPMid:        &msg.SDPMid,
-			SDPMLineIndex: msg.SDPMLineIndex,
+		candidate := webrtc.ICECandidateInit{}
+		if msg.Candidate != "" {
+			candidate.Candidate = msg.Candidate
+			if msg.SDPMid != "" {
+				candidate.SDPMid = &msg.SDPMid
+			}
+			candidate.SDPMLineIndex = msg.SDPMLineIndex
 		}
 		if err := c.peer.AddICECandidate(candidate); err != nil {
 			return err
