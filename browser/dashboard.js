@@ -145,6 +145,9 @@ const connectionStatus = document.getElementById('connectionStatus');
 const detectionStatus = document.getElementById('detectionStatus');
 const detectionTimestamp = document.getElementById('detectionTimestamp');
 const streamIdLabel = document.getElementById('streamId');
+const flightControlsPanel = document.getElementById('flightControlsPanel');
+const toggleFlightControlsButton = document.getElementById('toggleFlightControls');
+const closeFlightControlsButton = document.getElementById('closeFlightControls');
 const routePanel = document.getElementById('routePlanner');
 const toggleRoutePanel = document.getElementById('toggleRoutePanel');
 const closeRoutePanel = document.getElementById('closeRoutePanel');
@@ -829,6 +832,63 @@ function parseFiniteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function setFlightControlsVisibility(shouldShow) {
+  if (!flightControlsPanel) {
+    return;
+  }
+
+  flightControlsPanel.hidden = !shouldShow;
+  flightControlsPanel.setAttribute('aria-hidden', String(!shouldShow));
+
+  if (toggleFlightControlsButton) {
+    toggleFlightControlsButton.setAttribute('aria-expanded', String(shouldShow));
+    toggleFlightControlsButton.textContent = shouldShow ? 'Hide Flight Controls' : 'Flight Controls';
+  }
+}
+
+function initFlightControlsToggle() {
+  if (!flightControlsPanel || !toggleFlightControlsButton) {
+    return;
+  }
+
+  const focusFirstControl = () => {
+    const focusTarget =
+      takeoffButton ||
+      flightControlsPanel.querySelector(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+    focusTarget?.focus?.();
+  };
+
+  const closePanel = () => {
+    setFlightControlsVisibility(false);
+    toggleFlightControlsButton.focus();
+  };
+
+  toggleFlightControlsButton.addEventListener('click', () => {
+    const shouldOpen = flightControlsPanel.hidden;
+    setFlightControlsVisibility(shouldOpen);
+    if (shouldOpen) {
+      requestAnimationFrame(() => focusFirstControl());
+    } else {
+      toggleFlightControlsButton.focus();
+    }
+  });
+
+  closeFlightControlsButton?.addEventListener('click', () => {
+    closePanel();
+  });
+
+  flightControlsPanel.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !flightControlsPanel.hidden) {
+      event.preventDefault();
+      closePanel();
+    }
+  });
+
+  setFlightControlsVisibility(false);
+}
+
 function initRoutePlanner() {
   if (!routePanel || !routeMapElement || !window.L) {
     return;
@@ -1115,6 +1175,7 @@ function handleGcsCommandAck(message) {
 }
 
 registerServiceWorker();
+initFlightControlsToggle();
 initRoutePlanner();
 initGcsControls();
 initGcsControlChannel();
