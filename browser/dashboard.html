@@ -141,6 +141,103 @@
       color: #facc15;
     }
 
+    .control-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .command-buttons {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .command-buttons button {
+      padding: 0.6rem 1rem;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(30, 41, 59, 0.7);
+      color: #e2e8f0;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 120ms ease, transform 120ms ease;
+    }
+
+    .command-buttons button:hover {
+      background: rgba(59, 130, 246, 0.35);
+      transform: translateY(-1px);
+    }
+
+    .control-form {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding: 0.85rem 1rem;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      background: rgba(15, 23, 42, 0.6);
+    }
+
+    .control-form h3 {
+      margin: 0;
+      font-size: 0.95rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #a5b4fc;
+    }
+
+    .control-form .field-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .control-form label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      font-size: 0.8rem;
+      color: #cbd5f5;
+    }
+
+    .control-form input[type='number'] {
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      color: #e2e8f0;
+      border-radius: 8px;
+      padding: 0.45rem 0.55rem;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .control-form button {
+      align-self: flex-start;
+      padding: 0.55rem 1.25rem;
+      border-radius: 999px;
+      border: none;
+      background: linear-gradient(135deg, #818cf8, #22d3ee);
+      color: #0f172a;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      cursor: pointer;
+      box-shadow: 0 14px 24px rgba(34, 211, 238, 0.35);
+    }
+
+    .control-hint {
+      margin: -0.5rem 0 0;
+      font-size: 0.75rem;
+      color: #94a3b8;
+    }
+
+    .gcs-status {
+      font-size: 0.85rem;
+      color: #f8fafc;
+    }
+
       footer {
         padding: 0.75rem 2rem;
         background: rgba(15, 23, 42, 0.9);
@@ -426,24 +523,82 @@
           </div>
         </div>
       </section>
-    <section class="panel">
-      <h2>YOLO Overlay</h2>
-      <div class="video-container overlay-container">
-        <video id="overlayVideo" autoplay playsinline muted></video>
-        <canvas id="overlayCanvas"></canvas>
-        <div
-          class="video-status"
-          id="overlayVideoStatus"
-          role="status"
-          aria-live="polite"
-          data-state="idle"
-        >
-          <span id="overlayVideoMessage">Awaiting overlay…</span>
-          <span id="overlayVideoDelay">—</span>
+      <section class="panel">
+        <h2>YOLO Overlay</h2>
+        <div class="video-container overlay-container">
+          <video id="overlayVideo" autoplay playsinline muted></video>
+          <canvas id="overlayCanvas"></canvas>
+          <div
+            class="video-status"
+            id="overlayVideoStatus"
+            role="status"
+            aria-live="polite"
+            data-state="idle"
+          >
+            <span id="overlayVideoMessage">Awaiting overlay…</span>
+            <span id="overlayVideoDelay">—</span>
+          </div>
         </div>
-      </div>
-    </section>
-  </main>
+      </section>
+      <section class="panel">
+        <h2>Flight Controls</h2>
+        <div class="control-panel">
+          <div class="command-buttons">
+            <button id="commandTakeoff" type="button">Takeoff</button>
+            <button id="commandLand" type="button">Land</button>
+            <button id="commandReturnHome" type="button">Return Home</button>
+            <button id="commandCancelReturn" type="button">Cancel Return</button>
+          </div>
+          <form id="virtualStickForm" class="control-form" autocomplete="off">
+            <h3>Virtual Stick</h3>
+            <div class="field-grid">
+              <label>
+                <span>Pitch (m/s)</span>
+                <input type="number" step="0.1" name="pitch" value="0" />
+              </label>
+              <label>
+                <span>Roll (m/s)</span>
+                <input type="number" step="0.1" name="roll" value="0" />
+              </label>
+              <label>
+                <span>Yaw (°/s)</span>
+                <input type="number" step="0.1" name="yaw" value="0" />
+              </label>
+              <label>
+                <span>Throttle (m/s)</span>
+                <input type="number" step="0.1" name="throttle" value="0" />
+              </label>
+            </div>
+            <button type="submit">Send Virtual Stick</button>
+            <p class="control-hint">Values represent desired velocities in the drone body frame.</p>
+          </form>
+          <form id="gimbalForm" class="control-form" autocomplete="off">
+            <h3>Gimbal Rotation</h3>
+            <div class="field-grid">
+              <label>
+                <span>Pitch (°)</span>
+                <input type="number" step="1" name="pitch" value="0" />
+              </label>
+              <label>
+                <span>Roll (°)</span>
+                <input type="number" step="1" name="roll" value="0" />
+              </label>
+              <label>
+                <span>Yaw (°)</span>
+                <input type="number" step="1" name="yaw" value="0" />
+              </label>
+              <label>
+                <span>Duration (s)</span>
+                <input type="number" min="1" max="30" step="1" name="duration" value="2" />
+              </label>
+            </div>
+            <button type="submit">Rotate Gimbal</button>
+            <p class="control-hint">Applies an absolute gimbal rotation over the specified duration.</p>
+          </form>
+          <div class="gcs-status" data-role="gcs-status">GCS: disconnected</div>
+        </div>
+      </section>
+    </main>
     <footer>
       <div><span class="status-label">Stream ID:</span> <span id="streamId"></span></div>
       <div><span class="status-label">Connection:</span> <span id="connectionStatus">disconnected</span></div>
@@ -476,7 +631,7 @@
       </div>
       <div class="route-actions">
         <button class="primary" id="startRoute" type="button">Send Flight Path</button>
-        <div class="route-status" id="gcsStatus">GCS: disconnected</div>
+        <div class="route-status" id="gcsStatus" data-role="gcs-status">GCS: disconnected</div>
       </div>
     </section>
     <script
