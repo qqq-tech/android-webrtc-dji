@@ -23,8 +23,12 @@ const rawVideo = document.getElementById('rawVideo');
 const overlayVideo = document.getElementById('overlayVideo');
 const overlayCanvas = document.getElementById('overlayCanvas');
 const overlayCtx = overlayCanvas.getContext('2d');
-const rawPlaceholder = document.getElementById('rawPlaceholder');
-const overlayPlaceholder = document.getElementById('overlayPlaceholder');
+const rawVideoStatus = document.getElementById('rawVideoStatus');
+const overlayVideoStatus = document.getElementById('overlayVideoStatus');
+const rawVideoMessage = document.getElementById('rawVideoMessage');
+const overlayVideoMessage = document.getElementById('overlayVideoMessage');
+const rawVideoDelay = document.getElementById('rawVideoDelay');
+const overlayVideoDelay = document.getElementById('overlayVideoDelay');
 const connectionStatus = document.getElementById('connectionStatus');
 const detectionStatus = document.getElementById('detectionStatus');
 const detectionTimestamp = document.getElementById('detectionTimestamp');
@@ -262,6 +266,22 @@ function clampToRange(value, min, max) {
 }
 
 renderOverlay();
+startVideoDelayMonitor(
+  rawVideo,
+  rawVideoStatus,
+  rawVideoMessage,
+  rawVideoDelay,
+  () => rawVideoAvailable,
+  'Camera stream',
+);
+startVideoDelayMonitor(
+  overlayVideo,
+  overlayVideoStatus,
+  overlayVideoMessage,
+  overlayVideoDelay,
+  () => overlayVideoAvailable,
+  'Overlay stream',
+);
 
 function streamHasLiveVideoTrack(stream) {
   if (!stream || typeof stream.getVideoTracks !== 'function') {
@@ -279,20 +299,26 @@ function updateVideoAvailabilityFromStream(stream) {
   setOverlayVideoAvailability(available);
 }
 
-function togglePlaceholder(placeholder, shouldShow) {
-  if (!placeholder) {
-    return;
-  }
-  placeholder.classList.toggle('hidden', !shouldShow);
-  placeholder.setAttribute('aria-hidden', String(!shouldShow));
-}
-
 function setRawVideoAvailability(isAvailable) {
   if (rawVideoAvailable === isAvailable) {
     return;
   }
   rawVideoAvailable = isAvailable;
-  togglePlaceholder(rawPlaceholder, !isAvailable);
+  if (!rawVideoStatus || !rawVideoMessage) {
+    return;
+  }
+  if (isAvailable) {
+    setVideoStatus(rawVideoStatus, rawVideoMessage, rawVideoDelay, 'live', 'Live stream detected', '—');
+  } else {
+    setVideoStatus(
+      rawVideoStatus,
+      rawVideoMessage,
+      rawVideoDelay,
+      'offline',
+      `No video signal · ${formatCurrentTime()}`,
+      '—',
+    );
+  }
 }
 
 function setOverlayVideoAvailability(isAvailable) {
@@ -300,7 +326,132 @@ function setOverlayVideoAvailability(isAvailable) {
     return;
   }
   overlayVideoAvailable = isAvailable;
-  togglePlaceholder(overlayPlaceholder, !isAvailable);
+  if (!overlayVideoStatus || !overlayVideoMessage) {
+    return;
+  }
+  if (isAvailable) {
+    setVideoStatus(
+      overlayVideoStatus,
+      overlayVideoMessage,
+      overlayVideoDelay,
+      'live',
+      'Overlay stream detected',
+      '—',
+    );
+  } else {
+    setVideoStatus(
+      overlayVideoStatus,
+      overlayVideoMessage,
+      overlayVideoDelay,
+      'offline',
+      `No overlay signal · ${formatCurrentTime()}`,
+      '—',
+    );
+  }
+}
+
+function setVideoStatus(container, messageElement, delayElement, state, message, delayText) {
+  if (!container || !messageElement) {
+    return;
+  }
+  container.dataset.state = state;
+  messageElement.textContent = message;
+  if (delayElement) {
+    delayElement.textContent = typeof delayText === 'string' ? delayText : delayElement.textContent;
+  }
+}
+
+function formatCurrentTime() {
+  return new Date().toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function formatDelay(delayMs) {
+  if (!Number.isFinite(delayMs)) {
+    return 'delay: n/a';
+  }
+  if (delayMs >= 1000) {
+    return `delay ≈ ${(delayMs / 1000).toFixed(1)} s`;
+  }
+  return `delay ≈ ${Math.round(delayMs)} ms`;
+}
+
+function estimateDetectionDelay() {
+  if (!latestDetections || !latestDetections.timestamp) {
+    return null;
+  }
+  const detectionTime = new Date(latestDetections.timestamp).getTime();
+  if (!Number.isFinite(detectionTime)) {
+    return null;
+  }
+  return Math.max(0, Date.now() - detectionTime);
+}
+
+function startVideoDelayMonitor(videoElement, container, messageElement, delayElement, availabilityGetter, label) {
+  if (!videoElement || !container || !messageElement || !availabilityGetter) {
+    return;
+  }
+
+  const supportsFrameCallback = typeof videoElement.requestVideoFrameCallback === 'function';
+  let lastUpdate = 0;
+  let lastState = container.dataset.state || 'idle';
+  let lastMessageText = messageElement.textContent || '';
+  let lastDelayText = delayElement ? delayElement.textContent || '' : '';
+
+  const updateDelay = (metadata) => {
+    if (!availabilityGetter()) {
+      const messageText = `${label} unavailable · ${formatCurrentTime()}`;
+      if (lastState !== 'offline' || lastMessageText !== messageText || lastDelayText !== '—') {
+        setVideoStatus(container, messageElement, delayElement, 'offline', messageText, '—');
+        lastMessageText = messageText;
+        lastDelayText = '—';
+        lastState = 'offline';
+      }
+      return;
+    }
+
+    const now = performance.now();
+    if (now - lastUpdate < 1000) {
+      return;
+    }
+    lastUpdate = now;
+
+    let delayMs = null;
+    if (metadata && typeof metadata.captureTime === 'number' && Number.isFinite(metadata.captureTime)) {
+      delayMs = Date.now() - (performance.timeOrigin + metadata.captureTime);
+    } else if (metadata && typeof metadata.presentationTime === 'number' && Number.isFinite(metadata.presentationTime)) {
+      delayMs = Date.now() - (performance.timeOrigin + metadata.presentationTime);
+    }
+
+    if (!Number.isFinite(delayMs) || delayMs < 0) {
+      delayMs = estimateDetectionDelay();
+    }
+
+    const safeDelay = Number.isFinite(delayMs) && delayMs >= 0 ? delayMs : null;
+    const messageText = `${label} active · ${formatCurrentTime()}`;
+    const delayText = safeDelay !== null ? formatDelay(safeDelay) : 'delay: n/a';
+    if (lastState !== 'live' || lastMessageText !== messageText || lastDelayText !== delayText) {
+      setVideoStatus(container, messageElement, delayElement, 'live', messageText, delayText);
+      lastMessageText = messageText;
+      lastDelayText = delayText;
+      lastState = 'live';
+    }
+  };
+
+  if (supportsFrameCallback) {
+    const frameHandler = (_now, metadata) => {
+      updateDelay(metadata);
+      videoElement.requestVideoFrameCallback(frameHandler);
+    };
+    videoElement.requestVideoFrameCallback(frameHandler);
+  } else {
+    setInterval(() => {
+      updateDelay(null);
+    }, 600);
+  }
 }
 
 async function registerServiceWorker() {
