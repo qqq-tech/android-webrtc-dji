@@ -70,11 +70,11 @@ To start the complete flow:
 1. Launch the Go relay (`go run pion-server/main.go --addr :8080`).
 2. Run the Jetson consumer (`python jetson/webrtc_receiver.py <streamId> --signaling-url ws://<relay-host>:8080/ws`).
 3. Open `browser/dashboard.html?streamId=<streamId>&signalingHost=<relay-host>` in your browser to view both feeds.
-4. Send GCS commands or raw streaming requests to the Android app via the Socket.IO channel:
+4. Send GCS commands or raw streaming requests to the Android app through the relay control channel (the dashboard issues these automatically when you use the route planner):
    ```json
-   {"action":"takeoff"}
-   {"action":"virtual_stick","pitch":0.2,"roll":0.0,"yaw":0.0,"throttle":0.1}
-   {"action":"start","host":"<jetson-ip>","port":9000}
+   {"type":"gcs_command","payload":{"action":"takeoff"}}
+   {"type":"gcs_command","payload":{"action":"virtual_stick","pitch":0.2,"roll":0.0,"yaw":0.0,"throttle":0.1}}
+   {"type":"raw_stream","payload":{"action":"start","host":"<jetson-ip>","port":9000}}
    ```
 
 All control/data messages are UTF-8 encoded JSON to keep the interfaces consistent across Android, Jetson, Go and browser components.
@@ -82,11 +82,12 @@ All control/data messages are UTF-8 encoded JSON to keep the interfaces consiste
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Prerequisites
-I used Socket.IO throughout all my projects, and you'll need the following at hand to proceed:
+Make sure you have the following pieces ready before wiring everything together:
 
-* Android application (tested on 'minSdkVersion 24', 'targetSdkVersion 30') 
-* Any server that can act as the signaling server
-* A website or just any barebone HTML file with a video tag and some Javascript code to invoke the call functions.
+* An Android application (tested on `minSdkVersion 24`, `targetSdkVersion 30`) bundled with the sources under [`android-application/`](android-application).
+* The Go relay in [`pion-server/`](pion-server) running to broker SDP/ICE, telemetry and control messages between peers.
+* The optional Jetson pipeline (`jetson/webrtc_receiver.py`) if you want real-time object detection overlays.
+* A browser environment that can load [`browser/dashboard.html`](browser/dashboard.html) or your own UI powered by the same JSON protocol.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -179,36 +180,18 @@ and in your android alter your gradle files. Add ```jcenter()``` as a repository
 implementation 'org.webrtc:google-webrtc:1.0.+'
 ```
 
-Once you have your Node.JS server with a socket running, add the listener function for the event ```webrtc_msg```. 
-```
-socket.on("webrtc_msg", (receivee: string, msg: object) => {
-    let from_id = socket.id;
-    socket.to(receivee).emit('webrtc_msg', from_id, msg);
-});
-```
-
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- SETUP -->
 ### Setup
 
-Copy the folder containing the Java files to your android application and alter the package name to fit your solution. You will notice that ```SocketConnection``` occurs a few places so modify that to use your own Socket handle. I will not include code for setting up sockets on android either.
-Once the code has been merged with your own project you only need to instantiate the ```DJIStreamer``` somewhere it will persist in your application as such:
+Copy the folder containing the Java files to your Android application and align the package name with your solution. Instantiate the `DJIStreamer` somewhere it can live for the duration of the flight session:
 ```
 DJIStreamer streamer = new DJIStreamer(this);
-``` 
-That is it for the android part. You will not need to interact anymore with the instance of ```DJIStreamer```. All calls will be initiated from the browser window, and the android application will automatically accept any incoming calls.
+```
+The streamer now connects directly to the Go relay, so you no longer need to provision a separate Socket.IO backend. The relay delivers SDP/ICE, telemetry and control messages between the dashboard and the drone. When the web UI emits `{ "type": "gcs_command", "payload": { ... } }`, the relay forwards it to the Android device where `GCSCommandHandler` executes the request and responds with `{ "type": "gcs_command_ack", ... }`.
 
-Now the last thing is to include ```WebRTCManager.js``` in your HTML and before attempting to start any videofeed call the setup of socket events:
-```
-DroneStreamManager.setupSocketEvent(socket);
-```
- and once you wish to call a drone in order to get its videofeed you invoke the function as such:
-```
-const ds = DroneStreamManager.createDroneStream(droneSocketId, videoTagID);
-ds.startDroneStream();
-```
-We let the ```DroneStreamManager``` instantiate an instance of ```DroneStream``` for us and invoke the ```startDroneStream()``` afterwards. Please notice the arguments for creating a drone stream; the socket ID and the video tag ID. The socket ID will be the ID belonging to the android application that is assigned when connecting to our signaling server. This is to let our signaling server know where to pass the message when it receives it. We also provide the function with the ID of the HTML video tag, so the drone stream object knows which DOM element to render the video to once it has it.
+On the browser side you can either reuse [`browser/dashboard.js`](browser/dashboard.js) or follow the same pattern: send JSON envelopes through the relay WebSocket and listen for acknowledgements and telemetry updates.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

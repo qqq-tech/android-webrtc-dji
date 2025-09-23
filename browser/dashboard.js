@@ -4,10 +4,8 @@ const signalingHost = params.get('signalingHost') || window.location.hostname;
 const signalingPort = params.get('signalingPort') || '8080';
 const detectionHost = params.get('detectionHost') || signalingHost;
 const detectionPort = params.get('detectionPort') || '8765';
-const gcsHost = params.get('gcsHost') || signalingHost;
-const gcsPort = params.get('gcsPort') || signalingPort;
-const gcsProtocol = params.get('gcsProtocol') || (window.location.protocol === 'https:' ? 'https' : 'http');
-const gcsPathParam = params.get('gcsPath');
+const gcsEnableParam = (params.get('enableGcs') || '').trim().toLowerCase();
+const gcsControlEnabled = gcsEnableParam !== 'false';
 
 const isSecurePage = window.location.protocol === 'https:';
 const signalingProtocol = params.get('signalingProtocol') || (isSecurePage ? 'wss' : 'ws');
@@ -56,7 +54,6 @@ let mapInstance = null;
 let routePolyline = null;
 let waypointMarkers = [];
 let waypoints = [];
-let gcsSocket = null;
 let rawVideoAvailable = false;
 let overlayVideoAvailable = false;
 const trackedVideoTracks = new WeakSet();
@@ -69,6 +66,7 @@ let telemetryStaleTimer = null;
 let droneAutoCentered = false;
 const DRONE_TRAIL_MAX_POINTS = 300;
 const TELEMETRY_STALE_TIMEOUT_MS = 15000;
+let gcsChannelReady = false;
 
 markTelemetryWaiting();
 
@@ -128,11 +126,23 @@ pc.onicecandidate = (event) => {
 
 signalingSocket.addEventListener('open', () => {
   connectionStatus.textContent = 'signaling';
+  if (gcsControlEnabled) {
+    gcsChannelReady = true;
+    if (gcsStatusLabel) {
+      gcsStatusLabel.textContent = 'GCS: connected';
+    }
+  }
 });
 
 signalingSocket.addEventListener('close', () => {
   connectionStatus.textContent = 'disconnected';
   markTelemetryStale();
+  if (gcsControlEnabled) {
+    gcsChannelReady = false;
+    if (gcsStatusLabel) {
+      gcsStatusLabel.textContent = 'GCS: disconnected';
+    }
+  }
 });
 
 signalingSocket.addEventListener('message', async (event) => {
@@ -145,6 +155,11 @@ signalingSocket.addEventListener('message', async (event) => {
         .filter(Boolean)
         .join(' ');
       connectionStatus.textContent = details ? `error: ${details}` : 'error';
+      return;
+    }
+
+    if (message.type === 'gcs_command_ack') {
+      handleGcsCommandAck(message);
       return;
     }
 
@@ -839,55 +854,30 @@ function haversineDistance(a, b) {
   return earthRadius * c;
 }
 
-function initGcsSocket() {
-  if (!window.io) {
+function initGcsControlChannel() {
+  if (!gcsControlEnabled) {
     if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = 'GCS: Socket.IO unavailable';
+      gcsStatusLabel.textContent = 'GCS: disabled';
+    }
+    return;
+  }
+  gcsChannelReady = false;
+  if (gcsStatusLabel) {
+    gcsStatusLabel.textContent = 'GCS: waiting for relay';
+  }
+}
+
+function transmitRouteToGcs() {
+  if (!gcsControlEnabled) {
+    if (gcsStatusLabel) {
+      gcsStatusLabel.textContent = 'GCS: disabled';
     }
     return;
   }
 
-  const portSegment = gcsPort ? `:${gcsPort}` : '';
-  const origin = `${gcsProtocol}://${gcsHost}${portSegment}`;
-  const options = {
-    transports: ['websocket'],
-  };
-  if (gcsPathParam) {
-    options.path = gcsPathParam;
-  }
-  gcsSocket = window.io(origin, options);
-  gcsSocket.on('connect', () => {
+  if (!gcsChannelReady) {
     if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = 'GCS: connected';
-    }
-  });
-  gcsSocket.on('disconnect', () => {
-    if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = 'GCS: disconnected';
-    }
-  });
-  gcsSocket.on('connect_error', (error) => {
-    if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = `GCS: ${error?.message || 'connection error'}`;
-    }
-  });
-  gcsSocket.on('gcs_command_ack', (payload) => {
-    if (!gcsStatusLabel || !payload) {
-      return;
-    }
-    if (payload.error) {
-      gcsStatusLabel.textContent = `GCS error: ${payload.code || 'UNKNOWN'} - ${payload.error}`;
-    } else if (payload.status) {
-      const descriptor = payload.action ? `${payload.action}: ${payload.status}` : payload.status;
-      gcsStatusLabel.textContent = `GCS: ${descriptor}`;
-    }
-  });
-}
-
-function transmitRouteToGcs() {
-  if (!gcsSocket || !gcsSocket.connected) {
-    if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = 'GCS: unavailable';
+      gcsStatusLabel.textContent = 'GCS: relay unavailable';
     }
     return;
   }
@@ -912,13 +902,38 @@ function transmitRouteToGcs() {
     options: {
       altitude: boundedAltitude,
     },
+    streamId,
   };
-  gcsSocket.emit('gcs_command', payload);
+  sendSignalingMessage({ type: 'gcs_command', payload });
   if (gcsStatusLabel) {
     gcsStatusLabel.textContent = 'GCS: sending mission...';
   }
 }
 
+function handleGcsCommandAck(message) {
+  if (!gcsControlEnabled || !gcsStatusLabel) {
+    return;
+  }
+  const payload =
+    message && typeof message === 'object' && message.payload && typeof message.payload === 'object'
+      ? message.payload
+      : {};
+  if (payload.error) {
+    const code = typeof payload.code === 'string' && payload.code ? payload.code : 'UNKNOWN';
+    const action = typeof payload.action === 'string' && payload.action ? `${payload.action}: ` : '';
+    gcsStatusLabel.textContent = `GCS error: ${action}${payload.error} (${code})`;
+    return;
+  }
+  const status = typeof payload.status === 'string' ? payload.status : '';
+  const actionDescriptor = typeof payload.action === 'string' && payload.action ? payload.action : '';
+  if (status) {
+    const descriptor = actionDescriptor ? `${actionDescriptor}: ${status}` : status;
+    gcsStatusLabel.textContent = `GCS: ${descriptor}`;
+  } else {
+    gcsStatusLabel.textContent = 'GCS: acknowledgment received';
+  }
+}
+
 registerServiceWorker();
 initRoutePlanner();
-initGcsSocket();
+initGcsControlChannel();
