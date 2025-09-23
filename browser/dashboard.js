@@ -155,7 +155,13 @@ const startRouteButton = document.getElementById('startRoute');
 const undoWaypointButton = document.getElementById('undoWaypoint');
 const clearRouteButton = document.getElementById('clearRoute');
 const defaultAltitudeInput = document.getElementById('defaultAltitude');
-const gcsStatusLabel = document.getElementById('gcsStatus');
+const gcsStatusElements = Array.from(document.querySelectorAll('[data-role="gcs-status"]'));
+const takeoffButton = document.getElementById('commandTakeoff');
+const landButton = document.getElementById('commandLand');
+const returnHomeButton = document.getElementById('commandReturnHome');
+const cancelReturnButton = document.getElementById('commandCancelReturn');
+const virtualStickForm = document.getElementById('virtualStickForm');
+const gimbalForm = document.getElementById('gimbalForm');
 const droneLocationContainer = document.getElementById('droneLocation');
 const droneLocationCoords = document.getElementById('droneLocationCoords');
 const droneLocationMeta = document.getElementById('droneLocationMeta');
@@ -242,9 +248,7 @@ signalingSocket.addEventListener('open', () => {
   connectionStatus.textContent = 'signaling';
   if (gcsControlEnabled) {
     gcsChannelReady = true;
-    if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = 'GCS: connected';
-    }
+    updateGcsStatus('GCS: connected');
   }
 });
 
@@ -253,9 +257,7 @@ signalingSocket.addEventListener('close', () => {
   markTelemetryStale();
   if (gcsControlEnabled) {
     gcsChannelReady = false;
-    if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = 'GCS: disconnected';
-    }
+    updateGcsStatus('GCS: disconnected');
   }
 });
 
@@ -968,37 +970,107 @@ function haversineDistance(a, b) {
   return earthRadius * c;
 }
 
-function initGcsControlChannel() {
-  if (!gcsControlEnabled) {
-    if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = 'GCS: disabled';
-    }
+function updateGcsStatus(message) {
+  if (!Array.isArray(gcsStatusElements) || gcsStatusElements.length === 0) {
     return;
   }
-  gcsChannelReady = false;
-  if (gcsStatusLabel) {
-    gcsStatusLabel.textContent = 'GCS: waiting for relay';
+  gcsStatusElements.forEach((element) => {
+    if (element) {
+      element.textContent = message;
+    }
+  });
+}
+
+function ensureGcsReady() {
+  if (!gcsControlEnabled) {
+    updateGcsStatus('GCS: disabled');
+    return false;
   }
+  if (!gcsChannelReady) {
+    updateGcsStatus('GCS: relay unavailable');
+    return false;
+  }
+  return true;
+}
+
+function sendGcsCommand(action, payloadExtras = {}, statusMessage) {
+  if (!ensureGcsReady()) {
+    return false;
+  }
+  const payload = {
+    action,
+    streamId,
+    createdAt: Date.now(),
+    ...payloadExtras,
+  };
+  sendSignalingMessage({ type: 'gcs_command', payload });
+  if (typeof statusMessage === 'string' && statusMessage.trim().length > 0) {
+    updateGcsStatus(statusMessage);
+  }
+  return true;
+}
+
+function initGcsControls() {
+  const registerSimpleCommand = (element, action, statusText) => {
+    if (!element) {
+      return;
+    }
+    element.addEventListener('click', () => {
+      sendGcsCommand(action, {}, statusText);
+    });
+  };
+
+  registerSimpleCommand(takeoffButton, 'takeoff', 'GCS: requesting takeoff…');
+  registerSimpleCommand(landButton, 'land', 'GCS: requesting landing…');
+  registerSimpleCommand(returnHomeButton, 'return_home', 'GCS: requesting return-to-home…');
+  registerSimpleCommand(cancelReturnButton, 'cancel_return_home', 'GCS: cancelling return-to-home…');
+
+  virtualStickForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const formData = new FormData(virtualStickForm);
+    const payload = {
+      pitch: parseFiniteNumber(formData.get('pitch')) ?? 0,
+      roll: parseFiniteNumber(formData.get('roll')) ?? 0,
+      yaw: parseFiniteNumber(formData.get('yaw')) ?? 0,
+      throttle: parseFiniteNumber(formData.get('throttle')) ?? 0,
+    };
+    sendGcsCommand('virtual_stick', payload, 'GCS: sending virtual stick command…');
+  });
+
+  gimbalForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const formData = new FormData(gimbalForm);
+    const pitch = parseFiniteNumber(formData.get('pitch')) ?? 0;
+    const roll = parseFiniteNumber(formData.get('roll')) ?? 0;
+    const yaw = parseFiniteNumber(formData.get('yaw')) ?? 0;
+    const durationRaw = parseFiniteNumber(formData.get('duration')) ?? 2;
+    const duration = Math.min(30, Math.max(1, Math.round(durationRaw)));
+    const payload = { pitch, roll, yaw, duration };
+    sendGcsCommand('gimbal_rotate', payload, 'GCS: rotating gimbal…');
+  });
+}
+
+function initGcsControlChannel() {
+  gcsChannelReady = false;
+  if (!gcsControlEnabled) {
+    updateGcsStatus('GCS: disabled');
+    return;
+  }
+  updateGcsStatus('GCS: waiting for relay');
 }
 
 function transmitRouteToGcs() {
   if (!gcsControlEnabled) {
-    if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = 'GCS: disabled';
-    }
+    updateGcsStatus('GCS: disabled');
     return;
   }
 
   if (!gcsChannelReady) {
-    if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = 'GCS: relay unavailable';
-    }
+    updateGcsStatus('GCS: relay unavailable');
     return;
   }
   if (waypoints.length < 2) {
-    if (gcsStatusLabel) {
-      gcsStatusLabel.textContent = 'GCS: add at least two waypoints';
-    }
+    updateGcsStatus('GCS: add at least two waypoints');
     return;
   }
   const altitude = Number.parseFloat(defaultAltitudeInput?.value || '30');
@@ -1010,22 +1082,16 @@ function transmitRouteToGcs() {
     altitude: boundedAltitude,
   }));
   const payload = {
-    action: 'flight_path',
     waypoints: missionWaypoints,
-    createdAt: Date.now(),
     options: {
       altitude: boundedAltitude,
     },
-    streamId,
   };
-  sendSignalingMessage({ type: 'gcs_command', payload });
-  if (gcsStatusLabel) {
-    gcsStatusLabel.textContent = 'GCS: sending mission...';
-  }
+  sendGcsCommand('flight_path', payload, 'GCS: sending mission...');
 }
 
 function handleGcsCommandAck(message) {
-  if (!gcsControlEnabled || !gcsStatusLabel) {
+  if (!gcsControlEnabled) {
     return;
   }
   const payload =
@@ -1035,19 +1101,20 @@ function handleGcsCommandAck(message) {
   if (payload.error) {
     const code = typeof payload.code === 'string' && payload.code ? payload.code : 'UNKNOWN';
     const action = typeof payload.action === 'string' && payload.action ? `${payload.action}: ` : '';
-    gcsStatusLabel.textContent = `GCS error: ${action}${payload.error} (${code})`;
+    updateGcsStatus(`GCS error: ${action}${payload.error} (${code})`);
     return;
   }
   const status = typeof payload.status === 'string' ? payload.status : '';
   const actionDescriptor = typeof payload.action === 'string' && payload.action ? payload.action : '';
   if (status) {
     const descriptor = actionDescriptor ? `${actionDescriptor}: ${status}` : status;
-    gcsStatusLabel.textContent = `GCS: ${descriptor}`;
+    updateGcsStatus(`GCS: ${descriptor}`);
   } else {
-    gcsStatusLabel.textContent = 'GCS: acknowledgment received';
+    updateGcsStatus('GCS: acknowledgment received');
   }
 }
 
 registerServiceWorker();
 initRoutePlanner();
+initGcsControls();
 initGcsControlChannel();
