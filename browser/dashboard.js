@@ -839,6 +839,7 @@ function setFlightControlsVisibility(shouldShow) {
 
   flightControlsPanel.hidden = !shouldShow;
   flightControlsPanel.setAttribute('aria-hidden', String(!shouldShow));
+  flightControlsPanel.style.display = shouldShow ? '' : 'none';
 
   if (toggleFlightControlsButton) {
     toggleFlightControlsButton.setAttribute('aria-expanded', String(shouldShow));
