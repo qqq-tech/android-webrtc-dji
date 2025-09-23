@@ -199,6 +199,97 @@
         z-index: 25;
       }
 
+      .drone-location {
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        background: rgba(15, 23, 42, 0.65);
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        display: grid;
+        gap: 0.35rem;
+      }
+
+      .drone-location .label {
+        font-size: 0.75rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #38bdf8;
+      }
+
+      .drone-location .coords {
+        font-family: 'Segoe UI Mono', 'Menlo', 'Consolas', monospace;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #e2e8f0;
+      }
+
+      .drone-location .meta {
+        font-size: 0.85rem;
+        color: #cbd5f5;
+      }
+
+      .drone-location[data-state='live'] .meta {
+        color: #bae6fd;
+      }
+
+      .drone-location[data-state='waiting'] {
+        border-color: rgba(250, 204, 21, 0.35);
+      }
+
+      .drone-location[data-state='waiting'] .coords,
+      .drone-location[data-state='waiting'] .meta {
+        color: #fde68a;
+      }
+
+      .drone-location[data-state='stale'] {
+        border-color: rgba(248, 113, 113, 0.35);
+      }
+
+      .drone-location[data-state='stale'] .coords,
+      .drone-location[data-state='stale'] .meta {
+        color: #fca5a5;
+      }
+
+      .drone-location-marker {
+        position: relative;
+        width: 24px;
+        height: 24px;
+      }
+
+      .drone-location-marker .pulse {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        background: rgba(56, 189, 248, 0.25);
+        animation: dronePulse 2.4s ease-out infinite;
+      }
+
+      .drone-location-marker .dot {
+        position: absolute;
+        top: 6px;
+        left: 6px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #38bdf8;
+        border: 2px solid #0f172a;
+        box-shadow: 0 0 12px rgba(56, 189, 248, 0.7);
+      }
+
+      @keyframes dronePulse {
+        0% {
+          transform: scale(0.5);
+          opacity: 0.8;
+        }
+        70% {
+          transform: scale(1.35);
+          opacity: 0;
+        }
+        100% {
+          transform: scale(1.35);
+          opacity: 0;
+        }
+      }
+
       .route-panel.open {
         transform: translateY(0);
       }
@@ -372,6 +463,11 @@
         <input type="number" id="defaultAltitude" min="5" max="120" step="1" value="30" />
         <button class="secondary" id="undoWaypoint" type="button">Undo</button>
         <button class="secondary" id="clearRoute" type="button">Clear</button>
+      </div>
+      <div class="drone-location" id="droneLocation" data-state="waiting" aria-live="polite">
+        <div class="label">Live location</div>
+        <div class="coords" id="droneLocationCoords">—</div>
+        <div class="meta" id="droneLocationMeta">Awaiting telemetry…</div>
       </div>
       <div id="routeMap" role="presentation"></div>
       <div class="route-summary">

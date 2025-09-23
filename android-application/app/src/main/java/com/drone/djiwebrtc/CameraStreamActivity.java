@@ -8,6 +8,7 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.View;
@@ -18,6 +19,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import com.drone.djiwebrtc.core.SignalingMessageBuilder;
 import com.drone.djiwebrtc.core.WebRTCClient;
 import com.drone.djiwebrtc.core.WebRTCMediaOptions;
 import com.drone.djiwebrtc.databinding.ActivityCameraStreamBinding;
@@ -27,6 +29,7 @@ import com.drone.djiwebrtc.util.PionConfigStore;
 import com.google.android.material.snackbar.Snackbar;
 import com.google.android.material.textfield.MaterialAutoCompleteTextView;
 
+import org.json.JSONException;
 import org.osmdroid.config.Configuration;
 import org.osmdroid.util.GeoPoint;
 import org.webrtc.Camera1Enumerator;
@@ -55,6 +58,7 @@ public class CameraStreamActivity extends AppCompatActivity {
     private static final float LOCATION_UPDATE_NETWORK_MIN_DISTANCE_M = 5.0f;
     private static final String STATE_STREAM_ID = "state_stream_id";
     private static final String STATE_CAMERA_INDEX = "state_camera_index";
+    private static final long TELEMETRY_MIN_INTERVAL_MS = 1000L;
 
     private ActivityCameraStreamBinding binding;
     private PionConfigStore pionConfigStore;
@@ -76,6 +80,8 @@ public class CameraStreamActivity extends AppCompatActivity {
     private double traveledDistanceMeters = 0d;
     private LocationManager locationManager;
     private boolean locationUpdatesActive = false;
+    private long lastTelemetrySentRealtime = 0L;
+    private Location lastKnownLocation;
     private final LocationListener locationListener = new LocationListener() {
         @Override
         public void onLocationChanged(@NonNull Location location) {
@@ -397,6 +403,9 @@ public class CameraStreamActivity extends AppCompatActivity {
                     stopStreamingInternal(getString(R.string.camera_stream_status_peer_disconnected))));
             streamingState = StreamingState.STREAMING;
             updateStatus(getString(R.string.camera_stream_status_streaming, activeStreamId));
+            if (lastKnownLocation != null) {
+                sendTelemetryUpdate(lastKnownLocation, true);
+            }
         } catch (RuntimeException e) {
             surfaceTextureHelper.dispose();
             Log.e(TAG, "Failed to start WebRTC client", e);
@@ -445,6 +454,8 @@ public class CameraStreamActivity extends AppCompatActivity {
         activeStreamId = null;
         streamingState = StreamingState.IDLE;
         stopLocationUpdates();
+        lastTelemetrySentRealtime = 0L;
+        lastKnownLocation = null;
 
         if (!availableCameras.isEmpty()) {
             if (TextUtils.isEmpty(statusMessage)) {
@@ -478,6 +489,8 @@ public class CameraStreamActivity extends AppCompatActivity {
     private void resetTraveledPath() {
         traveledPathPoints.clear();
         traveledDistanceMeters = 0d;
+        lastTelemetrySentRealtime = 0L;
+        lastKnownLocation = null;
         if (routeOverlayManager != null) {
             routeOverlayManager.updateTraveledPath(Collections.emptyList());
             routeOverlayManager.updateCurrentLocation(null);
@@ -587,22 +600,59 @@ public class CameraStreamActivity extends AppCompatActivity {
             return;
         }
 
+        lastKnownLocation = new Location(location);
+        sendTelemetryUpdate(location, false);
+
         GeoPoint newPoint = new GeoPoint(latitude, longitude);
-        if (!traveledPathPoints.isEmpty()) {
+        boolean pathUpdated = false;
+        if (traveledPathPoints.isEmpty()) {
+            traveledPathPoints.add(newPoint);
+            pathUpdated = true;
+        } else {
             GeoPoint lastPoint = traveledPathPoints.get(traveledPathPoints.size() - 1);
             double delta = lastPoint.distanceToAsDouble(newPoint);
-            if (delta < 0.5d) {
-                return;
+            if (delta >= 0.5d) {
+                traveledDistanceMeters += delta;
+                traveledPathPoints.add(newPoint);
+                pathUpdated = true;
             }
-            traveledDistanceMeters += delta;
         }
-        traveledPathPoints.add(newPoint);
 
         if (routeOverlayManager != null) {
-            routeOverlayManager.updateTraveledPath(new ArrayList<>(traveledPathPoints));
+            if (pathUpdated) {
+                routeOverlayManager.updateTraveledPath(new ArrayList<>(traveledPathPoints));
+            }
             routeOverlayManager.updateCurrentLocation(newPoint);
         }
         updatePathStatus();
+    }
+
+    private void sendTelemetryUpdate(Location location, boolean forceImmediate) {
+        if (signalingClient == null || !signalingClient.isConnected()) {
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (!forceImmediate && lastTelemetrySentRealtime > 0L
+                && now - lastTelemetrySentRealtime < TELEMETRY_MIN_INTERVAL_MS) {
+            return;
+        }
+        lastTelemetrySentRealtime = now;
+
+        long timestamp = location.getTime() > 0L ? location.getTime() : System.currentTimeMillis();
+        Double altitude = location.hasAltitude() ? location.getAltitude() : null;
+        Float accuracy = location.hasAccuracy() ? location.getAccuracy() : null;
+        try {
+            signalingClient.send(SignalingMessageBuilder.buildTelemetryMessage(
+                    location.getLatitude(),
+                    location.getLongitude(),
+                    altitude,
+                    accuracy,
+                    timestamp,
+                    "android"
+            ));
+        } catch (JSONException | IllegalArgumentException e) {
+            Log.w(TAG, "Failed to send telemetry", e);
+        }
     }
 
     private boolean isTrackingActive() {
