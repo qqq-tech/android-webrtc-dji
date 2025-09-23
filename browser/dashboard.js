@@ -1,21 +1,135 @@
 const params = new URLSearchParams(window.location.search);
 const streamId = params.get('streamId') || 'mavic-stream';
-const signalingHost = params.get('signalingHost') || window.location.hostname;
-const signalingPort = params.get('signalingPort') || '8080';
-const detectionHost = params.get('detectionHost') || signalingHost;
-const detectionPort = params.get('detectionPort') || '8765';
 const gcsEnableParam = (params.get('enableGcs') || '').trim().toLowerCase();
 const gcsControlEnabled = gcsEnableParam !== 'false';
 
 const isSecurePage = window.location.protocol === 'https:';
-const signalingProtocol = params.get('signalingProtocol') || (isSecurePage ? 'wss' : 'ws');
-const detectionProtocol = params.get('detectionProtocol') || (isSecurePage ? 'wss' : 'ws');
 
-const signalingPortSegment = signalingPort ? `:${signalingPort}` : '';
-const detectionPortSegment = detectionPort ? `:${detectionPort}` : '';
+function getDefaultHost() {
+  const candidate = window.location.hostname;
+  if (candidate && candidate.trim().length > 0) {
+    return candidate.trim();
+  }
+  return '127.0.0.1';
+}
 
-const signalingUrl = `${signalingProtocol}://${signalingHost}${signalingPortSegment}/ws?role=subscriber&streamId=${encodeURIComponent(streamId)}`;
-const detectionUrl = `${detectionProtocol}://${detectionHost}${detectionPortSegment}/detections`;
+function parseUrl(rawUrl, fallbackProtocol) {
+  if (!rawUrl) {
+    return null;
+  }
+  try {
+    return new URL(rawUrl, window.location.href);
+  } catch (error) {
+    if (rawUrl.includes('://')) {
+      return null;
+    }
+    try {
+      return new URL(`${fallbackProtocol}://${rawUrl}`);
+    } catch (innerError) {
+      console.error('Failed to parse URL', rawUrl, innerError);
+      return null;
+    }
+  }
+}
+
+function normaliseWebSocketUrl(url, defaultProtocol, defaultTerminalSegment) {
+  if (!url) {
+    return null;
+  }
+
+  if (url.protocol === 'http:' || url.protocol === 'https:') {
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  } else if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+    url.protocol = `${defaultProtocol}:`;
+  }
+
+  const segments = url.pathname.split('/').filter(Boolean);
+  const socketIoIndex = segments.findIndex((segment) => segment === 'socket.io');
+  if (socketIoIndex >= 0) {
+    segments.splice(socketIoIndex);
+  }
+  if (segments.length === 0 || segments[segments.length - 1] !== defaultTerminalSegment) {
+    segments.push(defaultTerminalSegment);
+  }
+  url.pathname = `/${segments.join('/')}`;
+  url.hash = '';
+  url.search = '';
+  return url;
+}
+
+function resolveSignalingEndpoint(searchParams, streamIdValue) {
+  const fallbackProtocol = isSecurePage ? 'wss' : 'ws';
+  const explicitUrlParam = (searchParams.get('signalingUrl') || '').trim();
+  const portOverride = (searchParams.get('signalingPort') || '').trim();
+
+  let signalingUrlObject = null;
+  if (explicitUrlParam) {
+    signalingUrlObject = parseUrl(explicitUrlParam, `${fallbackProtocol}://`);
+  }
+
+  if (!signalingUrlObject) {
+    const hostParam = (searchParams.get('signalingHost') || '').trim();
+    const hostValue = hostParam || getDefaultHost();
+    const protocolParam = (searchParams.get('signalingProtocol') || '').trim();
+    const protocolValue = protocolParam || fallbackProtocol;
+    const portValue = portOverride || '8080';
+    const hostPortPart = portValue ? `${hostValue}:${portValue}` : hostValue;
+    signalingUrlObject = parseUrl(`${protocolValue}://${hostPortPart}`, `${fallbackProtocol}://${hostPortPart}`);
+    if (!signalingUrlObject) {
+      signalingUrlObject = new URL(`${fallbackProtocol}://${hostPortPart}`);
+    }
+  }
+
+  if (portOverride) {
+    signalingUrlObject.port = portOverride;
+  }
+
+  signalingUrlObject = normaliseWebSocketUrl(signalingUrlObject, fallbackProtocol, 'ws');
+  signalingUrlObject.searchParams.set('role', 'subscriber');
+  signalingUrlObject.searchParams.set('streamId', streamIdValue);
+
+  return signalingUrlObject;
+}
+
+function resolveDetectionUrl(searchParams, signalingUrlObject) {
+  const fallbackProtocol = signalingUrlObject?.protocol === 'wss:' ? 'wss' : isSecurePage ? 'wss' : 'ws';
+  const explicitDetectionUrl = (searchParams.get('detectionUrl') || '').trim();
+  if (explicitDetectionUrl) {
+    const url = parseUrl(explicitDetectionUrl, `${fallbackProtocol}://`);
+    if (!url) {
+      return explicitDetectionUrl;
+    }
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    }
+    return url.toString();
+  }
+
+  const detectionHostParam = (searchParams.get('detectionHost') || '').trim();
+  const detectionPortParam = (searchParams.get('detectionPort') || '').trim();
+  const detectionProtocolParam = (searchParams.get('detectionProtocol') || '').trim();
+
+  const host = detectionHostParam || signalingUrlObject?.hostname || getDefaultHost();
+  const port = detectionPortParam || '8765';
+  const protocol = detectionProtocolParam || fallbackProtocol;
+
+  const hostPortPart = port ? `${host}:${port}` : host;
+  const url = parseUrl(`${protocol}://${hostPortPart}`, `${protocol}://${host}`);
+  if (!url) {
+    return `${protocol}://${hostPortPart}/detections`;
+  }
+  if (url.protocol === 'http:' || url.protocol === 'https:') {
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  }
+  if (!url.pathname || url.pathname === '/') {
+    url.pathname = '/detections';
+  }
+  return url.toString();
+}
+
+const signalingUrlObject = resolveSignalingEndpoint(params, streamId);
+const signalingUrl = signalingUrlObject.toString();
+const detectionUrl = resolveDetectionUrl(params, signalingUrlObject);
 
 const rawVideo = document.getElementById('rawVideo');
 const overlayVideo = document.getElementById('overlayVideo');

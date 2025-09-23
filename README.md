@@ -110,7 +110,7 @@ Follow the component-specific notes below to compile and launch each part of the
    ```
 2. **Configure DJI keys** – register your application on the DJI developer portal, download the `DJISDKLIB` AAR if required, and add your `dji.sdk.key` to `AndroidManifest.xml` together with the required permissions (USB, internet, location, etc.).
 3. **Build** – run `./gradlew assembleDebug` (or use the Android Studio *Build > Make Project* action) to produce an APK that contains the GCS logic plus the WebRTC/raw H.264 streamers.
-4. **Configure Pion relay** – launch the ground control app, swipe in from the right edge, and choose **Pion 릴레이 설정** to update the signaling URL/stream ID. The values are persisted in shared preferences and applied by the embedded publisher. If you want to change the shipped defaults before installing the APK, edit `android-application/app/src/main/res/values/strings.xml` (`pion_signaling_url_default`, `pion_stream_id_default`).
+4. **Configure Pion relay** – launch the ground control app, swipe in from the right edge, and choose **Pion 릴레이 설정** to update the signaling URL/stream ID. The values are persisted in shared preferences and applied by the embedded publisher. Legacy Socket.IO endpoints are rewritten to the `/ws` path automatically, so existing field configurations continue to function. If you want to change the shipped defaults before installing the APK, edit `android-application/app/src/main/res/values/strings.xml` (`pion_signaling_url_default`, `pion_stream_id_default`).
 5. **Run** – deploy the app to a DJI-supported device, connect the drone, and launch the activity that instantiates `DJIStreamer`. Confirm your signaling server URL, drone ID, and optional raw TCP streaming targets are set before requesting a stream from the browser dashboard.
 
 ### Browser dashboard
@@ -120,7 +120,7 @@ Follow the component-specific notes below to compile and launch each part of the
    cd browser
    python -m http.server 8081
    ```
-2. **Run** – open `http://localhost:8081/dashboard.html?streamId=<STREAM_ID>&signalingHost=<RELAY_HOST>` in Chrome/Firefox. Replace `STREAM_ID` with the identifier used by the Android peer and `RELAY_HOST` with the reachable hostname/IP (including `ws://`/`wss://` if applicable) of the Pion relay.
+2. **Run** – open `http://localhost:8081/dashboard.html?streamId=<STREAM_ID>&signalingHost=<RELAY_HOST>` in Chrome/Firefox. Replace `STREAM_ID` with the identifier used by the Android peer and `RELAY_HOST` with the reachable hostname/IP (including `ws://`/`wss://` if applicable) of the Pion relay. If you already bookmarked an older Socket.IO style endpoint (for example `http://host:8080/socket.io`), pass it via `signalingUrl=` or `signalingHost=` and the dashboard will automatically translate it to the relay's `/ws` endpoint.
 3. **Operate** – the left pane displays the raw WebRTC track while the right canvas renders YOLO overlays as soon as the Jetson WebSocket publishes detection JSON. Any `{ "error": "...", "code": "..." }` messages received from the relay will surface in the UI console.
 
 ### Jetson analytics service
