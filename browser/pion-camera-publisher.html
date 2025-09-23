@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pion Relay – Camera Publisher (Demo)</title>
+  <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+  <style>
+    :root { --bg:#0b0f14; --panel:#121821; --muted:#8692a0; --accent:#4ea3ff; --ok:#2ecc71; --bad:#ff5c5c; }
+    body { margin:0; font:14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:#e8eef6; }
+    header { padding:18px 20px; border-bottom:1px solid #1d2734; background:linear-gradient(180deg, #10151d, #0b0f14); position:sticky; top:0; z-index:2; }
+    h1 { font-size:18px; margin:0 0 6px; }
+    .sub { color:var(--muted); font-size:12px; }
+    main { display:grid; grid-template-columns:380px 1fr; gap:14px; padding:14px; }
+    .card { background:var(--panel); border:1px solid #1d2734; border-radius:14px; box-shadow:0 8px 18px rgba(0,0,0,.35); }
+    .left { padding:14px; }
+    .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
+    label { width:100px; color:#b9c5d6; font-size:12px; }
+    input[type=text], input[type=url], select { flex:1; padding:8px 10px; border-radius:10px; border:1px solid #243247; background:#0f141c; color:#e8eef6; }
+    input[type=checkbox]{ transform:scale(1.15); }
+    button { border:0; padding:10px 12px; border-radius:12px; background:#1a2433; color:#e9f3ff; cursor:pointer; }
+    button.primary { background:var(--accent); color:#001225; font-weight:700; }
+    button.danger { background:#2a1a1a; color:#ffd7d7; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; border:1px solid #2b3a51; color:#a9b7c8; }
+    .ok{ color:var(--ok); border-color:var(--ok); }
+    .bad{ color:var(--bad); border-color:var(--bad); }
+    .right { padding:10px; display:grid; grid-template-rows:auto 1fr; gap:10px; }
+    .videoWrap { position:relative; aspect-ratio:16/9; background:#0f141c; border-radius:12px; overflow:hidden; border:1px solid #223049; }
+    video { width:100%; height:100%; object-fit:contain; background:#0f141c; }
+    pre.log { margin:0; padding:12px; background:#0f141c; border-radius:12px; border:1px solid #223049; white-space:pre-wrap; word-wrap:break-word; max-height:260px; overflow:auto; font-size:12px; }
+    .footer { padding:10px 14px 16px; color:#8ea0b6; font-size:12px; }
+    code { color:#c6e2ff; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Pion Relay – Camera Publisher <span class="pill" id="statePill">IDLE</span></h1>
+    <div class="sub">URL 쿼리로 <code>streamId</code>, <code>signalingHost</code>를 넘겨 사용할 수 있어요. 예) <code>?streamId=camera-1&signalingHost=ws://127.0.0.1:8080</code></div>
+  </header>
+
+  <main>
+    <section class="card left">
+      <div class="row"><label>Signaling</label><input id="signalingHost" type="url" placeholder="ws://localhost:8080" /></div>
+      <div class="row"><label>Stream ID</label><input id="streamId" type="text" placeholder="camera-1" /></div>
+      <div class="row"><label>ICE 서버</label><input id="iceServers" type="text" placeholder="stun:stun.l.google.com:19302" /></div>
+      <div class="row"><label>오디오 포함</label><input id="withAudio" type="checkbox" /> <span class="sub">(마이크 사용 권한이 필요할 수 있음)</span></div>
+      <div class="row"><label>카메라 방향</label>
+        <select id="facingMode">
+          <option value="">자동 선택</option>
+          <option value="user">전면 카메라 (selfie)</option>
+          <option value="environment">후면 카메라 (environment)</option>
+        </select>
+      </div>
+      <div class="row"><label>위치 공유</label><input id="withLocation" type="checkbox" /> <span class="sub">(가능한 경우 장치 위치를 실시간으로 전송)</span></div>
+      <div class="row"><label>비트레이트</label><input id="bitrate" type="text" value="4000000" /> <span class="sub">bps (예: 4,000,000 = 4Mbps)</span></div>
+      <div class="row"><label>코덱 고정</label>
+        <select id="codec">
+          <option value="">브라우저 기본</option>
+          <option value="video/H264">H.264 (권장)</option>
+          <option value="video/VP8">VP8</option>
+          <option value="video/VP9">VP9</option>
+          <option value="video/AV1">AV1</option>
+        </select>
+      </div>
+      <div class="row" style="gap:12px; margin-top:16px;">
+        <button id="btnStart" class="primary">카메라 전송 시작 & Publish</button>
+        <button id="btnStop" class="danger" disabled>중지</button>
+      </div>
+      <div class="row" style="margin-top:16px;">
+        <span class="pill" id="wsPill">WS: -</span>
+        <span class="pill" id="pcPill">PC: -</span>
+      </div>
+    </section>
+
+    <section class="card right">
+      <div class="videoWrap"><video id="preview" autoplay playsinline muted></video></div>
+      <pre class="log" id="log"></pre>
+      <div class="footer">Tip: 후면 카메라를 사용하려면 모바일에서는 "후면 카메라" 옵션을 선택하세요 · 문제 시 콘솔 열어 로그를 확인하세요.</div>
+    </section>
+  </main>
+
+  <script>
+  (function(){
+    const $ = sel => document.querySelector(sel);
+    const log = (...args) => { console.log(...args); const el=$('#log'); el.textContent += args.map(a=> typeof a==='string'? a: JSON.stringify(a)).join(' ') + '\n'; el.scrollTop = el.scrollHeight; };
+    const setPill = (id, text, cls) => { const el=$(id); el.textContent = text; el.className = 'pill ' + (cls||''); };
+
+    // URL 파라미터 적용
+    const params = new URLSearchParams(location.search);
+    $('#signalingHost').value = params.get('signalingHost') || 'ws://localhost:8080';
+    $('#streamId').value      = params.get('streamId') || 'camera-1';
+    $('#iceServers').value    = params.get('ice') || 'stun:stun.l.google.com:19302';
+    const facingParam = params.get('facing') || params.get('facingMode') || '';
+    if (facingParam) {
+      const facingSelect = $('#facingMode');
+      if (facingSelect) {
+        const option = Array.from(facingSelect.options).find(opt => opt.value === facingParam);
+        if (option) facingSelect.value = facingParam;
+      }
+    }
+
+    let pc, ws, mediaStream, sender, currentCodec;
+    let pendingRemoteCandidates = [];
+    let pendingOutboundMessages = [];
+    let geoWatchId = null;
+    let shareLocation = false;
+    let signalSender = () => {};
+
+    const supportsGeolocation = 'geolocation' in navigator;
+    if (!supportsGeolocation) {
+      const locCheckbox = $('#withLocation');
+      if (locCheckbox) {
+        locCheckbox.disabled = true;
+        locCheckbox.title = '이 브라우저는 위치 공유를 지원하지 않습니다.';
+      }
+    }
+
+    function stopLocationWatch() {
+      if (geoWatchId !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(geoWatchId);
+        geoWatchId = null;
+      }
+    }
+
+    function startLocationWatch() {
+      if (!shareLocation || !navigator.geolocation) {
+        return;
+      }
+      stopLocationWatch();
+      geoWatchId = navigator.geolocation.watchPosition(
+        (position) => {
+          const coords = position?.coords;
+          if (!coords) return;
+          const { latitude, longitude, altitude, accuracy } = coords;
+          if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+            return;
+          }
+          const payload = {
+            type: 'telemetry',
+            latitude,
+            longitude,
+            timestamp: typeof position.timestamp === 'number' ? position.timestamp : Date.now(),
+            source: 'browser'
+          };
+          if (Number.isFinite(altitude)) {
+            payload.altitude = altitude;
+          }
+          if (Number.isFinite(accuracy) && accuracy >= 0) {
+            payload.accuracy = accuracy;
+          }
+          signalSender(payload, '→ TELEMETRY');
+        },
+        (error) => {
+          log('위치 공유 오류:', error?.message || error);
+        },
+        { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+      );
+    }
+
+    async function start() {
+      const signaling = $('#signalingHost').value.trim();
+      const streamId  = $('#streamId').value.trim();
+      const iceUrl    = $('#iceServers').value.trim();
+      const withAudio = $('#withAudio').checked;
+      const facingSelect = $('#facingMode');
+      const facingMode = facingSelect ? facingSelect.value : '';
+      const locationCheckbox = $('#withLocation');
+      shareLocation = !!(locationCheckbox && locationCheckbox.checked && supportsGeolocation);
+      if (locationCheckbox && locationCheckbox.checked && !supportsGeolocation) {
+        log('이 브라우저는 위치 공유를 지원하지 않습니다.');
+      }
+      currentCodec    = $('#codec').value;
+      pendingRemoteCandidates = [];
+      pendingOutboundMessages = [];
+
+      if (!signaling.startsWith('ws://') && !signaling.startsWith('wss://')) {
+        alert('signalingHost 는 ws:// 또는 wss:// 로 시작해야 합니다.'); return;
+      }
+      setPill('#statePill', 'STARTING', '');
+
+      // 1) WS 연결
+      let baseWsUrl;
+      try {
+        baseWsUrl = new URL(signaling);
+      } catch (err) {
+        baseWsUrl = new URL(signaling, window.location.href);
+      }
+      const pathSegments = baseWsUrl.pathname.split('/').filter(Boolean);
+      if (pathSegments[pathSegments.length - 1] !== 'ws') {
+        pathSegments.push('ws');
+      }
+      baseWsUrl.pathname = `/${pathSegments.join('/')}`;
+      const baseWs = baseWsUrl.toString();
+      const wsUrlObject = new URL(baseWs);
+      wsUrlObject.searchParams.set('role', 'publisher');
+      wsUrlObject.searchParams.set('streamId', streamId);
+      ws = new WebSocket(wsUrlObject.toString());
+
+      const flushOutbound = () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        while (pendingOutboundMessages.length) {
+          const item = pendingOutboundMessages.shift();
+          ws.send(item.payload);
+          if (item.label) log(item.label, item.dataForLog);
+        }
+      };
+
+      const sendSignal = (message, label) => {
+        if (!ws) return;
+        const payload = JSON.stringify(message);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(payload);
+          if (label) log(label, message);
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+          pendingOutboundMessages.push({ payload, label, dataForLog: message });
+        } else {
+          log('WS 전송 실패: 연결 상태가 닫혀 있음', message);
+        }
+      };
+      signalSender = sendSignal;
+      if (shareLocation) {
+        startLocationWatch();
+      } else {
+        stopLocationWatch();
+      }
+
+      ws.onopen = () => {
+        setPill('#wsPill', 'WS: OPEN', 'ok');
+        log('WS open:', ws.url);
+        ws.send(JSON.stringify({ type:'register', role:'publisher', streamId }));
+        flushOutbound();
+      };
+      ws.onerror = (e) => { setPill('#wsPill', 'WS: ERROR', 'bad'); log('WS error', e); };
+      ws.onclose = () => { setPill('#wsPill', 'WS: CLOSED'); stopLocationWatch(); };
+
+      // 2) RTCPeerConnection 생성
+      pc = new RTCPeerConnection({
+        sdpSemantics: 'unified-plan',
+        iceServers: iceUrl ? [{ urls: iceUrl }] : []
+      });
+      setPill('#pcPill', 'PC: NEW');
+
+      pc.oniceconnectionstatechange = () => { setPill('#pcPill', 'PC: ' + pc.iceConnectionState, pc.iceConnectionState==='connected'?'ok': (pc.iceConnectionState==='failed'?'bad':'')); };
+      pc.onconnectionstatechange = () => { setPill('#statePill', pc.connectionState.toUpperCase(), pc.connectionState==='connected'?'ok': (pc.connectionState==='failed'?'bad':'')); };
+      pc.onicecandidate = ({ candidate }) => {
+        if (!ws) return;
+        const base = { type:'ice', role:'publisher', streamId };
+        if (candidate) {
+          const msg = { ...base, candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex };
+          sendSignal(msg, '→ ICE');
+        } else {
+          const msg = { ...base, candidate: '' };
+          sendSignal(msg, '→ ICE (end)');
+        }
+      };
+
+      // 3) 카메라 캡처
+      try {
+        const videoConstraints = { frameRate: { ideal: 30, max: 60 } };
+        if (facingMode) {
+          videoConstraints.facingMode = { ideal: facingMode };
+        }
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: withAudio
+        });
+      } catch (err) {
+        log('getUserMedia 실패:', err.toString());
+        setPill('#statePill', 'ERROR', 'bad');
+        return;
+      }
+      $('#preview').srcObject = mediaStream;
+
+      // 4) 비디오 트랙 송신 추가
+      const [videoTrack] = mediaStream.getVideoTracks();
+      if (!videoTrack) {
+        log('⚠️ 카메라 비디오 트랙을 찾을 수 없습니다.');
+        mediaStream.getTracks().forEach(track => track.stop());
+        setPill('#statePill', 'ERROR', 'bad');
+        return;
+      }
+      sender = pc.addTrack(videoTrack, mediaStream);
+      if (withAudio) {
+        const [audioTrack] = mediaStream.getAudioTracks();
+        if (audioTrack) {
+          try {
+            pc.addTrack(audioTrack, mediaStream);
+            log('오디오 트랙 추가 완료');
+          } catch (e) {
+            log('오디오 트랙 추가 실패:', e?.message || e);
+          }
+        } else {
+          log('⚠️ 오디오 트랙을 찾을 수 없어 비디오만 전송합니다.');
+        }
+      }
+
+      // 4-1) 비트레이트 설정
+      try {
+        const params = sender.getParameters();
+        params.encodings = [{ maxBitrate: parseInt($('#bitrate').value||'0', 10) || undefined }];
+        await sender.setParameters(params);
+      } catch(e) { log('setParameters 경고:', e.toString()); }
+
+      // 4-2) 코덱 우선순위(H264 권장)
+      try {
+        if (pc.getTransceivers) {
+          const tx = pc.getTransceivers().find(t => t.sender === sender);
+          if (tx) {
+            const caps = RTCRtpSender.getCapabilities('video');
+            if (caps && caps.codecs && caps.codecs.length) {
+              let pref = caps.codecs;
+              if (currentCodec) {
+                const primary = caps.codecs.filter(c => (c.mimeType || c.mimeType).toLowerCase() === currentCodec.toLowerCase());
+                const rest    = caps.codecs.filter(c => (c.mimeType || c.mimeType).toLowerCase() !== currentCodec.toLowerCase());
+                if (primary.length) pref = [...primary, ...rest];
+              } else {
+                const h264 = caps.codecs.filter(c => (c.mimeType||'').toLowerCase()==='video/h264');
+                const others = caps.codecs.filter(c => (c.mimeType||'').toLowerCase()!=='video/h264');
+                if (h264.length) pref = [...h264, ...others];
+              }
+              if (tx.setCodecPreferences) tx.setCodecPreferences(pref);
+            }
+          }
+        }
+      } catch(e) { log('codecPreferences 경고:', e.toString()); }
+
+      // 5) Offer 생성/전달
+      const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+      await pc.setLocalDescription(offer);
+      sendSignal({ type:'sdp', role:'publisher', streamId, sdp: offer.sdp, sdpType: offer.type }, '→ SDP (offer) 전송');
+
+      // 6) 메시지 수신(Answer/ICE)
+      ws.onmessage = async (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.error) { log('⚠️ 오류:', msg); setPill('#statePill', 'ERROR', 'bad'); return; }
+
+          if (msg.type === 'sdp' && msg.sdp) {
+            const remoteType = msg.sdpType || (typeof msg.sdp === 'object' && msg.sdp.type) || 'answer';
+            const remoteSdp = typeof msg.sdp === 'object' ? msg.sdp.sdp : msg.sdp;
+            if (!remoteSdp) {
+              log('⚠️ SDP 형식 오류:', msg);
+              return;
+            }
+            await pc.setRemoteDescription({ type: remoteType, sdp: remoteSdp });
+            log('← SDP (answer) 적용');
+            while (pendingRemoteCandidates.length) {
+              const cand = pendingRemoteCandidates.shift();
+              try {
+                await pc.addIceCandidate(cand);
+                log('← 대기 ICE 적용');
+              } catch (e) {
+                log('대기 ICE 적용 실패', e.toString());
+              }
+            }
+          } else if (msg.type === 'ice' && msg.candidate !== undefined) {
+            const candidateInit = msg.candidate ? { candidate: msg.candidate, sdpMid: msg.sdpMid ?? null, sdpMLineIndex: msg.sdpMLineIndex ?? null } : null;
+            if (pc.remoteDescription) {
+              try {
+                await pc.addIceCandidate(candidateInit);
+                log(msg.candidate ? '← ICE 추가' : '← ICE 종료');
+              } catch (e) {
+                log('ICE 추가 실패', e.toString());
+              }
+            } else {
+              pendingRemoteCandidates.push(candidateInit);
+            }
+          } else {
+            log('알 수 없는 메시지:', msg);
+          }
+        } catch(e) {
+          log('메시지 파싱 실패:', e.toString(), ev.data);
+        }
+      };
+
+      // 7) 버튼 상태
+      $('#btnStart').disabled = true; $('#btnStop').disabled = false;
+    }
+
+    async function stop() {
+      shareLocation = false;
+      stopLocationWatch();
+      signalSender = () => {};
+      try {
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+          ws.close();
+        }
+      } catch {}
+      ws = null;
+      try { if (pc) pc.close(); } catch {}
+      pc = null;
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+      }
+      mediaStream = null;
+      sender = null;
+      pendingRemoteCandidates = [];
+      pendingOutboundMessages = [];
+      $('#preview').srcObject = null;
+      setPill('#statePill', 'IDLE'); setPill('#wsPill','WS: -'); setPill('#pcPill','PC: -');
+      $('#btnStart').disabled = false; $('#btnStop').disabled = true;
+    }
+
+    $('#btnStart').addEventListener('click', start);
+    $('#btnStop').addEventListener('click', stop);
+
+    navigator.mediaDevices.addEventListener?.('devicechange', () => log('미디어 장치 변경 감지'));
+  })();
+  </script>
+</body>
+</html>
