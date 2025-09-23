@@ -44,6 +44,9 @@ const undoWaypointButton = document.getElementById('undoWaypoint');
 const clearRouteButton = document.getElementById('clearRoute');
 const defaultAltitudeInput = document.getElementById('defaultAltitude');
 const gcsStatusLabel = document.getElementById('gcsStatus');
+const droneLocationContainer = document.getElementById('droneLocation');
+const droneLocationCoords = document.getElementById('droneLocationCoords');
+const droneLocationMeta = document.getElementById('droneLocationMeta');
 streamIdLabel.textContent = streamId;
 
 let latestDetections = null;
@@ -57,6 +60,17 @@ let gcsSocket = null;
 let rawVideoAvailable = false;
 let overlayVideoAvailable = false;
 const trackedVideoTracks = new WeakSet();
+let latestTelemetryState = null;
+let droneMarker = null;
+let droneAccuracyCircle = null;
+let droneTrailPolyline = null;
+let droneTrail = [];
+let telemetryStaleTimer = null;
+let droneAutoCentered = false;
+const DRONE_TRAIL_MAX_POINTS = 300;
+const TELEMETRY_STALE_TIMEOUT_MS = 15000;
+
+markTelemetryWaiting();
 
 const pc = new RTCPeerConnection({
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -118,6 +132,7 @@ signalingSocket.addEventListener('open', () => {
 
 signalingSocket.addEventListener('close', () => {
   connectionStatus.textContent = 'disconnected';
+  markTelemetryStale();
 });
 
 signalingSocket.addEventListener('message', async (event) => {
@@ -151,6 +166,8 @@ signalingSocket.addEventListener('message', async (event) => {
         sdpMLineIndex: message.sdpMLineIndex ?? undefined,
       });
       await pc.addIceCandidate(candidate);
+    } else if (message.type === 'telemetry') {
+      handleTelemetryMessage(message);
     }
   } catch (error) {
     console.error('Failed to process signaling message', error, event.data);
@@ -510,6 +527,177 @@ function maybeNotifyDetections(message) {
   }
 }
 
+function handleTelemetryMessage(message) {
+  const latitude = parseFiniteNumber(message.latitude);
+  const longitude = parseFiniteNumber(message.longitude);
+  if (latitude === null || longitude === null) {
+    return;
+  }
+
+  const altitudeValue = parseFiniteNumber(message.altitude);
+  const accuracyCandidate = parseFiniteNumber(message.accuracy);
+  const accuracyValue = accuracyCandidate !== null && accuracyCandidate >= 0 ? accuracyCandidate : null;
+  const timestampCandidate = parseFiniteNumber(message.timestamp);
+  const timestamp = timestampCandidate !== null && timestampCandidate > 0 ? timestampCandidate : Date.now();
+
+  latestTelemetryState = {
+    lat: latitude,
+    lng: longitude,
+    altitude: altitudeValue,
+    accuracy: accuracyValue,
+    timestamp,
+    source: typeof message.source === 'string' ? message.source : '',
+  };
+  droneTrail.push({ lat: latitude, lng: longitude });
+  if (droneTrail.length > DRONE_TRAIL_MAX_POINTS) {
+    droneTrail.splice(0, droneTrail.length - DRONE_TRAIL_MAX_POINTS);
+  }
+  updateDroneLocationUi(latestTelemetryState);
+  applyTelemetryToMap(latestTelemetryState);
+  scheduleTelemetryStaleCheck();
+}
+
+function updateDroneLocationUi(telemetry) {
+  if (!droneLocationContainer) {
+    return;
+  }
+  droneLocationContainer.dataset.state = 'live';
+  if (droneLocationCoords) {
+    droneLocationCoords.textContent = `${telemetry.lat.toFixed(6)}, ${telemetry.lng.toFixed(6)}`;
+  }
+  if (droneLocationMeta) {
+    droneLocationMeta.textContent = formatTelemetryMeta(telemetry);
+  }
+}
+
+function formatTelemetryMeta(telemetry) {
+  const parts = [];
+  const time = new Date(telemetry.timestamp);
+  if (!Number.isNaN(time.getTime())) {
+    parts.push(`Updated ${time.toLocaleTimeString()}`);
+  }
+  if (telemetry.accuracy !== null) {
+    parts.push(`±${telemetry.accuracy.toFixed(1)} m`);
+  }
+  if (telemetry.altitude !== null) {
+    parts.push(`ALT ${telemetry.altitude.toFixed(1)} m`);
+  }
+  return parts.join(' · ');
+}
+
+function applyTelemetryToMap(telemetry) {
+  if (!mapInstance || !window.L) {
+    return;
+  }
+  const latlng = window.L.latLng(telemetry.lat, telemetry.lng);
+  if (!droneMarker) {
+    const icon = window.L.divIcon({
+      className: 'drone-location-marker',
+      html: '<span class="pulse"></span><span class="dot"></span>',
+      iconSize: [24, 24],
+      iconAnchor: [12, 12],
+    });
+    droneMarker = window.L.marker(latlng, { icon });
+    droneMarker.addTo(mapInstance);
+  } else {
+    droneMarker.setLatLng(latlng);
+  }
+
+  if (telemetry.accuracy !== null) {
+    const radius = Math.max(telemetry.accuracy, 1);
+    if (!droneAccuracyCircle) {
+      droneAccuracyCircle = window.L.circle(latlng, {
+        radius,
+        color: '#38bdf8',
+        weight: 1,
+        opacity: 0.35,
+        fillColor: '#38bdf8',
+        fillOpacity: 0.15,
+      });
+      droneAccuracyCircle.addTo(mapInstance);
+    } else {
+      droneAccuracyCircle.setLatLng(latlng);
+      droneAccuracyCircle.setRadius(radius);
+    }
+  } else if (droneAccuracyCircle) {
+    mapInstance.removeLayer(droneAccuracyCircle);
+    droneAccuracyCircle = null;
+  }
+
+  const trailLatLngs = droneTrail.map((point) => [point.lat, point.lng]);
+  if (trailLatLngs.length > 0) {
+    if (!droneTrailPolyline) {
+      droneTrailPolyline = window.L.polyline(trailLatLngs, {
+        color: '#22d3ee',
+        weight: 2,
+        opacity: 0.6,
+        dashArray: '6 8',
+      });
+      droneTrailPolyline.addTo(mapInstance);
+    } else {
+      droneTrailPolyline.setLatLngs(trailLatLngs);
+    }
+  }
+
+  if (!droneAutoCentered) {
+    droneAutoCentered = true;
+    mapInstance.setView(latlng, Math.max(mapInstance.getZoom(), 15));
+  }
+}
+
+function scheduleTelemetryStaleCheck() {
+  if (telemetryStaleTimer) {
+    clearTimeout(telemetryStaleTimer);
+  }
+  telemetryStaleTimer = setTimeout(() => {
+    telemetryStaleTimer = null;
+    markTelemetryStale();
+  }, TELEMETRY_STALE_TIMEOUT_MS);
+}
+
+function markTelemetryWaiting() {
+  if (telemetryStaleTimer) {
+    clearTimeout(telemetryStaleTimer);
+    telemetryStaleTimer = null;
+  }
+  if (!droneLocationContainer) {
+    return;
+  }
+  droneLocationContainer.dataset.state = 'waiting';
+  if (droneLocationCoords) {
+    droneLocationCoords.textContent = '—';
+  }
+  if (droneLocationMeta) {
+    droneLocationMeta.textContent = 'Awaiting telemetry…';
+  }
+}
+
+function markTelemetryStale() {
+  if (!droneLocationContainer) {
+    return;
+  }
+  if (!latestTelemetryState) {
+    markTelemetryWaiting();
+    return;
+  }
+  droneLocationContainer.dataset.state = 'stale';
+  if (droneLocationCoords) {
+    droneLocationCoords.textContent = `${latestTelemetryState.lat.toFixed(6)}, ${latestTelemetryState.lng.toFixed(6)}`;
+  }
+  if (droneLocationMeta) {
+    const lastTime = new Date(latestTelemetryState.timestamp);
+    droneLocationMeta.textContent = `Last update ${lastTime.toLocaleTimeString()}`;
+  }
+}
+
+function parseFiniteNumber(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function initRoutePlanner() {
   if (!routePanel || !routeMapElement || !window.L) {
     return;
@@ -542,6 +730,10 @@ function initRoutePlanner() {
   startRouteButton?.addEventListener('click', transmitRouteToGcs);
 
   updateRouteSummary();
+  if (latestTelemetryState) {
+    updateDroneLocationUi(latestTelemetryState);
+    applyTelemetryToMap(latestTelemetryState);
+  }
 }
 
 function toggleRoutePanelVisibility(forceState) {

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -30,12 +31,18 @@ var upgrader = websocket.Upgrader{
 }
 
 type signalMessage struct {
-	Type          string  `json:"type"`
-	SDP           string  `json:"sdp,omitempty"`
-	SDPType       string  `json:"sdpType,omitempty"`
-	Candidate     string  `json:"candidate,omitempty"`
-	SDPMid        string  `json:"sdpMid,omitempty"`
-	SDPMLineIndex *uint16 `json:"sdpMLineIndex,omitempty"`
+	Type          string   `json:"type"`
+	SDP           string   `json:"sdp,omitempty"`
+	SDPType       string   `json:"sdpType,omitempty"`
+	Candidate     string   `json:"candidate,omitempty"`
+	SDPMid        string   `json:"sdpMid,omitempty"`
+	SDPMLineIndex *uint16  `json:"sdpMLineIndex,omitempty"`
+	Latitude      *float64 `json:"latitude,omitempty"`
+	Longitude     *float64 `json:"longitude,omitempty"`
+	Altitude      *float64 `json:"altitude,omitempty"`
+	Accuracy      *float64 `json:"accuracy,omitempty"`
+	Timestamp     *int64   `json:"timestamp,omitempty"`
+	Source        string   `json:"source,omitempty"`
 }
 
 type client struct {
@@ -55,6 +62,16 @@ type stream struct {
 	pending     []*client
 	videoTrack  *webrtc.TrackLocalStaticRTP
 	remoteTrack *webrtc.TrackRemote
+	telemetry   *telemetryData
+}
+
+type telemetryData struct {
+	Latitude  float64
+	Longitude float64
+	Altitude  *float64
+	Accuracy  *float64
+	Timestamp int64
+	Source    string
 }
 
 type streamManager struct {
@@ -231,6 +248,35 @@ func (c *client) handleSignal(msg signalMessage) error {
 		if err := c.peer.AddICECandidate(candidate); err != nil {
 			return err
 		}
+	case "telemetry":
+		if c.role != "publisher" {
+			return fmt.Errorf("telemetry messages only accepted from publishers")
+		}
+		if msg.Latitude == nil || msg.Longitude == nil {
+			return fmt.Errorf("telemetry message missing coordinates")
+		}
+		lat := *msg.Latitude
+		lng := *msg.Longitude
+		if !isValidLatitude(lat) || !isValidLongitude(lng) {
+			return fmt.Errorf("invalid telemetry coordinates")
+		}
+		data := telemetryData{
+			Latitude:  lat,
+			Longitude: lng,
+			Source:    msg.Source,
+		}
+		if msg.Altitude != nil && !math.IsNaN(*msg.Altitude) && !math.IsInf(*msg.Altitude, 0) {
+			data.Altitude = float64Ptr(*msg.Altitude)
+		}
+		if msg.Accuracy != nil && !math.IsNaN(*msg.Accuracy) && !math.IsInf(*msg.Accuracy, 0) && *msg.Accuracy >= 0 {
+			data.Accuracy = float64Ptr(*msg.Accuracy)
+		}
+		if msg.Timestamp != nil && *msg.Timestamp > 0 {
+			data.Timestamp = *msg.Timestamp
+		} else {
+			data.Timestamp = time.Now().UnixMilli()
+		}
+		c.stream.updateTelemetry(data)
 	default:
 		return fmt.Errorf("unsupported signal type: %s", msg.Type)
 	}
@@ -311,16 +357,28 @@ func (s *stream) registerSubscriber(c *client) error {
 
 	s.mu.Lock()
 	s.subscribers[c] = struct{}{}
-	if s.videoTrack != nil {
-		if _, err := pc.AddTrack(s.videoTrack); err != nil {
+	track := s.videoTrack
+	if track != nil {
+		if _, err := pc.AddTrack(track); err != nil {
 			s.mu.Unlock()
 			return err
 		}
-		s.mu.Unlock()
-		return c.sendOffer()
 	}
-	s.pending = append(s.pending, c)
+	if track == nil {
+		s.pending = append(s.pending, c)
+	}
+	telemetry := s.telemetry
 	s.mu.Unlock()
+	if track != nil {
+		if err := c.sendOffer(); err != nil {
+			return err
+		}
+	}
+	if telemetry != nil {
+		if err := c.sendSignal(telemetry.toSignalMessage()); err != nil {
+			log.Printf("failed to send telemetry to subscriber: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -332,6 +390,7 @@ func (s *stream) removeClient(c *client) {
 		s.publisher = nil
 		s.videoTrack = nil
 		s.remoteTrack = nil
+		s.telemetry = nil
 	}
 
 	delete(s.subscribers, c)
@@ -467,6 +526,62 @@ func (c *client) sendOffer() error {
 		return err
 	}
 	return c.sendSignal(signalMessage{Type: "sdp", SDP: offer.SDP, SDPType: offer.Type.String()})
+}
+
+func (s *stream) updateTelemetry(data telemetryData) {
+	signal := data.toSignalMessage()
+	s.mu.Lock()
+	s.telemetry = &data
+	recipients := make([]*client, 0, len(s.subscribers)+len(s.pending))
+	for subscriber := range s.subscribers {
+		recipients = append(recipients, subscriber)
+	}
+	recipients = append(recipients, s.pending...)
+	s.mu.Unlock()
+
+	for _, subscriber := range recipients {
+		if err := subscriber.sendSignal(signal); err != nil {
+			log.Printf("failed to deliver telemetry to subscriber: %v", err)
+		}
+	}
+}
+
+func (data telemetryData) toSignalMessage() signalMessage {
+	msg := signalMessage{Type: "telemetry", Source: data.Source}
+	msg.Latitude = float64Ptr(data.Latitude)
+	msg.Longitude = float64Ptr(data.Longitude)
+	if data.Altitude != nil {
+		msg.Altitude = data.Altitude
+	}
+	if data.Accuracy != nil {
+		msg.Accuracy = data.Accuracy
+	}
+	if data.Timestamp > 0 {
+		msg.Timestamp = int64Ptr(data.Timestamp)
+	}
+	return msg
+}
+
+func isValidLatitude(lat float64) bool {
+	if math.IsNaN(lat) || math.IsInf(lat, 0) {
+		return false
+	}
+	return lat >= -90 && lat <= 90
+}
+
+func isValidLongitude(lng float64) bool {
+	if math.IsNaN(lng) || math.IsInf(lng, 0) {
+		return false
+	}
+	return lng >= -180 && lng <= 180
+}
+
+func float64Ptr(v float64) *float64 {
+	return &v
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
 }
 
 func main() {
