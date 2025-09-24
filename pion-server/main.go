@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/example/android-webrtc-dji/pion-server/recording"
 	"github.com/gorilla/websocket"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v3"
@@ -69,7 +70,7 @@ type stream struct {
 	videoTrack  *webrtc.TrackLocalStaticRTP
 	remoteTrack *webrtc.TrackRemote
 	telemetry   *telemetryData
-	recorder    *streamRecorder
+	recorder    *recording.StreamRecorder
 }
 
 type telemetryData struct {
@@ -425,7 +426,7 @@ func (s *stream) registerSubscriber(c *client) error {
 
 func (s *stream) removeClient(c *client) {
 	s.mu.Lock()
-	var recorder *streamRecorder
+	var recorder *recording.StreamRecorder
 	defer func() {
 		s.mu.Unlock()
 		if recorder != nil {
@@ -510,7 +511,7 @@ func (s *stream) setRemoteTrack(remoteTrack *webrtc.TrackRemote) {
 	}
 	s.videoTrack = localTrack
 	if remoteTrack.Codec().MimeType == webrtc.MimeTypeH264 {
-		s.recorder = newStreamRecorder(s.id, remoteTrack)
+		s.recorder = recording.NewStreamRecorder(s.id, remoteTrack)
 	} else {
 		s.recorder = nil
 	}
@@ -677,7 +678,7 @@ func handleRecordingList(w http.ResponseWriter, r *http.Request) {
 }
 
 func listRecordings(streamID string) ([]recordingFile, error) {
-	base := recordingDirName
+	base := recording.DirName
 	entries := make([]recordingFile, 0)
 	streamIDs := []string{}
 	if streamID != "" {
@@ -778,11 +779,11 @@ func main() {
 
 	manager := newStreamManager()
 	http.HandleFunc("/ws", manager.handleWebsocket)
-	if err := os.MkdirAll(recordingDirName, 0o755); err != nil {
+	if err := os.MkdirAll(recording.DirName, 0o755); err != nil {
 		log.Fatalf("failed to create recording directory: %v", err)
 	}
 	http.HandleFunc("/recordings", handleRecordingList)
-	http.Handle("/recordings/", http.StripPrefix("/recordings/", http.FileServer(http.Dir(recordingDirName))))
+	http.Handle("/recordings/", http.StripPrefix("/recordings/", http.FileServer(http.Dir(recording.DirName))))
 
 	log.Printf("Pion WebRTC relay listening on %s", *addr)
 	if err := http.ListenAndServe(*addr, nil); err != nil {

@@ -1,4 +1,4 @@
-package main
+package recording
 
 import (
 	"bytes"
@@ -20,12 +20,12 @@ import (
 )
 
 const (
-	recordingDirName = "recordings"
+	DirName          = "recordings"
 	segmentLength    = 5 * time.Minute
 	defaultTimescale = 90000
 )
 
-type streamRecorder struct {
+type StreamRecorder struct {
 	streamID   string
 	clockRate  uint32
 	builder    *samplebuilder.SampleBuilder
@@ -42,12 +42,12 @@ type streamRecorder struct {
 	closed     bool
 }
 
-func newStreamRecorder(streamID string, track *webrtc.TrackRemote) *streamRecorder {
+func NewStreamRecorder(streamID string, track *webrtc.TrackRemote) *StreamRecorder {
 	clockRate := track.Codec().ClockRate
 	if clockRate == 0 {
 		clockRate = defaultTimescale
 	}
-	recorder := &streamRecorder{
+	recorder := &StreamRecorder{
 		streamID:  streamID,
 		clockRate: clockRate,
 	}
@@ -55,7 +55,7 @@ func newStreamRecorder(streamID string, track *webrtc.TrackRemote) *streamRecord
 	return recorder
 }
 
-func (r *streamRecorder) Close() {
+func (r *StreamRecorder) Close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.closed = true
@@ -67,7 +67,7 @@ func (r *streamRecorder) Close() {
 	}
 }
 
-func (r *streamRecorder) Push(packet *rtp.Packet) {
+func (r *StreamRecorder) Push(packet *rtp.Packet) {
 	if packet == nil {
 		return
 	}
@@ -92,7 +92,7 @@ func (r *streamRecorder) Push(packet *rtp.Packet) {
 	}
 }
 
-func (r *streamRecorder) handleSample(sample *media.Sample) {
+func (r *StreamRecorder) handleSample(sample *media.Sample) {
 	if sample == nil || len(sample.Data) == 0 {
 		return
 	}
@@ -173,7 +173,7 @@ func (r *streamRecorder) handleSample(sample *media.Sample) {
 	r.segmentDur += increment
 }
 
-func (r *streamRecorder) handleSPS(nalu []byte) {
+func (r *StreamRecorder) handleSPS(nalu []byte) {
 	if len(nalu) < 1 {
 		return
 	}
@@ -193,7 +193,7 @@ func (r *streamRecorder) handleSPS(nalu []byte) {
 	r.levelIDC = level
 }
 
-func (r *streamRecorder) handlePPS(nalu []byte) {
+func (r *StreamRecorder) handlePPS(nalu []byte) {
 	if len(nalu) < 1 {
 		return
 	}
@@ -202,7 +202,7 @@ func (r *streamRecorder) handlePPS(nalu []byte) {
 	r.pps = append([]byte(nil), nalu...)
 }
 
-func (r *streamRecorder) convertDuration(d time.Duration) uint32 {
+func (r *StreamRecorder) convertDuration(d time.Duration) uint32 {
 	if d <= 0 {
 		return r.clockRate / 30
 	}
@@ -239,7 +239,7 @@ func newMP4SegmentWriter(streamID string, sps, pps []byte, profile, constraint, 
 	if len(sps) == 0 || len(pps) == 0 {
 		return nil, fmt.Errorf("missing SPS/PPS data")
 	}
-	base := filepath.Join(recordingDirName, streamID)
+	base := filepath.Join(DirName, streamID)
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return nil, err
 	}
