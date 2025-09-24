@@ -28,17 +28,86 @@
     }
 
     header {
-      padding: 1rem 2rem;
+      padding: 1rem 2rem 0;
       background: rgba(15, 23, 42, 0.9);
       border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .header-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .header-text h1 {
+      margin: 0;
+    }
+
+    .header-text p {
+      margin: 0;
+      color: #cbd5f5;
+      max-width: 720px;
+    }
+
+    .tab-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    }
+
+    .tab-button {
+      background: rgba(15, 23, 42, 0.45);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      color: #e2e8f0;
+      border-radius: 999px;
+      padding: 0.55rem 1.25rem;
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 150ms ease, border-color 150ms ease, color 150ms ease,
+        box-shadow 150ms ease;
+    }
+
+    .tab-button:hover,
+    .tab-button:focus-visible {
+      border-color: rgba(129, 140, 248, 0.65);
+      color: #c7d2fe;
+      outline: none;
+    }
+
+    .tab-button.active {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.85), rgba(14, 116, 144, 0.85));
+      border-color: rgba(56, 189, 248, 0.65);
+      color: #f8fafc;
+      box-shadow: 0 12px 24px rgba(14, 116, 144, 0.35);
     }
 
     main {
+      flex: 1;
+      padding: 1.5rem 2rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    .panels-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
       gap: 1.5rem;
-      padding: 1.5rem 2rem;
-      flex: 1;
     }
 
     .panel {
@@ -81,6 +150,244 @@
 
     .panel .panel-header button:hover {
       background: rgba(148, 163, 184, 0.18);
+    }
+
+    .panel-subtitle {
+      margin: 0;
+      font-size: 0.85rem;
+      color: #94a3b8;
+    }
+
+    .panel-hint {
+      margin: 0.75rem 0 0;
+      font-size: 0.75rem;
+      color: #64748b;
+    }
+
+    .recordings-layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 1.4fr);
+      gap: 1.5rem;
+      align-items: stretch;
+    }
+
+    .recordings-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin: 0.5rem 0 1rem;
+      flex-wrap: wrap;
+    }
+
+    .recordings-summary {
+      margin: 0;
+      font-size: 0.8rem;
+      color: #cbd5f5;
+    }
+
+    .recordings-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .recordings-placeholder {
+      padding: 1rem;
+      border-radius: 12px;
+      border: 1px dashed rgba(148, 163, 184, 0.3);
+      background: rgba(15, 23, 42, 0.35);
+      color: #94a3b8;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+
+    .recording-item {
+      display: flex;
+      align-items: stretch;
+      gap: 0.75rem;
+    }
+
+    .recording-item .recording-select {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      text-align: left;
+      background: rgba(30, 41, 59, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 12px;
+      padding: 0.85rem 1rem;
+      color: #e2e8f0;
+      cursor: pointer;
+      transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+    }
+
+    .recording-item .recording-select:hover,
+    .recording-item .recording-select:focus-visible {
+      border-color: rgba(129, 140, 248, 0.65);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+      outline: none;
+    }
+
+    .recording-item.active .recording-select {
+      border-color: rgba(129, 140, 248, 0.85);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.35);
+      transform: translateY(-1px);
+    }
+
+    .recording-name {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: #f8fafc;
+    }
+
+    .recording-meta {
+      font-size: 0.8rem;
+      color: #94a3b8;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+
+    .recording-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+
+    .recording-tag {
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      background: rgba(59, 130, 246, 0.2);
+      color: #bfdbfe;
+    }
+
+    .analyze-button {
+      align-self: center;
+      background: linear-gradient(135deg, #818cf8, #22d3ee);
+      border: none;
+      color: #0f172a;
+      border-radius: 999px;
+      padding: 0.55rem 1.1rem;
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      box-shadow: 0 12px 20px rgba(34, 211, 238, 0.25);
+      transition: transform 150ms ease, box-shadow 150ms ease;
+      white-space: nowrap;
+    }
+
+    .analyze-button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 14px 24px rgba(34, 211, 238, 0.35);
+    }
+
+    .analyze-button:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .analysis-summary {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .analysis-overview {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+
+    .analysis-overview h3 {
+      margin: 0;
+      font-size: 1rem;
+      color: #e2e8f0;
+    }
+
+    .analysis-status {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .analysis-status[data-tone='muted'] {
+      background: rgba(148, 163, 184, 0.2);
+      color: #cbd5f5;
+    }
+
+    .analysis-status[data-tone='ready'] {
+      background: rgba(129, 140, 248, 0.25);
+      color: #c7d2fe;
+    }
+
+    .analysis-status[data-tone='pending'] {
+      background: rgba(250, 204, 21, 0.2);
+      color: #fde68a;
+    }
+
+    .analysis-status[data-tone='warning'] {
+      background: rgba(248, 113, 113, 0.2);
+      color: #fecaca;
+    }
+
+    .analysis-meta {
+      margin: 0;
+      font-size: 0.85rem;
+      color: #cbd5f5;
+    }
+
+    .analysis-output {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding: 1rem;
+      border-radius: 12px;
+      border: 1px dashed rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.45);
+      min-height: 220px;
+    }
+
+    .analysis-output p {
+      margin: 0;
+      color: #e2e8f0;
+    }
+
+    .analysis-meta-grid {
+      display: grid;
+      grid-template-columns: minmax(120px, 0.4fr) minmax(180px, 1fr);
+      gap: 0.5rem 1.25rem;
+    }
+
+    .analysis-meta-grid dt {
+      margin: 0;
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #94a3b8;
+    }
+
+    .analysis-meta-grid dd {
+      margin: 0;
+      font-size: 0.85rem;
+      color: #f8fafc;
     }
 
     video,
@@ -530,7 +837,48 @@
         color: #f8fafc;
       }
 
+      body[data-active-tab='recordingsTab'] .flight-controls-toggle,
+      body[data-active-tab='recordingsTab'] .route-toggle,
+      body[data-active-tab='recordingsTab'] .route-panel {
+        display: none !important;
+      }
+
+      @media (max-width: 960px) {
+        .recordings-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .analysis-overview {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        .analysis-status {
+          align-self: flex-start;
+        }
+      }
+
       @media (max-width: 720px) {
+        header {
+          padding: 1rem 1.25rem 0;
+        }
+
+        main {
+          padding: 1rem 1.25rem 1.5rem;
+        }
+
+        .tab-nav {
+          padding-bottom: 0.75rem;
+        }
+
+        .recordings-layout {
+          gap: 1rem;
+        }
+
+        .analysis-output {
+          padding: 0.85rem;
+        }
+
         .flight-controls-toggle {
           right: 1rem;
           bottom: 4.75rem;
@@ -549,10 +897,39 @@
   </head>
   <body>
     <header>
-      <h1>Drone Operations Dashboard</h1>
-      <p>Left: real-time camera feed. Right: YOLO overlay rendered from Jetson analysis.</p>
+      <div class="header-text">
+        <h1>Drone Operations Dashboard</h1>
+        <p>Left: real-time camera feed. Right: YOLO overlay rendered from Jetson analysis.</p>
+      </div>
+      <nav class="tab-nav" role="tablist" aria-label="Dashboard views">
+        <button
+          type="button"
+          class="tab-button active"
+          data-tab-target="liveTab"
+          id="tab-live"
+          role="tab"
+          aria-selected="true"
+          aria-controls="liveTab"
+        >
+          Live Operations
+        </button>
+        <button
+          type="button"
+          class="tab-button"
+          data-tab-target="recordingsTab"
+          id="tab-recordings"
+          role="tab"
+          aria-selected="false"
+          aria-controls="recordingsTab"
+          tabindex="-1"
+        >
+          Recordings &amp; Analysis
+        </button>
+      </nav>
     </header>
-    <main>
+    <main data-active-tab="liveTab">
+      <section class="tab-panel active" id="liveTab" role="tabpanel" aria-labelledby="tab-live">
+        <div class="panels-grid">
       <section class="panel">
         <h2>Camera Feed</h2>
         <div class="video-container">
@@ -645,6 +1022,39 @@
             <p class="control-hint">Applies an absolute gimbal rotation over the specified duration.</p>
           </form>
           <div class="gcs-status" data-role="gcs-status">GCS: disconnected</div>
+        </div>
+      </section>
+        </div>
+      </section>
+      <section class="tab-panel" id="recordingsTab" role="tabpanel" aria-labelledby="tab-recordings" hidden>
+        <div class="recordings-layout">
+          <section class="panel recordings-list-panel">
+            <div class="panel-header">
+              <h2>Recorded Sessions</h2>
+              <button type="button" id="refreshRecordings">Refresh</button>
+            </div>
+            <p class="panel-subtitle">Browse synced missions and send them for AI analysis.</p>
+            <div class="recordings-toolbar">
+              <p class="recordings-summary" id="recordingsSummary">No recordings loaded.</p>
+            </div>
+            <ul class="recordings-list" id="recordingsList"></ul>
+            <p class="panel-hint">Analysis requests are staged locally until the AI server integration is configured.</p>
+          </section>
+          <section class="panel analysis-panel" aria-live="polite">
+            <div class="panel-header">
+              <h2>Analysis Results</h2>
+            </div>
+            <div class="analysis-summary">
+              <div class="analysis-overview">
+                <h3 id="analysisRecordingTitle">No recording selected</h3>
+                <span class="analysis-status" id="analysisStatusBadge" data-tone="muted">Idle</span>
+              </div>
+              <p class="analysis-meta" id="analysisRecordingMeta">Choose a recording on the left to see its details.</p>
+            </div>
+            <div class="analysis-output" id="analysisDetails">
+              <p>The analysis workspace will display AI insights once the integration details are configured.</p>
+            </div>
+          </section>
         </div>
       </section>
     </main>

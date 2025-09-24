@@ -168,7 +168,560 @@ const gimbalForm = document.getElementById('gimbalForm');
 const droneLocationContainer = document.getElementById('droneLocation');
 const droneLocationCoords = document.getElementById('droneLocationCoords');
 const droneLocationMeta = document.getElementById('droneLocationMeta');
-streamIdLabel.textContent = streamId;
+const mainElement = document.querySelector('main');
+const tabButtons = Array.from(document.querySelectorAll('[data-tab-target]'));
+const tabPanels = new Map(
+  Array.from(document.querySelectorAll('.tab-panel')).map((panel) => [panel.id, panel])
+);
+const recordingsListElement = document.getElementById('recordingsList');
+const recordingsSummaryElement = document.getElementById('recordingsSummary');
+const refreshRecordingsButton = document.getElementById('refreshRecordings');
+const analysisRecordingTitle = document.getElementById('analysisRecordingTitle');
+const analysisRecordingMeta = document.getElementById('analysisRecordingMeta');
+const analysisStatusBadge = document.getElementById('analysisStatusBadge');
+const analysisDetailsContainer = document.getElementById('analysisDetails');
+
+if (streamIdLabel) {
+  streamIdLabel.textContent = streamId;
+}
+
+const fallbackRecordings = [
+  {
+    id: 'mission-20240310-120501',
+    name: 'mission-20240310-120501.mp4',
+    recordedAt: '2024-03-10T12:05:01+09:00',
+    durationSeconds: 272,
+    sizeBytes: 1283741824,
+    location: 'Incheon Harbor, KR',
+    notes: 'Night inspection over container yard',
+    tags: ['harbor', 'inspection', 'night'],
+  },
+  {
+    id: 'mission-20240312-093015',
+    name: 'mission-20240312-093015.mp4',
+    recordedAt: '2024-03-12T09:30:15+09:00',
+    durationSeconds: 418,
+    sizeBytes: 1648572416,
+    location: 'Yeouido, Seoul',
+    notes: 'Daytime bridge structural sweep',
+    tags: ['bridge', 'daylight'],
+  },
+  {
+    id: 'mission-20240315-214200',
+    name: 'mission-20240315-214200.mp4',
+    recordedAt: '2024-03-15T21:42:00+09:00',
+    durationSeconds: 603,
+    sizeBytes: 2109876543,
+    location: 'Busan Shipyard',
+    notes: 'Thermal anomaly follow-up flight',
+    tags: ['thermal', 'shipyard'],
+  },
+];
+
+const recordingsState = {
+  items: [],
+  isLoading: false,
+  lastUpdated: null,
+};
+
+let selectedRecordingId = null;
+
+const defaultAnalysisMessage =
+  'Select a recording from the list to preview its metadata and prepare an AI analysis request.';
+
+const analysisViewState = {
+  recording: null,
+  status: 'idle',
+  message: defaultAnalysisMessage,
+};
+
+let analysisStatusTimer = null;
+
+const ANALYSIS_STATUS_CONFIG = {
+  idle: { label: 'Idle', tone: 'muted' },
+  ready: { label: 'Ready', tone: 'ready' },
+  pending: { label: 'Preparing', tone: 'pending' },
+  awaiting: { label: 'Awaiting AI server', tone: 'warning' },
+};
+
+function formatRecordingDuration(durationSeconds) {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return '';
+  }
+  const totalSeconds = Math.round(durationSeconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const segments = [];
+  if (hours > 0) {
+    segments.push(`${hours}h`);
+  }
+  if (minutes > 0 || hours > 0) {
+    const minuteValue = hours > 0 ? minutes.toString().padStart(2, '0') : minutes;
+    segments.push(`${minuteValue}m`);
+  }
+  if (hours === 0) {
+    if (minutes > 0 || seconds > 0) {
+      const secondValue = minutes > 0 ? seconds.toString().padStart(2, '0') : seconds;
+      segments.push(`${secondValue}s`);
+    }
+  } else if (seconds > 0) {
+    segments.push(`${seconds.toString().padStart(2, '0')}s`);
+  }
+  return segments.join(' ');
+}
+
+function formatFileSize(sizeBytes) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+    return '';
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = sizeBytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = unitIndex === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function normaliseRecording(recording) {
+  if (!recording || typeof recording !== 'object') {
+    return null;
+  }
+  const nameRaw = typeof recording.name === 'string' ? recording.name.trim() : '';
+  const idRaw = typeof recording.id === 'string' ? recording.id.trim() : '';
+  const displayName = nameRaw || idRaw || 'Recording';
+  const slug = displayName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const id = idRaw || slug || `recording-${Date.now()}`;
+
+  const recordedAtSource =
+    recording.recordedAt ?? recording.capturedAt ?? recording.timestamp ?? recording.createdAt;
+  let recordedAt = null;
+  let recordedAtText = '';
+  if (recordedAtSource !== undefined && recordedAtSource !== null) {
+    const parsed = new Date(recordedAtSource);
+    if (!Number.isNaN(parsed.valueOf())) {
+      recordedAt = parsed;
+      recordedAtText = parsed.toLocaleString();
+    }
+  }
+  if (!recordedAtText) {
+    if (typeof recording.recordedAtText === 'string' && recording.recordedAtText.trim()) {
+      recordedAtText = recording.recordedAtText.trim();
+    } else if (
+      typeof recording.recordedAtDisplay === 'string' &&
+      recording.recordedAtDisplay.trim()
+    ) {
+      recordedAtText = recording.recordedAtDisplay.trim();
+    }
+  }
+
+  const durationSeconds = Number.isFinite(recording.durationSeconds)
+    ? recording.durationSeconds
+    : Number.isFinite(recording.duration)
+    ? recording.duration
+    : Number.isFinite(recording.lengthSeconds)
+    ? recording.lengthSeconds
+    : null;
+  const formattedDuration = formatRecordingDuration(durationSeconds);
+  const durationText =
+    typeof recording.durationText === 'string' && recording.durationText.trim().length > 0
+      ? recording.durationText.trim()
+      : formattedDuration;
+
+  const sizeBytes = Number.isFinite(recording.sizeBytes)
+    ? recording.sizeBytes
+    : Number.isFinite(recording.size)
+    ? recording.size
+    : Number.isFinite(recording.fileSize)
+    ? recording.fileSize
+    : null;
+  const formattedSize = formatFileSize(sizeBytes);
+  const sizeText =
+    typeof recording.sizeText === 'string' && recording.sizeText.trim().length > 0
+      ? recording.sizeText.trim()
+      : typeof recording.size === 'string' && recording.size.trim().length > 0
+      ? recording.size.trim()
+      : formattedSize;
+
+  const location = typeof recording.location === 'string' ? recording.location.trim() : '';
+  const notes = typeof recording.notes === 'string' ? recording.notes.trim() : '';
+  const tags = Array.isArray(recording.tags)
+    ? recording.tags
+        .map((tag) => (typeof tag === 'string' ? tag.trim() : ''))
+        .filter((tag) => tag.length > 0)
+    : [];
+
+  const metaParts = [];
+  if (recordedAtText) {
+    metaParts.push(recordedAtText);
+  }
+  if (durationText) {
+    metaParts.push(durationText);
+  }
+  if (sizeText) {
+    metaParts.push(sizeText);
+  }
+  if (location) {
+    metaParts.push(location);
+  }
+
+  return {
+    ...recording,
+    id,
+    displayName,
+    recordedAt,
+    recordedAtText,
+    durationSeconds,
+    durationText,
+    sizeBytes,
+    sizeText,
+    location,
+    notes,
+    tags,
+    metaSummary: metaParts.join(' • '),
+  };
+}
+
+function updateRecordingsSummary() {
+  if (!recordingsSummaryElement) {
+    return;
+  }
+  if (recordingsState.isLoading) {
+    recordingsSummaryElement.textContent = 'Loading recordings…';
+    return;
+  }
+  if (!Array.isArray(recordingsState.items) || recordingsState.items.length === 0) {
+    recordingsSummaryElement.textContent = 'No recordings synced yet.';
+    return;
+  }
+  const count = recordingsState.items.length;
+  const countLabel = count === 1 ? '1 recording' : `${count} recordings`;
+  const timestamp =
+    recordingsState.lastUpdated instanceof Date
+      ? recordingsState.lastUpdated.toLocaleTimeString()
+      : 'recently';
+  recordingsSummaryElement.textContent = `Showing ${countLabel}. Synced ${timestamp}.`;
+}
+
+function renderRecordingsList() {
+  if (!recordingsListElement) {
+    return;
+  }
+  recordingsListElement.innerHTML = '';
+  if (recordingsState.isLoading) {
+    const placeholder = document.createElement('li');
+    placeholder.className = 'recordings-placeholder';
+    placeholder.textContent = 'Loading recordings…';
+    recordingsListElement.appendChild(placeholder);
+    updateRecordingsSummary();
+    return;
+  }
+  if (!Array.isArray(recordingsState.items) || recordingsState.items.length === 0) {
+    const emptyMessage = document.createElement('li');
+    emptyMessage.className = 'recordings-placeholder';
+    emptyMessage.textContent = 'No recordings available yet. Capture missions to populate this list.';
+    recordingsListElement.appendChild(emptyMessage);
+    updateRecordingsSummary();
+    return;
+  }
+
+  recordingsState.items.forEach((recording) => {
+    const item = document.createElement('li');
+    item.className = 'recording-item';
+    if (recording.id === selectedRecordingId) {
+      item.classList.add('active');
+    }
+
+    const selectButton = document.createElement('button');
+    selectButton.type = 'button';
+    selectButton.className = 'recording-select';
+    selectButton.addEventListener('click', () => {
+      setSelectedRecording(recording);
+    });
+
+    const nameElement = document.createElement('span');
+    nameElement.className = 'recording-name';
+    nameElement.textContent = recording.displayName;
+    selectButton.appendChild(nameElement);
+
+    const metaElement = document.createElement('span');
+    metaElement.className = 'recording-meta';
+    metaElement.textContent = recording.metaSummary || 'Metadata pending';
+    selectButton.appendChild(metaElement);
+
+    if (Array.isArray(recording.tags) && recording.tags.length > 0) {
+      const tagsContainer = document.createElement('span');
+      tagsContainer.className = 'recording-tags';
+      recording.tags.forEach((tag) => {
+        const tagElement = document.createElement('span');
+        tagElement.className = 'recording-tag';
+        tagElement.textContent = tag;
+        tagsContainer.appendChild(tagElement);
+      });
+      selectButton.appendChild(tagsContainer);
+    }
+
+    item.appendChild(selectButton);
+
+    const analyzeButton = document.createElement('button');
+    analyzeButton.type = 'button';
+    analyzeButton.className = 'analyze-button';
+    analyzeButton.textContent = 'Analyze';
+    analyzeButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      setSelectedRecording(recording);
+      requestRecordingAnalysis(recording);
+    });
+    item.appendChild(analyzeButton);
+
+    recordingsListElement.appendChild(item);
+  });
+
+  updateRecordingsSummary();
+}
+
+function appendAnalysisMeta(container, label, value) {
+  if (!container || !label || value === undefined || value === null || value === '') {
+    return;
+  }
+  const dt = document.createElement('dt');
+  dt.textContent = label;
+  const dd = document.createElement('dd');
+  dd.textContent = value;
+  container.append(dt, dd);
+}
+
+function renderAnalysisView() {
+  if (analysisRecordingTitle) {
+    analysisRecordingTitle.textContent = analysisViewState.recording
+      ? analysisViewState.recording.displayName
+      : 'No recording selected';
+  }
+  if (analysisRecordingMeta) {
+    analysisRecordingMeta.textContent = analysisViewState.recording
+      ? analysisViewState.recording.metaSummary || 'Metadata pending integration.'
+      : 'Choose a recording on the left to see its details.';
+  }
+  if (analysisStatusBadge) {
+    const config = ANALYSIS_STATUS_CONFIG[analysisViewState.status] || ANALYSIS_STATUS_CONFIG.idle;
+    analysisStatusBadge.textContent = config.label;
+    analysisStatusBadge.dataset.tone = config.tone;
+  }
+  if (analysisDetailsContainer) {
+    analysisDetailsContainer.replaceChildren();
+    const messageParagraph = document.createElement('p');
+    messageParagraph.textContent = analysisViewState.message || defaultAnalysisMessage;
+    analysisDetailsContainer.appendChild(messageParagraph);
+    if (analysisViewState.recording) {
+      const grid = document.createElement('dl');
+      grid.className = 'analysis-meta-grid';
+      appendAnalysisMeta(grid, 'Filename', analysisViewState.recording.displayName);
+      if (analysisViewState.recording.recordedAtText) {
+        appendAnalysisMeta(grid, 'Captured', analysisViewState.recording.recordedAtText);
+      }
+      if (analysisViewState.recording.durationText) {
+        appendAnalysisMeta(grid, 'Duration', analysisViewState.recording.durationText);
+      }
+      if (analysisViewState.recording.sizeText) {
+        appendAnalysisMeta(grid, 'Size', analysisViewState.recording.sizeText);
+      }
+      if (analysisViewState.recording.location) {
+        appendAnalysisMeta(grid, 'Location', analysisViewState.recording.location);
+      }
+      if (analysisViewState.recording.notes) {
+        appendAnalysisMeta(grid, 'Notes', analysisViewState.recording.notes);
+      }
+      if (Array.isArray(analysisViewState.recording.tags) && analysisViewState.recording.tags.length > 0) {
+        appendAnalysisMeta(grid, 'Tags', analysisViewState.recording.tags.join(', '));
+      }
+      analysisDetailsContainer.appendChild(grid);
+    }
+  }
+}
+
+function setAnalysisView(recording, status, message) {
+  analysisViewState.recording = recording;
+  analysisViewState.status = status;
+  analysisViewState.message = message || defaultAnalysisMessage;
+  renderAnalysisView();
+}
+
+function setSelectedRecording(recording) {
+  clearTimeout(analysisStatusTimer);
+  analysisStatusTimer = null;
+  if (!recording) {
+    selectedRecordingId = null;
+    setAnalysisView(null, 'idle', defaultAnalysisMessage);
+    renderRecordingsList();
+    return;
+  }
+  selectedRecordingId = recording.id;
+  setAnalysisView(
+    recording,
+    'ready',
+    `Press “Analyze” to request AI insights for “${recording.displayName}” once the analysis service is configured.`
+  );
+  renderRecordingsList();
+}
+
+function requestRecordingAnalysis(recording) {
+  if (!recording) {
+    return;
+  }
+  clearTimeout(analysisStatusTimer);
+  setAnalysisView(
+    recording,
+    'pending',
+    `Preparing AI analysis request for “${recording.displayName}”. The dashboard will forward this metadata when the external service is connected.`
+  );
+  analysisStatusTimer = window.setTimeout(() => {
+    if (analysisViewState.recording?.id !== recording.id) {
+      return;
+    }
+    setAnalysisView(
+      recording,
+      'awaiting',
+      'Awaiting integration with the external AI analysis server. When the API details are available, send the recording metadata above and surface the response here.'
+    );
+  }, 850);
+}
+
+function updateRefreshButtonState(isLoading) {
+  if (!refreshRecordingsButton) {
+    return;
+  }
+  refreshRecordingsButton.disabled = Boolean(isLoading);
+  refreshRecordingsButton.textContent = isLoading ? 'Refreshing…' : 'Refresh';
+}
+
+async function loadRecordingsFromServer() {
+  try {
+    const response = await fetch('/api/recordings', { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`Unexpected status ${response.status}`);
+    }
+    const payload = await response.json();
+    if (Array.isArray(payload)) {
+      return payload;
+    }
+    if (payload && Array.isArray(payload.recordings)) {
+      return payload.recordings;
+    }
+    return [];
+  } catch (error) {
+    console.info('Falling back to placeholder recordings', error);
+    return fallbackRecordings.slice();
+  }
+}
+
+async function refreshRecordingsList() {
+  if (!recordingsListElement || recordingsState.isLoading) {
+    return;
+  }
+  recordingsState.isLoading = true;
+  updateRefreshButtonState(true);
+  renderRecordingsList();
+  try {
+    const rawItems = await loadRecordingsFromServer();
+    const normalized = Array.isArray(rawItems)
+      ? rawItems.map(normaliseRecording).filter((item) => item !== null)
+      : [];
+    recordingsState.items = normalized;
+    recordingsState.lastUpdated = new Date();
+    if (selectedRecordingId) {
+      const selected = normalized.find((item) => item.id === selectedRecordingId);
+      if (selected) {
+        analysisViewState.recording = selected;
+        renderAnalysisView();
+      } else {
+        selectedRecordingId = null;
+        setAnalysisView(null, 'idle', defaultAnalysisMessage);
+      }
+    }
+  } catch (error) {
+    console.error('Failed to refresh recordings', error);
+  } finally {
+    recordingsState.isLoading = false;
+    updateRefreshButtonState(false);
+    renderRecordingsList();
+  }
+}
+
+function updateTabButtonState(button, isActive) {
+  button.classList.toggle('active', isActive);
+  button.setAttribute('aria-selected', String(isActive));
+  button.tabIndex = isActive ? 0 : -1;
+}
+
+function setActiveTab(tabId) {
+  const targetId = tabPanels.has(tabId) ? tabId : 'liveTab';
+  tabButtons.forEach((button) => {
+    const isActive = button.dataset.tabTarget === targetId;
+    updateTabButtonState(button, isActive);
+  });
+  tabPanels.forEach((panel, id) => {
+    const isActive = id === targetId;
+    panel.classList.toggle('active', isActive);
+    panel.hidden = !isActive;
+    panel.setAttribute('aria-hidden', String(!isActive));
+  });
+  if (mainElement) {
+    mainElement.dataset.activeTab = targetId;
+  }
+  document.body.dataset.activeTab = targetId;
+  const showLiveControls = targetId === 'liveTab';
+  if (toggleFlightControlsButton) {
+    toggleFlightControlsButton.hidden = !showLiveControls;
+    toggleFlightControlsButton.setAttribute('aria-hidden', String(!showLiveControls));
+  }
+  if (toggleRoutePanel) {
+    toggleRoutePanel.hidden = !showLiveControls;
+    toggleRoutePanel.setAttribute('aria-hidden', String(!showLiveControls));
+  }
+  if (!showLiveControls) {
+    setFlightControlsVisibility(false);
+    toggleRoutePanelVisibility(false);
+  }
+  if (
+    targetId === 'recordingsTab' &&
+    recordingsListElement &&
+    !recordingsState.isLoading &&
+    recordingsState.items.length === 0
+  ) {
+    refreshRecordingsList();
+  }
+}
+
+function attachTabNavigation() {
+  if (!tabButtons.length) {
+    return;
+  }
+  tabButtons.forEach((button, index) => {
+    button.addEventListener('click', () => {
+      const targetId = button.dataset.tabTarget;
+      if (targetId) {
+        setActiveTab(targetId);
+      }
+    });
+    button.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+        event.preventDefault();
+        const direction = event.key === 'ArrowRight' ? 1 : -1;
+        const nextIndex = (index + direction + tabButtons.length) % tabButtons.length;
+        tabButtons[nextIndex].focus();
+      }
+    });
+  });
+  const defaultTab =
+    tabButtons.find((button) => button.classList.contains('active'))?.dataset.tabTarget || 'liveTab';
+  setActiveTab(defaultTab);
+}
 
 let latestDetections = null;
 let lastNotificationSummary = '';
@@ -1173,6 +1726,20 @@ function handleGcsCommandAck(message) {
   } else {
     updateGcsStatus('GCS: acknowledgment received');
   }
+}
+
+attachTabNavigation();
+renderAnalysisView();
+renderRecordingsList();
+
+if (refreshRecordingsButton) {
+  refreshRecordingsButton.addEventListener('click', () => {
+    refreshRecordingsList();
+  });
+}
+
+if (recordingsListElement) {
+  refreshRecordingsList();
 }
 
 registerServiceWorker();
