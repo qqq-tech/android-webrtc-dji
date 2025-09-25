@@ -7,11 +7,7 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"net/url"
 	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -80,14 +76,6 @@ type telemetryData struct {
 	Accuracy  *float64
 	Timestamp int64
 	Source    string
-}
-
-type recordingFile struct {
-	StreamID string    `json:"streamId"`
-	FileName string    `json:"fileName"`
-	Size     int64     `json:"size"`
-	Modified time.Time `json:"modified"`
-	URL      string    `json:"url"`
 }
 
 type streamManager struct {
@@ -659,82 +647,6 @@ func (s *stream) broadcastToSubscribers(msg signalMessage, sender *client) error
 	return firstErr
 }
 
-func handleRecordingList(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	streamID := r.URL.Query().Get("streamId")
-	files, err := listRecordings(streamID)
-	if err != nil {
-		log.Printf("failed to list recordings: %v", err)
-		http.Error(w, "failed to list recordings", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(files); err != nil {
-		log.Printf("failed to encode recordings response: %v", err)
-	}
-}
-
-func listRecordings(streamID string) ([]recordingFile, error) {
-	base := recording.DirName
-	entries := make([]recordingFile, 0)
-	streamIDs := []string{}
-	if streamID != "" {
-		streamIDs = append(streamIDs, streamID)
-	} else {
-		dirs, err := os.ReadDir(base)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return entries, nil
-			}
-			return nil, err
-		}
-		for _, dir := range dirs {
-			if dir.IsDir() {
-				streamIDs = append(streamIDs, dir.Name())
-			}
-		}
-	}
-
-	for _, id := range streamIDs {
-		dirPath := filepath.Join(base, id)
-		files, err := os.ReadDir(dirPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, err
-		}
-		for _, file := range files {
-			if file.IsDir() {
-				continue
-			}
-			name := file.Name()
-			if !strings.HasSuffix(strings.ToLower(name), ".mp4") {
-				continue
-			}
-			info, err := file.Info()
-			if err != nil {
-				return nil, err
-			}
-			entries = append(entries, recordingFile{
-				StreamID: id,
-				FileName: name,
-				Size:     info.Size(),
-				Modified: info.ModTime(),
-				URL:      fmt.Sprintf("/recordings/%s/%s", url.PathEscape(id), url.PathEscape(name)),
-			})
-		}
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Modified.After(entries[j].Modified)
-	})
-	return entries, nil
-}
-
 func (data telemetryData) toSignalMessage() signalMessage {
 	msg := signalMessage{Type: "telemetry", Source: data.Source}
 	msg.Latitude = float64Ptr(data.Latitude)
@@ -782,9 +694,6 @@ func main() {
 	if err := os.MkdirAll(recording.DirName, 0o755); err != nil {
 		log.Fatalf("failed to create recording directory: %v", err)
 	}
-	http.HandleFunc("/recordings", handleRecordingList)
-	http.Handle("/recordings/", http.StripPrefix("/recordings/", http.FileServer(http.Dir(recording.DirName))))
-
 	log.Printf("Pion WebRTC relay listening on %s", *addr)
 	if err := http.ListenAndServe(*addr, nil); err != nil {
 		log.Fatalf("server failed: %v", err)
