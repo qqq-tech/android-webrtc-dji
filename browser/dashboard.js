@@ -127,9 +127,72 @@ function resolveDetectionUrl(searchParams, signalingUrlObject) {
   return url.toString();
 }
 
+function resolveRecordingsEndpoint(searchParams, signalingUrlObject) {
+  const explicitUrl = (searchParams.get('recordingsUrl') || '').trim();
+  if (explicitUrl) {
+    const parsed = parseUrl(explicitUrl, isSecurePage ? 'https://' : 'http://');
+    if (parsed) {
+      if (!parsed.pathname || parsed.pathname === '/') {
+        parsed.pathname = '/recordings';
+      }
+      return parsed;
+    }
+    console.error('Failed to parse explicit recordingsUrl parameter', explicitUrl);
+  }
+
+  const hostParam = (searchParams.get('recordingsHost') || '').trim();
+  const portParam = (searchParams.get('recordingsPort') || '').trim();
+  const protocolParam = (searchParams.get('recordingsProtocol') || '').trim();
+
+  let host = hostParam;
+  let port = portParam;
+  let protocol = protocolParam;
+
+  if (signalingUrlObject) {
+    if (!host) {
+      host = signalingUrlObject.hostname;
+    }
+    if (!port && signalingUrlObject.port) {
+      port = signalingUrlObject.port;
+    }
+    if (!protocol) {
+      if (signalingUrlObject.protocol === 'wss:') {
+        protocol = 'https';
+      } else if (signalingUrlObject.protocol === 'ws:') {
+        protocol = 'http';
+      } else if (signalingUrlObject.protocol.endsWith(':')) {
+        protocol = signalingUrlObject.protocol.slice(0, -1);
+      } else {
+        protocol = signalingUrlObject.protocol || '';
+      }
+    }
+  }
+
+  if (!protocol) {
+    protocol = isSecurePage ? 'https' : 'http';
+  }
+  if (!host) {
+    host = getDefaultHost();
+  }
+
+  const hostPort = port ? `${host}:${port}` : host;
+  const parsed = parseUrl(`${protocol}://${hostPort}`, `${protocol}://${hostPort}`);
+  if (!parsed) {
+    console.error('Failed to construct recordings endpoint URL');
+    return null;
+  }
+  if (!parsed.pathname || parsed.pathname === '/') {
+    parsed.pathname = '/recordings';
+  }
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed;
+}
+
 const signalingUrlObject = resolveSignalingEndpoint(params, streamId);
 const signalingUrl = signalingUrlObject.toString();
 const detectionUrl = resolveDetectionUrl(params, signalingUrlObject);
+const recordingsEndpoint = resolveRecordingsEndpoint(params, signalingUrlObject);
 
 const rawVideo = document.getElementById('rawVideo');
 const overlayVideo = document.getElementById('overlayVideo');
@@ -184,39 +247,6 @@ const analysisDetailsContainer = document.getElementById('analysisDetails');
 if (streamIdLabel) {
   streamIdLabel.textContent = streamId;
 }
-
-const fallbackRecordings = [
-  {
-    id: 'mission-20240310-120501',
-    name: 'mission-20240310-120501.mp4',
-    recordedAt: '2024-03-10T12:05:01+09:00',
-    durationSeconds: 272,
-    sizeBytes: 1283741824,
-    location: 'Incheon Harbor, KR',
-    notes: 'Night inspection over container yard',
-    tags: ['harbor', 'inspection', 'night'],
-  },
-  {
-    id: 'mission-20240312-093015',
-    name: 'mission-20240312-093015.mp4',
-    recordedAt: '2024-03-12T09:30:15+09:00',
-    durationSeconds: 418,
-    sizeBytes: 1648572416,
-    location: 'Yeouido, Seoul',
-    notes: 'Daytime bridge structural sweep',
-    tags: ['bridge', 'daylight'],
-  },
-  {
-    id: 'mission-20240315-214200',
-    name: 'mission-20240315-214200.mp4',
-    recordedAt: '2024-03-15T21:42:00+09:00',
-    durationSeconds: 603,
-    sizeBytes: 2109876543,
-    location: 'Busan Shipyard',
-    notes: 'Thermal anomaly follow-up flight',
-    tags: ['thermal', 'shipyard'],
-  },
-];
 
 const recordingsState = {
   items: [],
@@ -659,13 +689,18 @@ function adaptServerRecording(recording) {
 }
 
 async function loadRecordingsFromServer() {
+  if (!recordingsEndpoint) {
+    console.warn('Recordings endpoint is not configured.');
+    return [];
+  }
   try {
-    const query = new URLSearchParams();
+    const endpointUrl = new URL(recordingsEndpoint.toString());
     if (streamId) {
-      query.set('streamId', streamId);
+      endpointUrl.searchParams.set('streamId', streamId);
+    } else {
+      endpointUrl.searchParams.delete('streamId');
     }
-    const endpoint = `/recordings${query.toString() ? `?${query.toString()}` : ''}`;
-    const response = await fetch(endpoint, { cache: 'no-store' });
+    const response = await fetch(endpointUrl.toString(), { cache: 'no-store' });
     if (!response.ok) {
       throw new Error(`Unexpected status ${response.status}`);
     }
@@ -680,8 +715,8 @@ async function loadRecordingsFromServer() {
     }
     return [];
   } catch (error) {
-    console.info('Falling back to placeholder recordings', error);
-    return fallbackRecordings.slice();
+    console.error('Failed to load recordings', error);
+    throw error;
   }
 }
 
@@ -711,6 +746,8 @@ async function refreshRecordingsList() {
     }
   } catch (error) {
     console.error('Failed to refresh recordings', error);
+    recordingsState.items = [];
+    recordingsState.lastUpdated = null;
   } finally {
     recordingsState.isLoading = false;
     updateRefreshButtonState(false);
