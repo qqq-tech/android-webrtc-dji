@@ -8,7 +8,9 @@ import http
 import json
 import logging
 import mimetypes
-from urllib.parse import unquote, urlsplit
+import os
+from datetime import datetime, timezone
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Optional, Set, Union
@@ -85,17 +87,20 @@ class DetectionBroadcaster:
         port: int = 8765,
         path: str = "/detections",
         static_dir: Optional[Union[str, Path]] = None,
+        recordings_dir: Optional[Union[str, Path]] = None,
     ):
         self._host = host
         self._port = port
         self._path = path
         self._clients: Set[WebSocketServerProtocol] = set()
         self._server: Optional[WebSocketServer] = None
+        self._recordings_mount_path = "/recordings"
         if static_dir is None:
             default_static = Path(__file__).resolve().parents[1] / "browser"
             self._static_dir = default_static if default_static.exists() else None
         else:
             self._static_dir = Path(static_dir).resolve()
+        self._recordings_dir = self._resolve_recordings_dir(recordings_dir)
 
     async def start(self) -> None:
         if self._server is not None:
@@ -141,13 +146,17 @@ class DetectionBroadcaster:
             self._clients.discard(websocket)
 
     async def _process_http_request(self, path_or_connection, request_headers=None):
-        request_path, request_headers = self._normalise_http_request(
+        request_path, request_headers, query_string = self._normalise_http_request(
             path_or_connection, request_headers
         )
 
         upgrade_header = self._get_header_value(request_headers, "Upgrade")
         if "websocket" in upgrade_header.lower():
             return None
+
+        recordings_response = self._handle_recordings_request(request_path, query_string)
+        if recordings_response is not None:
+            return recordings_response
 
         if self._static_dir is not None:
             file_path = self._resolve_static_path(request_path)
@@ -172,6 +181,153 @@ class DetectionBroadcaster:
         ]
         return self._build_http_response(http.HTTPStatus.OK, headers, body)
 
+    def _resolve_recordings_dir(
+        self, recordings_dir: Optional[Union[str, Path]]
+    ) -> Optional[Path]:
+        candidates: list[Path] = []
+        if recordings_dir is not None:
+            candidates.append(Path(recordings_dir))
+
+        env_dir = os.environ.get("RECORDINGS_DIR")
+        if env_dir:
+            candidates.append(Path(env_dir))
+
+        script_root = Path(__file__).resolve().parents[1]
+        candidates.extend(
+            [
+                Path.cwd() / "recordings",
+                script_root / "recordings",
+                script_root / "pion-server" / "recordings",
+            ]
+        )
+
+        fallback: Optional[Path] = None
+        seen: set[Path] = set()
+
+        for candidate in candidates:
+            try:
+                resolved = candidate.expanduser().resolve()
+            except Exception:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if fallback is None:
+                fallback = resolved
+            if resolved.exists() and resolved.is_dir():
+                return resolved
+
+        return fallback
+
+    def _handle_recordings_request(self, request_path: str, query_string: str):
+        mount = self._recordings_mount_path
+        if not mount:
+            return None
+
+        if request_path == mount or request_path == f"{mount}/":
+            try:
+                params = parse_qs(query_string or "", keep_blank_values=False)
+            except Exception:
+                params = {}
+            stream_id_values = params.get("streamId") or []
+            stream_id = stream_id_values[0].strip() if stream_id_values else ""
+            try:
+                entries = self._list_recordings(stream_id)
+            except Exception:
+                logging.exception("Failed to list recordings")
+                return self._json_response(
+                    {"error": "failed to list recordings"},
+                    status=http.HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return self._json_response(entries)
+
+        prefix = f"{mount}/"
+        if request_path.startswith(prefix):
+            relative = request_path[len(prefix) :]
+            return self._serve_recording_file(relative)
+
+        return None
+
+    def _list_recordings(self, stream_id: str) -> list[dict[str, Any]]:
+        base = self._recordings_dir
+        if base is None:
+            return []
+
+        entries: list[tuple[float, dict[str, Any]]] = []
+
+        if stream_id:
+            stream_ids = [stream_id]
+        else:
+            try:
+                stream_ids = [
+                    entry.name
+                    for entry in sorted(base.iterdir(), key=lambda item: item.name)
+                    if entry.is_dir()
+                ]
+            except FileNotFoundError:
+                return []
+
+        for stream in stream_ids:
+            stream_dir = base / stream
+            try:
+                files = list(stream_dir.iterdir())
+            except FileNotFoundError:
+                continue
+            for file_path in files:
+                if not file_path.is_file():
+                    continue
+                if file_path.suffix.lower() != ".mp4":
+                    continue
+                try:
+                    stat_result = file_path.stat()
+                except FileNotFoundError:
+                    continue
+                modified = datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc)
+                payload = {
+                    "streamId": stream,
+                    "fileName": file_path.name,
+                    "size": stat_result.st_size,
+                    "modified": modified.isoformat().replace("+00:00", "Z"),
+                    "URL": f"{self._recordings_mount_path}/{quote(stream)}/{quote(file_path.name)}",
+                }
+                entries.append((modified.timestamp(), payload))
+
+        entries.sort(key=lambda item: item[0], reverse=True)
+        return [payload for _, payload in entries]
+
+    def _serve_recording_file(self, relative_path: str):
+        base = self._recordings_dir
+        if base is None:
+            return self._build_http_response(http.HTTPStatus.NOT_FOUND, [], b"")
+
+        safe_relative = relative_path.lstrip("/")
+        candidate = (base / safe_relative).resolve()
+        try:
+            candidate.relative_to(base)
+        except ValueError:
+            return self._build_http_response(http.HTTPStatus.NOT_FOUND, [], b"")
+
+        if not candidate.exists() or candidate.is_dir():
+            return self._build_http_response(http.HTTPStatus.NOT_FOUND, [], b"")
+
+        body = candidate.read_bytes()
+        content_type, _ = mimetypes.guess_type(str(candidate))
+        headers = [
+            ("Content-Type", content_type or "application/octet-stream"),
+            ("Content-Length", str(len(body))),
+            ("Cache-Control", "no-store"),
+        ]
+        return self._build_http_response(http.HTTPStatus.OK, headers, body)
+
+    def _json_response(self, payload: Any, status: http.HTTPStatus = http.HTTPStatus.OK):
+        body = json.dumps(payload).encode("utf-8")
+        headers = [
+            ("Content-Type", "application/json; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+            ("Cache-Control", "no-store"),
+        ]
+        return self._build_http_response(status, headers, body)
+
     def _resolve_static_path(self, request_path: str) -> Optional[Path]:
         if self._static_dir is None:
             return None
@@ -189,8 +345,10 @@ class DetectionBroadcaster:
             return candidate
         return None
 
-    def _normalise_http_request(self, path_or_connection, request_headers) -> tuple[str, Any]:
-        """Return a ``(path, headers)`` tuple that works across websockets versions."""
+    def _normalise_http_request(
+        self, path_or_connection, request_headers
+    ) -> tuple[str, Any, str]:
+        """Return a ``(path, headers, query)`` tuple across websockets versions."""
 
         # websockets >= 12 passes the ServerConnection instance as the first argument.
         connection = None
@@ -237,12 +395,12 @@ class DetectionBroadcaster:
         if connection is not None and request_path is connection:
             request_path = None
 
-        request_path = self._coerce_request_path(request_path)
+        request_path, query_string = self._coerce_request_target(request_path)
 
-        return request_path, request_headers
+        return request_path, request_headers, query_string
 
-    def _coerce_request_path(self, request_path: Any) -> str:
-        """Best-effort conversion of ``request_path`` to a normalised string."""
+    def _coerce_request_target(self, request_path: Any) -> tuple[str, str]:
+        """Best-effort conversion of ``request_path`` to ``(path, query)``."""
 
         visited: set[int] = set()
         value = request_path
@@ -311,7 +469,7 @@ class DetectionBroadcaster:
             break
 
         if value is None:
-            return "/"
+            return "/", ""
 
         if not isinstance(value, str):
             value = str(value)
@@ -330,7 +488,9 @@ class DetectionBroadcaster:
         if not normalised.startswith("/"):
             normalised = "/" + normalised
 
-        return normalised
+        query = parsed.query or ""
+
+        return normalised, query
 
     def _get_header_value(self, headers_like, name: str) -> str:
         """Best-effort retrieval of a HTTP header from websockets request objects."""

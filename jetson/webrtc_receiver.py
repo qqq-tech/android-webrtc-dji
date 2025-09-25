@@ -28,6 +28,7 @@ class WebRTCYOLOPipeline:
         detection_port: int = 8765,
         model_path: str = "yolov8n.pt",
         confidence_threshold: float = 0.25,
+        recordings_dir: Optional[str] = None,
     ) -> None:
         self._stream_id = stream_id
         self._signaling_url = self._build_signaling_url(
@@ -38,7 +39,11 @@ class WebRTCYOLOPipeline:
         )
         self._pc = RTCPeerConnection()
         self._yolo = YoloProcessor(model_path=model_path, confidence_threshold=confidence_threshold)
-        self._broadcaster = DetectionBroadcaster(host=detection_host, port=detection_port)
+        self._broadcaster = DetectionBroadcaster(
+            host=detection_host,
+            port=detection_port,
+            recordings_dir=recordings_dir,
+        )
         self._video_task: Optional[asyncio.Task] = None
         self._signaling: Optional[websockets.WebSocketClientProtocol] = None
 
@@ -191,6 +196,10 @@ async def main() -> None:
     parser.add_argument("--detection-port", type=int, default=8765)
     parser.add_argument("--model", default="yolov8n.pt")
     parser.add_argument("--confidence", type=float, default=0.25)
+    parser.add_argument(
+        "--recordings-dir",
+        help="Directory containing recorded stream files served over HTTP",
+    )
 
     args = parser.parse_args()
 
@@ -205,6 +214,7 @@ async def main() -> None:
         detection_port=args.detection_port,
         model_path=args.model,
         confidence_threshold=args.confidence,
+        recordings_dir=args.recordings_dir,
     )
 
     try:

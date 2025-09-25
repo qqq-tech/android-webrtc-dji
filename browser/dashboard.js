@@ -1,5 +1,7 @@
 const params = new URLSearchParams(window.location.search);
-const streamId = params.get('streamId') || 'mavic-stream';
+const rawStreamIdParam = (params.get('streamId') || '').trim();
+const hasExplicitStreamId = params.has('streamId') && rawStreamIdParam.length > 0;
+const streamId = rawStreamIdParam || 'mavic-stream';
 const gcsEnableParam = (params.get('enableGcs') || '').trim().toLowerCase();
 const gcsControlEnabled = gcsEnableParam !== 'false';
 
@@ -127,7 +129,22 @@ function resolveDetectionUrl(searchParams, signalingUrlObject) {
   return url.toString();
 }
 
-function resolveRecordingsEndpoint(searchParams, signalingUrlObject) {
+function resolveRecordingsEndpoints(searchParams, signalingUrlObject) {
+  const endpoints = [];
+  const seen = new Set();
+
+  function appendEndpoint(url) {
+    if (!url) {
+      return;
+    }
+    const serialized = url.toString();
+    if (seen.has(serialized)) {
+      return;
+    }
+    seen.add(serialized);
+    endpoints.push(url);
+  }
+
   const explicitUrl = (searchParams.get('recordingsUrl') || '').trim();
   if (explicitUrl) {
     const parsed = parseUrl(explicitUrl, isSecurePage ? 'https://' : 'http://');
@@ -135,9 +152,24 @@ function resolveRecordingsEndpoint(searchParams, signalingUrlObject) {
       if (!parsed.pathname || parsed.pathname === '/') {
         parsed.pathname = '/recordings';
       }
-      return parsed;
+      parsed.search = '';
+      parsed.hash = '';
+      appendEndpoint(parsed);
+    } else {
+      console.error('Failed to parse explicit recordingsUrl parameter', explicitUrl);
     }
-    console.error('Failed to parse explicit recordingsUrl parameter', explicitUrl);
+  }
+
+  if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+    try {
+      const sameOrigin = new URL(window.location.href);
+      sameOrigin.pathname = '/recordings';
+      sameOrigin.search = '';
+      sameOrigin.hash = '';
+      appendEndpoint(sameOrigin);
+    } catch (error) {
+      console.warn('Failed to derive same-origin recordings endpoint', error);
+    }
   }
 
   const hostParam = (searchParams.get('recordingsHost') || '').trim();
@@ -176,23 +208,25 @@ function resolveRecordingsEndpoint(searchParams, signalingUrlObject) {
   }
 
   const hostPort = port ? `${host}:${port}` : host;
-  const parsed = parseUrl(`${protocol}://${hostPort}`, `${protocol}://${hostPort}`);
-  if (!parsed) {
+  const derived = parseUrl(`${protocol}://${hostPort}`, `${protocol}://${hostPort}`);
+  if (derived) {
+    if (!derived.pathname || derived.pathname === '/') {
+      derived.pathname = '/recordings';
+    }
+    derived.search = '';
+    derived.hash = '';
+    appendEndpoint(derived);
+  } else {
     console.error('Failed to construct recordings endpoint URL');
-    return null;
   }
-  if (!parsed.pathname || parsed.pathname === '/') {
-    parsed.pathname = '/recordings';
-  }
-  parsed.search = '';
-  parsed.hash = '';
-  return parsed;
+
+  return endpoints;
 }
 
 const signalingUrlObject = resolveSignalingEndpoint(params, streamId);
 const signalingUrl = signalingUrlObject.toString();
 const detectionUrl = resolveDetectionUrl(params, signalingUrlObject);
-const recordingsEndpoint = resolveRecordingsEndpoint(params, signalingUrlObject);
+const recordingsEndpoints = resolveRecordingsEndpoints(params, signalingUrlObject);
 
 const rawVideo = document.getElementById('rawVideo');
 const overlayVideo = document.getElementById('overlayVideo');
@@ -689,35 +723,46 @@ function adaptServerRecording(recording) {
 }
 
 async function loadRecordingsFromServer() {
-  if (!recordingsEndpoint) {
+  if (!Array.isArray(recordingsEndpoints) || recordingsEndpoints.length === 0) {
     console.warn('Recordings endpoint is not configured.');
     return [];
   }
-  try {
-    const endpointUrl = new URL(recordingsEndpoint.toString());
-    if (streamId) {
-      endpointUrl.searchParams.set('streamId', streamId);
-    } else {
-      endpointUrl.searchParams.delete('streamId');
+
+  const attempts = [];
+
+  for (const endpoint of recordingsEndpoints) {
+    try {
+      const endpointUrl = new URL(endpoint.toString());
+      if (hasExplicitStreamId) {
+        endpointUrl.searchParams.set('streamId', rawStreamIdParam);
+      } else {
+        endpointUrl.searchParams.delete('streamId');
+      }
+      const response = await fetch(endpointUrl.toString(), { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`Unexpected status ${response.status}`);
+      }
+      const payload = await response.json();
+      if (Array.isArray(payload)) {
+        return payload.map(adaptServerRecording).filter((item) => item !== null);
+      }
+      if (payload && Array.isArray(payload.recordings)) {
+        return payload.recordings
+          .map(adaptServerRecording)
+          .filter((item) => item !== null);
+      }
+      return [];
+    } catch (error) {
+      attempts.push({ endpoint, error });
     }
-    const response = await fetch(endpointUrl.toString(), { cache: 'no-store' });
-    if (!response.ok) {
-      throw new Error(`Unexpected status ${response.status}`);
-    }
-    const payload = await response.json();
-    if (Array.isArray(payload)) {
-      return payload.map(adaptServerRecording).filter((item) => item !== null);
-    }
-    if (payload && Array.isArray(payload.recordings)) {
-      return payload.recordings
-        .map(adaptServerRecording)
-        .filter((item) => item !== null);
-    }
-    return [];
-  } catch (error) {
-    console.error('Failed to load recordings', error);
-    throw error;
   }
+
+  attempts.forEach(({ endpoint, error }) => {
+    console.error('Failed to load recordings from endpoint', endpoint.toString(), error);
+  });
+  const fallbackError =
+    attempts.length > 0 ? attempts[attempts.length - 1].error : new Error('No recordings endpoints');
+  throw fallbackError;
 }
 
 async function refreshRecordingsList() {
