@@ -600,18 +600,83 @@ function updateRefreshButtonState(isLoading) {
   refreshRecordingsButton.textContent = isLoading ? 'Refreshing…' : 'Refresh';
 }
 
+function adaptServerRecording(recording) {
+  if (!recording || typeof recording !== 'object') {
+    return null;
+  }
+
+  const adapted = { ...recording };
+
+  if (!adapted.name && typeof recording.fileName === 'string') {
+    adapted.name = recording.fileName;
+  }
+
+  if (!adapted.url && typeof recording.URL === 'string') {
+    adapted.url = recording.URL;
+  }
+
+  if (!adapted.recordedAt && recording.modified) {
+    adapted.recordedAt = recording.modified;
+  }
+
+  if (adapted.recordedAt === undefined && recording.Modified) {
+    adapted.recordedAt = recording.Modified;
+  }
+
+  if (!adapted.sizeBytes && Number.isFinite(recording.size)) {
+    adapted.sizeBytes = recording.size;
+  }
+
+  if (!adapted.sizeBytes && Number.isFinite(recording.Size)) {
+    adapted.sizeBytes = recording.Size;
+  }
+
+  if (!adapted.id) {
+    const streamPart =
+      typeof recording.streamId === 'string' && recording.streamId.trim().length > 0
+        ? recording.streamId.trim()
+        : typeof recording.StreamID === 'string' && recording.StreamID.trim().length > 0
+        ? recording.StreamID.trim()
+        : '';
+    const namePart =
+      typeof adapted.name === 'string' && adapted.name.trim().length > 0
+        ? adapted.name.trim()
+        : typeof recording.fileName === 'string' && recording.fileName.trim().length > 0
+        ? recording.fileName.trim()
+        : typeof recording.FileName === 'string' && recording.FileName.trim().length > 0
+        ? recording.FileName.trim()
+        : '';
+    if (streamPart && namePart) {
+      adapted.id = `${streamPart}/${namePart}`;
+    } else if (namePart) {
+      adapted.id = namePart;
+    } else if (streamPart) {
+      adapted.id = streamPart;
+    }
+  }
+
+  return adapted;
+}
+
 async function loadRecordingsFromServer() {
   try {
-    const response = await fetch('/api/recordings', { cache: 'no-store' });
+    const query = new URLSearchParams();
+    if (streamId) {
+      query.set('streamId', streamId);
+    }
+    const endpoint = `/recordings${query.toString() ? `?${query.toString()}` : ''}`;
+    const response = await fetch(endpoint, { cache: 'no-store' });
     if (!response.ok) {
       throw new Error(`Unexpected status ${response.status}`);
     }
     const payload = await response.json();
     if (Array.isArray(payload)) {
-      return payload;
+      return payload.map(adaptServerRecording).filter((item) => item !== null);
     }
     if (payload && Array.isArray(payload.recordings)) {
-      return payload.recordings;
+      return payload.recordings
+        .map(adaptServerRecording)
+        .filter((item) => item !== null);
     }
     return [];
   } catch (error) {
