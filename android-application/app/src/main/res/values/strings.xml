@@ -64,4 +64,8 @@
     <string name="streaming_action_drone">드론 스트림 관리</string>
     <string name="streaming_action_mobile">모바일 스트림 열기</string>
     <string name="streaming_action_drone_message">드론 스트리밍은 자동으로 관리됩니다. 필요한 경우 DJI 연결 상태를 확인하세요.</string>
+    <string name="streaming_drawer_title">스트리밍 옵션</string>
+    <string name="streaming_drawer_subtitle">화면을 가리지 않고도 필요한 제어를 설정할 수 있습니다.</string>
+    <string name="streaming_drawer_open">스트리밍 제어 열기</string>
+    <string name="streaming_drawer_close">스트리밍 제어 닫기</string>
 </resources>
