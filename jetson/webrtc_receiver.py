@@ -31,7 +31,7 @@ from yolo_processor import YoloProcessor
 CONNECT_TIMEOUT = 3.0
 SEND_TIMEOUT = 2.0
 RECV_TIMEOUT = 2.0
-ANALYSIS_INTERVAL = 0.5
+ANALYSIS_INTERVAL = 3.0
 
 
 def _patch_aioice_transaction_timeout() -> None:
@@ -242,6 +242,11 @@ class WebRTCYOLOPipeline:
 
         self._video_task: Optional[asyncio.Task] = None
         self._signaling: Optional[websockets.WebSocketClientProtocol] = None
+        # ``_signaling_loop`` now awaits ``websocket.recv`` directly via
+        # ``asyncio.wait_for`` instead of creating a long-lived task, so there is
+        # no per-iteration receive task to track or cancel.  The attribute is
+        # kept for compatibility with older cleanup code paths but always
+        # ``None``.
         self._signaling_recv_task: Optional[asyncio.Task] = None
         self._reconnect_delay = reconnect_delay
         self._closed = False
@@ -287,10 +292,10 @@ class WebRTCYOLOPipeline:
                 logging.info("Signaling connection closed")
                 break
 
-            recv_task = asyncio.create_task(websocket.recv())
-            self._signaling_recv_task = recv_task
             try:
-                raw_message = await asyncio.wait_for(recv_task, timeout=RECV_TIMEOUT)
+                raw_message = await asyncio.wait_for(
+                    websocket.recv(), timeout=RECV_TIMEOUT
+                )
             except asyncio.TimeoutError:
                 if self._restart_requested or self._closed:
                     break
@@ -299,14 +304,6 @@ class WebRTCYOLOPipeline:
                     break
                 continue
             except asyncio.CancelledError:
-                current_task = asyncio.current_task()
-                cancelling = False
-                if current_task is not None:
-                    cancelling_method = getattr(current_task, "cancelling", None)
-                    if callable(cancelling_method):
-                        cancelling = bool(cancelling_method())
-                if cancelling:
-                    raise
                 if self._closed or self._restart_requested:
                     logging.info("Signaling loop cancelled due to shutdown")
                     break
@@ -318,13 +315,6 @@ class WebRTCYOLOPipeline:
             except ConnectionClosed:
                 logging.info("Signaling connection closed")
                 break
-            finally:
-                if self._signaling_recv_task is recv_task:
-                    self._signaling_recv_task = None
-                if not recv_task.done():
-                    recv_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, ConnectionClosed):
-                        await recv_task
 
             if raw_message == BYE:
                 logging.info("Signaling server ended session")
@@ -593,14 +583,10 @@ class WebRTCYOLOPipeline:
                 logging.exception("Failed to stop detection sink")
 
     async def _cancel_signaling_recv_task(self) -> None:
-        task = self._signaling_recv_task
-        if task is None:
-            return
+        # ``_signaling_loop`` no longer creates a standalone receive task, so
+        # there is nothing to cancel explicitly.  The method is retained for
+        # compatibility with existing shutdown code paths that await it.
         self._signaling_recv_task = None
-        if not task.done():
-            task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, ConnectionClosed):
-            await task
 
     @staticmethod
     def _build_signaling_url(
