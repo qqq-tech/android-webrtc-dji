@@ -47,10 +47,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/**
- * Activity that allows publishing the mobile device camera to the same Pion relay used for
- * drone video streaming.
- */
 public class CameraStreamActivity extends AppCompatActivity {
     private static final String TAG = "CameraStreamActivity";
     private static final int REQUEST_PERMISSIONS = 0xCA01;
@@ -77,6 +73,7 @@ public class CameraStreamActivity extends AppCompatActivity {
     private String activeStreamId;
 
     private EglBase eglBase;
+    private SurfaceTextureHelper surfaceTextureHelper; 
     private RouteOverlayManager routeOverlayManager;
     private final List<GeoPoint> traveledPathPoints = new ArrayList<>();
     private double traveledDistanceMeters = 0d;
@@ -92,7 +89,6 @@ public class CameraStreamActivity extends AppCompatActivity {
 
         @Override
         public void onStatusChanged(String provider, int status, Bundle extras) {
-            // Deprecated but required for API compatibility.
         }
 
         @Override
@@ -154,14 +150,9 @@ public class CameraStreamActivity extends AppCompatActivity {
 
     private void configurePreviewSurface() {
         Log.d(TAG, "configurePreviewSurface called.");
-        // binding.cameraPreview.init(eglBase.getEglBaseContext(), null); // 주석 처리 유지
         Log.d(TAG, "EGL Context for preview (will be used later): " + (eglBase != null ? eglBase.getEglBaseContext() : "null"));
 
-        // 임시 배경색 설정 제거
-        // binding.cameraPreview.setBackgroundColor(Color.RED);
-        // Log.d(TAG, "Set cameraPreview background to RED for visibility test."); // 로그도 제거
-
-        binding.cameraPreview.setZOrderOnTop(true); // ZOrderMediaOverlay(true) 대신 setZOrderOnTop(true) 사용
+        binding.cameraPreview.setZOrderOnTop(true);
         Log.d(TAG, "Set ZOrderOnTop(true) for cameraPreview.");
 
         binding.cameraPreview.setEnableHardwareScaler(false);
@@ -406,6 +397,14 @@ public class CameraStreamActivity extends AppCompatActivity {
             return;
         }
 
+        // SurfaceTextureHelper는 WebRTCClient보다 먼저, Capturer가 생성된 후에 생성
+        if (this.surfaceTextureHelper != null) {
+            this.surfaceTextureHelper.dispose(); // 이전 것이 있다면 명시적 해제
+        }
+        this.surfaceTextureHelper = SurfaceTextureHelper.create("MOBILE_CAMERA_STREAM", eglBase.getEglBaseContext());
+        Log.d(TAG, "SurfaceTextureHelper created for new stream: " + (this.surfaceTextureHelper != null));
+
+
         resetTraveledPath();
         startLocationUpdates();
 
@@ -446,14 +445,13 @@ public class CameraStreamActivity extends AppCompatActivity {
     }
 
     private void onSignalingConnected() {
-        Log.d(TAG, "onSignalingConnected called. activeCapturer: " + (activeCapturer != null));
-        if (activeCapturer == null) {
-            stopStreamingInternal(getString(R.string.camera_stream_status_error, getString(R.string.camera_stream_no_cameras)));
+        Log.d(TAG, "onSignalingConnected called. activeCapturer: " + (activeCapturer != null) + ", surfaceTextureHelper: " + (surfaceTextureHelper != null));
+        if (activeCapturer == null || surfaceTextureHelper == null) {
+            String errorMsg = "activeCapturer or surfaceTextureHelper is null in onSignalingConnected.";
+            Log.e(TAG, errorMsg);
+            stopStreamingInternal(getString(R.string.camera_stream_status_error, errorMsg));
             return;
         }
-
-        SurfaceTextureHelper surfaceTextureHelper = SurfaceTextureHelper.create("MOBILE_CAMERA", eglBase.getEglBaseContext());
-        Log.d(TAG, "SurfaceTextureHelper created: " + (surfaceTextureHelper != null));
 
         WebRTCMediaOptions options = new WebRTCMediaOptions()
                 .setMediaStreamId(activeStreamId)
@@ -462,20 +460,18 @@ public class CameraStreamActivity extends AppCompatActivity {
                 .setFps(30);
         try {
             Log.d(TAG, "Attempting to create WebRTCClient.");
-            webRtcClient = new WebRTCClient(getApplicationContext(), activeCapturer, options, signalingClient, surfaceTextureHelper);
+            webRtcClient = new WebRTCClient(getApplicationContext(), activeCapturer, options, signalingClient, this.surfaceTextureHelper);
             Log.d(TAG, "WebRTCClient created: " + (webRtcClient != null));
 
             if (webRtcClient != null && binding.cameraPreview != null) {
                 Log.d(TAG, "Preparing to init and add cameraPreview as VideoSink.");
-                Log.d(TAG, "cameraPreview dimensions just before post: " + binding.cameraPreview.getWidth() + "x" + binding.cameraPreview.getHeight());
-
                 binding.cameraPreview.post(() -> {
                     int width = binding.cameraPreview.getWidth();
                     int height = binding.cameraPreview.getHeight();
                     Log.d(TAG, "Inside post. cameraPreview dimensions: " + width + "x" + height);
 
                     if (width > 0 && height > 0) {
-                        if (webRtcClient != null && eglBase != null) { // webRtcClient와 eglBase 유효성 확인
+                        if (webRtcClient != null && eglBase != null) {
                             Log.d(TAG, "Dimensions are valid. Initializing cameraPreview EGL.");
                             binding.cameraPreview.init(eglBase.getEglBaseContext(), new RendererCommon.RendererEvents() {
                                 @Override
@@ -486,13 +482,10 @@ public class CameraStreamActivity extends AppCompatActivity {
                                 @Override
                                 public void onFrameResolutionChanged(int videoWidth, int videoHeight, int rotation) {
                                     Log.i(TAG, "CameraPreview: Frame resolution changed to " + videoWidth + "x" + videoHeight + " rotation " + rotation);
-                                    if (binding != null && binding.cameraPreview != null) {
-                                        Log.d(TAG, "CameraPreview current view dimensions at resolution change: " + binding.cameraPreview.getWidth() + "x" + binding.cameraPreview.getHeight());
-                                    }
                                 }
                             });
                             Log.d(TAG, "cameraPreview EGL initialized.");
-                            binding.cameraPreview.clearImage(); // init 호출 후 clearImage 호출
+                            binding.cameraPreview.clearImage();
 
                             Log.d(TAG, "Attempting to add VideoSink.");
                             webRtcClient.addVideoSink(binding.cameraPreview);
@@ -516,7 +509,6 @@ public class CameraStreamActivity extends AppCompatActivity {
                 sendTelemetryUpdate(lastKnownLocation, true);
             }
         } catch (RuntimeException e) {
-            if (surfaceTextureHelper != null) surfaceTextureHelper.dispose();
             Log.e(TAG, "Failed to start WebRTC client in onSignalingConnected", e);
             String errorMessage = e.getMessage();
             if (TextUtils.isEmpty(errorMessage)) {
@@ -524,7 +516,7 @@ public class CameraStreamActivity extends AppCompatActivity {
             }
             String formatted = getString(R.string.camera_stream_status_error, errorMessage);
             showError(formatted);
-            stopStreamingInternal(formatted);
+            stopStreamingInternal(formatted); 
         }
         updateUiState();
     }
@@ -553,22 +545,59 @@ public class CameraStreamActivity extends AppCompatActivity {
     }
 
     private void stopStreamingInternal(@Nullable String statusMessage) {
+        Log.i(TAG, "stopStreamingInternal called. Current state: " + streamingState + ". Status message: " + statusMessage);
         pendingStartAfterPermission = false;
 
+        // 1. 시그널링 클라이언트 연결 해제
         if (signalingClient != null) {
             signalingClient.setListener(null);
             signalingClient.disconnect();
             signalingClient = null;
+            Log.d(TAG, "Signaling client disconnected and nulled.");
         }
 
-        if (webRtcClient != null) {
+        // 2. WebRTCClient에서 VideoSink (미리보기) 제거
+        if (webRtcClient != null && binding != null && binding.cameraPreview != null) {
             webRtcClient.removeVideoSink(binding.cameraPreview);
+            Log.d(TAG, "VideoSink removed from WebRTCClient.");
+        }
+
+        // 3. 카메라 캡처 중지
+        if (activeCapturer != null) {
+            try {
+                Log.d(TAG, "Attempting to stop activeCapturer capture.");
+                activeCapturer.stopCapture(); 
+                Log.d(TAG, "activeCapturer.stopCapture() called.");
+            } catch (InterruptedException e) {
+                Log.e(TAG, "InterruptedException stopping activeCapturer capture", e);
+                Thread.currentThread().interrupt(); 
+            } catch (Exception e) { 
+                Log.e(TAG, "Exception stopping activeCapturer capture", e);
+            }
+        }
+        
+        // 4. WebRTCClient 해제
+        if (webRtcClient != null) {
+            Log.d(TAG, "Attempting to dispose WebRTCClient.");
             webRtcClient.dispose();
             webRtcClient = null;
+            Log.d(TAG, "WebRTCClient disposed and nulled.");
         }
 
+        // 5. 카메라 캡처러 객체 자체 해제 (카메라 장치 닫기 시작)
         if (activeCapturer != null) {
+            Log.d(TAG, "Attempting to dispose activeCapturer object.");
+            activeCapturer.dispose(); 
             activeCapturer = null;
+            Log.d(TAG, "activeCapturer object disposed and nulled.");
+        }
+
+        // 6. SurfaceTextureHelper 해제 (카메라가 닫힌 후)
+        if (surfaceTextureHelper != null) {
+            Log.d(TAG, "Attempting to dispose SurfaceTextureHelper.");
+            surfaceTextureHelper.dispose();
+            surfaceTextureHelper = null;
+            Log.d(TAG, "SurfaceTextureHelper disposed and nulled.");
         }
 
         activeStreamId = null;
@@ -577,8 +606,12 @@ public class CameraStreamActivity extends AppCompatActivity {
         lastTelemetrySentRealtime = 0L;
         lastKnownLocation = null;
 
-        if (binding != null) {
+        // 7. SurfaceViewRenderer EGL 리소스 해제
+        if (binding != null && binding.cameraPreview != null) {
             binding.cameraPreview.clearImage();
+            Log.d(TAG, "cameraPreview image cleared.");
+            binding.cameraPreview.release(); 
+            Log.d(TAG, "cameraPreview EGL released.");
         }
 
         if (!availableCameras.isEmpty()) {
@@ -591,6 +624,7 @@ public class CameraStreamActivity extends AppCompatActivity {
             updateStatus(getString(R.string.camera_stream_no_cameras));
         }
         updateUiState();
+        Log.i(TAG, "stopStreamingInternal completed.");
     }
 
     private void updateStatus(String message) {
@@ -853,20 +887,31 @@ public class CameraStreamActivity extends AppCompatActivity {
 
     @Override
     protected void onStop() {
-        stopStreamingInternal(null);
+        // Activity가 멈출 때 스트리밍 상태라면 명시적으로 중지
+        if (streamingState != StreamingState.IDLE) {
+             Log.i(TAG, "onStop called while streaming, stopping internal stream.");
+             stopStreamingInternal(getString(R.string.camera_stream_status_stopped_on_exit));
+        }
         super.onStop();
     }
 
     @Override
     protected void onDestroy() {
-        if (binding != null) {
-            binding.cameraPreview.release();
+        // onStop에서 이미 스트리밍이 중지되었을 가능성이 높지만, 만약을 위해 호출
+        // (stopStreamingInternal은 상태가 IDLE이면 빠르게 반환함)
+        stopStreamingInternal(null); 
+
+        if (binding != null && binding.pathMap != null) { 
             binding.pathMap.onDetach();
         }
+        // cameraPreview.release()는 stopStreamingInternal에서 이미 호출됨
+
         if (eglBase != null) {
             eglBase.release();
             eglBase = null;
+            Log.d(TAG, "EglBase released in onDestroy.");
         }
+        // surfaceTextureHelper와 activeCapturer는 stopStreamingInternal에서 해제됨
         super.onDestroy();
     }
 

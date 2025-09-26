@@ -68,4 +68,5 @@
     <string name="streaming_drawer_subtitle">화면을 가리지 않고도 필요한 제어를 설정할 수 있습니다.</string>
     <string name="streaming_drawer_open">스트리밍 제어 열기</string>
     <string name="streaming_drawer_close">스트리밍 제어 닫기</string>
+    <string name="camera_stream_status_stopped_on_exit">Streaming stopped on exit</string>
 </resources>

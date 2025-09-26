@@ -12,6 +12,7 @@ import com.drone.djiwebrtc.util.PionConfigStore;
 
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.webrtc.SurfaceTextureHelper;
 import org.webrtc.VideoCapturer;
 
 import java.util.Locale;
@@ -30,11 +31,12 @@ public class DJIStreamer {
     private final GCSCommandHandler gcsCommandHandler;
     private final PionConfigStore pionConfigStore;
     private final String streamId;
-    private final PionSignalingClient signalingClient;
+    private final PionSignalingClient signalingClient; // Assuming PionSignalingClient implements SignalingTransport
 
     private RawH264TcpStreamer rawTcpStreamer;
     private WebRTCClient webRtcClient;
     private String droneDisplayName = "";
+    private SurfaceTextureHelper surfaceTextureHelper;
 
     public DJIStreamer(Context context){
         this.context = context;
@@ -44,6 +46,7 @@ public class DJIStreamer {
         this.streamId = resolveStreamId(pionConfigStore.getStreamId(), droneDisplayName);
 
         String signalingUrl = pionConfigStore.getSignalingUrl();
+        // Assuming PionSignalingClient implements a SignalingTransport interface needed by WebRTCClient
         this.signalingClient = new PionSignalingClient(signalingUrl, "publisher", streamId);
         this.gcsCommandHandler = new GCSCommandHandler(this.signalingClient);
         this.gcsCommandHandler.startTelemetry();
@@ -75,6 +78,11 @@ public class DJIStreamer {
                         Log.d(TAG, "Signaling channel closed; resetting WebRTC client");
                         webRtcClient.dispose();
                         webRtcClient = null;
+                    }
+                    if (surfaceTextureHelper != null) {
+                        Log.d(TAG, "Disposing SurfaceTextureHelper in onClosed");
+                        surfaceTextureHelper.dispose();
+                        surfaceTextureHelper = null;
                     }
                 });
             }
@@ -110,13 +118,29 @@ public class DJIStreamer {
             return;
         }
         VideoCapturer videoCapturer = new DJIVideoCapturer(droneDisplayName);
-        webRtcClient = new WebRTCClient(context, videoCapturer, new WebRTCMediaOptions(), signalingClient);
+        
+        if (this.surfaceTextureHelper == null) {
+            // Create the SurfaceTextureHelper. Used by WebRTC for frame timestamping, etc.
+            // For a non-preview capturer like DJIVideoCapturer, EGL context can be null.
+            this.surfaceTextureHelper = SurfaceTextureHelper.create("DJICaptureThread", null);
+        }
+
+        // Assuming PionSignalingClient implements the SignalingTransport interface required by WebRTCClient
+        webRtcClient = new WebRTCClient(context, videoCapturer, new WebRTCMediaOptions(), signalingClient, this.surfaceTextureHelper);
+        
         webRtcClient.setConnectionChangedListener(() -> {
-            Log.d(TAG, "Peer disconnected from stream " + streamId);
-            if (webRtcClient != null) {
-                webRtcClient.dispose();
-            }
-            webRtcClient = null;
+            mainHandler.post(() -> { // Ensure execution on the main handler's thread if UI or state changes need it
+                Log.d(TAG, "Peer disconnected from stream " + streamId);
+                if (webRtcClient != null) {
+                    webRtcClient.dispose();
+                    webRtcClient = null;
+                }
+                if (surfaceTextureHelper != null) {
+                    Log.d(TAG, "Disposing SurfaceTextureHelper on peer disconnection");
+                    surfaceTextureHelper.dispose();
+                    surfaceTextureHelper = null;
+                }
+            });
         });
         Log.i(TAG, "Publishing stream '" + streamId + "' via Pion relay");
     }

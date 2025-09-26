@@ -33,13 +33,15 @@ public class WebRTCClient {
     private static final String TAG = "WebRTCClient";
     private final Context context;
 
-    private PeerConnection peerConnection;private VideoTrack videoTrackFromCamera;
+    private PeerConnection peerConnection;
+    private MediaStream localMediaStream; 
+    private VideoTrack videoTrackFromCamera;
     private VideoSource videoSource;
-    private final SurfaceTextureHelper surfaceTextureHelper;
+    private final SurfaceTextureHelper surfaceTextureHelper; 
     private final Set<VideoSink> localVideoSinks = new CopyOnWriteArraySet<>();
     private boolean disposed = false;
     private final WebRTCMediaOptions options;
-    private final VideoCapturer videoCapturer;
+    private final VideoCapturer videoCapturer; 
 
     private PeerConnectionChangedListener connectionChangedListener;
     public void setConnectionChangedListener(PeerConnectionChangedListener connectionChangedListener) { this.connectionChangedListener = connectionChangedListener; }
@@ -54,17 +56,13 @@ public class WebRTCClient {
         return factory;
     }
 
-    public WebRTCClient(Context context, VideoCapturer videoCapturer, WebRTCMediaOptions options, SignalingTransport signalingTransport) {
-        this(context, videoCapturer, options, signalingTransport, null);
-    }
-
     public WebRTCClient(Context context, VideoCapturer videoCapturer, WebRTCMediaOptions options,
                         SignalingTransport signalingTransport, @Nullable SurfaceTextureHelper surfaceTextureHelper) {
         this.context = context;
         this.options = options;
-        this.videoCapturer = videoCapturer;
+        this.videoCapturer = videoCapturer; 
         this.signalingTransport = signalingTransport;
-        this.surfaceTextureHelper = surfaceTextureHelper;
+        this.surfaceTextureHelper = surfaceTextureHelper; 
 
         createVideoTrackFromVideoCapturer();
         initializePeerConnection();
@@ -164,11 +162,7 @@ public class WebRTCClient {
         videoSource = getFactory(context).createVideoSource(videoCapturer.isScreencast());
         Log.d(TAG, "VideoSource created: " + (videoSource != null) + ", Capturer isScreencast: " + videoCapturer.isScreencast());
 
-        if (surfaceTextureHelper != null) {
-            videoCapturer.initialize(surfaceTextureHelper, context, videoSource.getCapturerObserver());
-        } else {
-            videoCapturer.initialize(null, context, videoSource.getCapturerObserver());
-        }
+        videoCapturer.initialize(surfaceTextureHelper, context, videoSource.getCapturerObserver());
         Log.d(TAG, "VideoCapturer initialized.");
 
         try {
@@ -205,9 +199,14 @@ public class WebRTCClient {
             Log.e(TAG, "Cannot start streaming, videoTrackFromCamera is null. Capturer might have failed to start.");
             return;
         }
-        MediaStream mediaStream = getFactory(context).createLocalMediaStream(options.getMediaStreamId());
-        mediaStream.addTrack(videoTrackFromCamera);
-        peerConnection.addStream(mediaStream);
+        this.localMediaStream = getFactory(context).createLocalMediaStream(options.getMediaStreamId());
+        if (this.localMediaStream == null) {
+            Log.e(TAG, "Failed to create local media stream");
+            return;
+        }
+        this.localMediaStream.addTrack(videoTrackFromCamera);
+        peerConnection.addStream(this.localMediaStream);
+        Log.d(TAG, "Local media stream " + this.localMediaStream.getId() + " added to PeerConnection.");
     }
 
     private PeerConnection createPeerConnection() {
@@ -329,93 +328,120 @@ public class WebRTCClient {
             return;
         }
         disposed = true;
-        Log.d(TAG, "Disposing WebRTCClient...");
+        Log.i(TAG, "Disposing WebRTCClient...");
 
-        Log.d(TAG, "Stopping video capturer...");
-        try {
-            if (videoCapturer != null) {
+        // 1. 비디오 캡처러의 프레임 생성 중지 (videoCapturer 객체 자체의 dispose는 외부에서 관리)
+        if (videoCapturer != null) {
+            try {
+                Log.d(TAG, "Stopping video capturer capture (from WebRTCClient.dispose)...");
                 videoCapturer.stopCapture();
-                Log.d(TAG, "Video capturer stopped.");
+                Log.d(TAG, "Video capturer stopped capturing (from WebRTCClient.dispose).");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Log.e(TAG, "Interrupted during videoCapturer.stopCapture() in WebRTCClient", e);
+            } catch (Exception e) {
+                Log.w(TAG, "Error stopping video capturer capture in WebRTCClient", e);
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            Log.e(TAG, "Interrupted during videoCapturer.stopCapture()", e);
-        } catch (Exception e) {
-            Log.w(TAG, "Error stopping video capturer", e);
         }
 
-        if (videoTrackFromCamera != null) {
-            String trackIdInfo = "videoTrackFromCamera";
-            try {
-                trackIdInfo = videoTrackFromCamera.id();
-                Log.d(TAG, "Attempting to dispose video track: " + trackIdInfo);
+        // 2. 로컬 비디오 트랙에서 모든 싱크 제거
+        if (videoTrackFromCamera != null && !localVideoSinks.isEmpty()) {
+            Log.d(TAG, "Removing all sinks from local video track.");
+            for (VideoSink sink : localVideoSinks) {
+                videoTrackFromCamera.removeSink(sink);
+            }
+            localVideoSinks.clear();
+            Log.d(TAG, "All sinks removed from local video track.");
+        }
 
-                for (VideoSink sink : localVideoSinks) {
-                    videoTrackFromCamera.removeSink(sink);
+        // 3. PeerConnection 관련 리소스 정리 (순서 중요)
+        if (peerConnection != null) {
+            // 3a. localMediaStream에서 videoTrackFromCamera 제거
+            if (localMediaStream != null && videoTrackFromCamera != null) {
+                Log.d(TAG, "Removing track from localMediaStream: " + videoTrackFromCamera.id());
+                try {
+                    localMediaStream.removeTrack(videoTrackFromCamera);
+                    Log.d(TAG, "Track removed from localMediaStream.");
+                } catch (Exception e) {
+                    Log.w(TAG, "Exception removing track from localMediaStream: " + e.getMessage());
                 }
-                localVideoSinks.clear();
+            }
+            
+            // 3b. peerConnection에서 localMediaStream 제거
+            if (localMediaStream != null) {
+                Log.d(TAG, "Removing stream from peerConnection: " + localMediaStream.getId()); // getId() 호출 시점 변경
+                 try {
+                    peerConnection.removeStream(localMediaStream);
+                    Log.d(TAG, "Stream removed from peerConnection.");
+                } catch (Exception e) {
+                    Log.w(TAG, "Exception removing stream from peerConnection: " + e.getMessage());
+                }
+            }
 
-                videoTrackFromCamera.dispose();
-                Log.d(TAG, "VideoTrack " + trackIdInfo + " disposed successfully.");
-
-            } catch (IllegalStateException e) {
-                Log.w(TAG, "VideoTrack " + trackIdInfo + ": " + e.getMessage() + ". (Likely already disposed or native resource is gone).");
+            // 3c. PeerConnection close
+            Log.d(TAG, "Closing PeerConnection (WebRTCClient)...");
+            try {
+                peerConnection.close();
+                Log.d(TAG, "PeerConnection closed (WebRTCClient).");
             } catch (Exception e) {
-                Log.e(TAG, "Generic exception while cleaning up VideoTrack " + trackIdInfo + ".", e);
+                Log.e(TAG, "Exception closing PeerConnection in WebRTCClient", e);
+            }
+
+            // 3d. PeerConnection dispose
+            Log.d(TAG, "Disposing PeerConnection object (WebRTCClient)...");
+            try {
+                peerConnection.dispose();
+                Log.d(TAG, "PeerConnection disposed (WebRTCClient).");
+            } catch (Exception e) {
+                Log.e(TAG, "Exception disposing PeerConnection object in WebRTCClient: " + e.getMessage(), e);
+            }
+            peerConnection = null;
+        }
+
+        // 4. 로컬 MediaStream 해제 (PeerConnection에서 제거 후 안전하게 해제)
+        if (localMediaStream != null) {
+            Log.d(TAG, "Disposing local media stream (WebRTCClient)... Logged before getId");
+            try {
+                // String streamIdForLog = localMediaStream.getId(); // getId() 호출은 여전히 위험할 수 있으므로 주석 처리
+                localMediaStream.dispose();
+                Log.d(TAG, "Local media stream disposed by WebRTCClient.");
+            } catch (Exception e) {
+                Log.w(TAG, "Exception disposing localMediaStream in WebRTCClient (possibly already disposed): " + e.getMessage());
+            } finally {
+                localMediaStream = null;
+            }
+        }
+
+        // 5. VideoTrack 해제
+        if (videoTrackFromCamera != null) {
+            Log.d(TAG, "Disposing video track (WebRTCClient)..." );
+            try {
+                // String trackIdForLog = videoTrackFromCamera.id(); // getId() 호출은 여전히 위험할 수 있으므로 주석 처리
+                videoTrackFromCamera.dispose();
+                Log.d(TAG, "VideoTrack disposed by WebRTCClient.");
+            } catch (Exception e) {
+                 Log.w(TAG, "Exception disposing videoTrackFromCamera in WebRTCClient (possibly already disposed): " + e.getMessage());
             } finally {
                 videoTrackFromCamera = null;
-                Log.d(TAG, "videoTrackFromCamera reference set to null for track: " + trackIdInfo);
             }
-        } else {
-            Log.d(TAG, "videoTrackFromCamera was already null before explicit disposal in dispose().");
         }
 
+        // 6. VideoSource 해제
         if (videoSource != null) {
-            Log.d(TAG, "Disposing video source...");
+            Log.d(TAG, "Disposing video source (WebRTCClient)...");
             try {
                 videoSource.dispose();
-                Log.d(TAG, "VideoSource disposed.");
+                Log.d(TAG, "VideoSource disposed by WebRTCClient.");
             } catch (Exception e) {
-                 Log.e(TAG, "Exception disposing videoSource", e);
+                 Log.w(TAG, "Exception disposing videoSource in WebRTCClient (possibly already disposed): " + e.getMessage());
             } finally {
                 videoSource = null;
             }
         }
 
-        if (videoCapturer != null) {
-            Log.d(TAG, "Disposing video capturer object...");
-            try {
-                videoCapturer.dispose();
-                Log.d(TAG, "VideoCapturer object disposed.");
-            } catch (Exception e) {
-                Log.e(TAG, "Exception disposing videoCapturer object", e);
-            }
-        }
+        // 7. surfaceTextureHelper는 WebRTCClient 외부에서 관리되므로 여기서 dispose 하지 않음
 
-        if (peerConnection != null) {
-            Log.d(TAG, "Closing and disposing PeerConnection...");
-            try {
-                peerConnection.close();
-                peerConnection.dispose();
-                Log.d(TAG, "PeerConnection disposed.");
-            } catch (Exception e) {
-                Log.e(TAG, "Exception disposing peerConnection", e);
-            } finally {
-                peerConnection = null;
-            }
-        }
-
-        if (surfaceTextureHelper != null) {
-            Log.d(TAG, "Disposing SurfaceTextureHelper...");
-            try {
-                surfaceTextureHelper.dispose();
-                Log.d(TAG, "SurfaceTextureHelper disposed.");
-            } catch (Exception e) {
-                Log.e(TAG, "Exception disposing surfaceTextureHelper", e);
-            }
-        }
-
-        Log.d(TAG, "WebRTCClient disposed completely.");
+        Log.i(TAG, "WebRTCClient dispose sequence finished.");
     }
 
     public interface PeerConnectionChangedListener {
