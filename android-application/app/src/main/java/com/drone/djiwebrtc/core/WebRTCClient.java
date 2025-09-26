@@ -25,8 +25,11 @@ import org.webrtc.VideoSource;
 import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 
 public class WebRTCClient {
@@ -126,9 +129,10 @@ public class WebRTCClient {
         peerConnection.createOffer(new SimpleSdpObserver() {
             @Override
             public void onCreateSuccess(SessionDescription sessionDescription) {
-                peerConnection.setLocalDescription(new SimpleSdpObserver(), sessionDescription);
+                SessionDescription preferredSdp = applyPreferredCodec(sessionDescription);
+                peerConnection.setLocalDescription(new SimpleSdpObserver(), preferredSdp);
                 try {
-                    sendMessage(SignalingMessageBuilder.buildSdpMessage(sessionDescription));
+                    sendMessage(SignalingMessageBuilder.buildSdpMessage(preferredSdp));
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
@@ -141,9 +145,10 @@ public class WebRTCClient {
         peerConnection.createAnswer(new SimpleSdpObserver() {
             @Override
             public void onCreateSuccess(SessionDescription sessionDescription) {
-                peerConnection.setLocalDescription(new SimpleSdpObserver(), sessionDescription);
+                SessionDescription preferredSdp = applyPreferredCodec(sessionDescription);
+                peerConnection.setLocalDescription(new SimpleSdpObserver(), preferredSdp);
                 try {
-                    sendMessage(SignalingMessageBuilder.buildSdpMessage(sessionDescription));
+                    sendMessage(SignalingMessageBuilder.buildSdpMessage(preferredSdp));
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
@@ -191,6 +196,73 @@ public class WebRTCClient {
         for (VideoSink sink : localVideoSinks) {
             videoTrackFromCamera.addSink(sink);
         }
+    }
+
+    private SessionDescription applyPreferredCodec(SessionDescription sessionDescription) {
+        String preferredCodec = options.getPreferredVideoCodec();
+        if (preferredCodec == null || preferredCodec.trim().isEmpty()) {
+            return sessionDescription;
+        }
+
+        String description = sessionDescription.description;
+        String[] lines = description.split("\\r?\\n");
+        int videoMLineIndex = -1;
+        Pattern videoMLinePattern = Pattern.compile("^m=video ");
+        for (int i = 0; i < lines.length; i++) {
+            if (videoMLinePattern.matcher(lines[i]).find()) {
+                videoMLineIndex = i;
+                break;
+            }
+        }
+        if (videoMLineIndex == -1) {
+            return sessionDescription;
+        }
+
+        Pattern codecPattern = Pattern.compile("^a=rtpmap:(\\d+) " + Pattern.quote(preferredCodec) + ".*");
+        Set<String> preferredPayloads = new LinkedHashSet<>();
+        Set<String> otherPayloads = new LinkedHashSet<>();
+
+        for (String line : lines) {
+            Matcher matcher = codecPattern.matcher(line);
+            if (matcher.matches()) {
+                preferredPayloads.add(matcher.group(1));
+            }
+        }
+
+        if (preferredPayloads.isEmpty()) {
+            return sessionDescription;
+        }
+
+        String[] mLineParts = lines[videoMLineIndex].split(" ");
+        if (mLineParts.length <= 3) {
+            return sessionDescription;
+        }
+
+        for (int i = 3; i < mLineParts.length; i++) {
+            String payload = mLineParts[i];
+            if (!preferredPayloads.contains(payload)) {
+                otherPayloads.add(payload);
+            }
+        }
+
+        StringBuilder newMLine = new StringBuilder();
+        newMLine.append(mLineParts[0]).append(' ')
+                .append(mLineParts[1]).append(' ')
+                .append(mLineParts[2]);
+        for (String payload : preferredPayloads) {
+            newMLine.append(' ').append(payload);
+        }
+        for (String payload : otherPayloads) {
+            newMLine.append(' ').append(payload);
+        }
+        lines[videoMLineIndex] = newMLine.toString();
+
+        StringBuilder updatedSdp = new StringBuilder();
+        for (String line : lines) {
+            updatedSdp.append(line).append("\r\n");
+        }
+
+        return new SessionDescription(sessionDescription.type, updatedSdp.toString());
     }
 
     private void initializePeerConnection() {
