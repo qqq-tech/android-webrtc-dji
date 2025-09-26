@@ -15,15 +15,22 @@ from aiortc.mediastreams import MediaStreamError
 import av
 from av import VideoFrame
 
-if hasattr(av, "AVError"):
-    AVError = av.AVError
-else:  # pragma: no cover - compatibility shim for newer PyAV
-    from av.error import AVError  # type: ignore[attr-defined]
+try:
+    AVError = av.AVError  # type: ignore[attr-defined]
+except AttributeError:  # pragma: no cover - compatibility shim for newer PyAV
+    class AVError(Exception):
+        """Fallback AVError when PyAV does not expose it."""
+
 import websockets
 from websockets.exceptions import ConnectionClosed
 
 from websocket_server import DetectionBroadcaster
 from yolo_processor import YoloProcessor
+
+
+CONNECT_TIMEOUT = 3.0
+SEND_TIMEOUT = 2.0
+RECV_TIMEOUT = 2.0
 
 
 def _patch_aioice_transaction_timeout() -> None:
@@ -99,11 +106,15 @@ class WebSocketDetectionPublisher:
             if websocket is None:
                 return
             try:
-                await websocket.send(message)
+                await asyncio.wait_for(
+                    websocket.send(message), timeout=SEND_TIMEOUT
+                )
                 return
+            except asyncio.TimeoutError:
+                logging.warning("Overlay WebSocket send timed out")
             except Exception:
                 logging.warning("Overlay WebSocket send failed, resetting connection")
-                await self._reset_connection()
+            await self._reset_connection()
 
         logging.debug("Overlay WebSocket publisher stopped; skipping payload")
 
@@ -124,11 +135,20 @@ class WebSocketDetectionPublisher:
                     return self._connection
                 await self._reset_connection_locked()
             try:
-                self._connection = await websockets.connect(self._url, max_queue=None)
-                logging.info("Connected to overlay WebSocket %s", self._url)
+                self._connection = await asyncio.wait_for(
+                    websockets.connect(self._url, max_queue=None),
+                    timeout=CONNECT_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logging.warning(
+                    "Timed out connecting to overlay WebSocket %s", self._url
+                )
+                self._connection = None
             except Exception:
                 logging.exception("Failed to connect to overlay WebSocket %s", self._url)
                 self._connection = None
+            else:
+                logging.info("Connected to overlay WebSocket %s", self._url)
             return self._connection
 
     async def _reset_connection(self) -> None:
@@ -262,7 +282,9 @@ class WebRTCYOLOPipeline:
         websocket = self._signaling
         while True:
             try:
-                raw_message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                raw_message = await asyncio.wait_for(
+                    websocket.recv(), timeout=RECV_TIMEOUT
+                )
             except asyncio.TimeoutError:
                 if self._restart_requested or self._closed:
                     break
@@ -301,7 +323,7 @@ class WebRTCYOLOPipeline:
                 if desc.type == "offer":
                     answer = await self._pc.createAnswer()
                     await self._pc.setLocalDescription(answer)
-                    await self._signaling.send(
+                    await self._send_signaling(
                         json.dumps(
                             {
                                 "type": "sdp",
@@ -351,6 +373,18 @@ class WebRTCYOLOPipeline:
             else:
                 logging.debug("Ignoring unsupported message: %s", message)
 
+    async def _send_signaling(self, message: str) -> None:
+        if self._signaling is None:
+            return
+        try:
+            await asyncio.wait_for(
+                self._signaling.send(message), timeout=SEND_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logging.warning("Timed out sending signaling message")
+        except Exception:
+            logging.exception("Failed to send signaling message")
+
     async def _consume_video(self, track) -> None:
         logging.info("Starting YOLO video loop")
         try:
@@ -393,7 +427,7 @@ class WebRTCYOLOPipeline:
                 payload["sdpMid"] = candidate.sdpMid
             if candidate.sdpMLineIndex is not None:
                 payload["sdpMLineIndex"] = candidate.sdpMLineIndex
-            await self._signaling.send(json.dumps(payload))
+            await self._send_signaling(json.dumps(payload))
 
         @pc.on("track")
         async def on_track(track):
@@ -410,12 +444,30 @@ class WebRTCYOLOPipeline:
             if state in {"failed", "closed"}:
                 await self._trigger_restart()
 
-        async with websockets.connect(self._signaling_url) as websocket:
+        try:
+            websocket = await asyncio.wait_for(
+                websockets.connect(self._signaling_url), timeout=CONNECT_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logging.warning(
+                "Timed out connecting to signaling server %s", self._signaling_url
+            )
+            return
+        except Exception:
+            logging.exception(
+                "Failed to connect to signaling server %s", self._signaling_url
+            )
+            return
+
+        try:
             self._signaling = websocket
             try:
                 await self._signaling_loop()
             finally:
                 self._signaling = None
+        finally:
+            with contextlib.suppress(Exception):
+                await websocket.close()
 
     async def _cleanup_connection(self) -> None:
         await self._cancel_video_task()
