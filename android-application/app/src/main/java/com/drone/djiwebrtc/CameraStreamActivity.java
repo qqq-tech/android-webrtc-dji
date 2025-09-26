@@ -130,10 +130,7 @@ public class CameraStreamActivity extends AppCompatActivity {
         pionConfigStore = new PionConfigStore(this);
 
         eglBase = EglBase.create();
-        binding.cameraPreview.init(eglBase.getEglBaseContext(), null);
-        binding.cameraPreview.setEnableHardwareScaler(true);
-        binding.cameraPreview.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL);
-        binding.cameraPreview.setMirror(false);
+        configurePreviewSurface();
 
         initialiseCameraEnumerator();
         initialiseStreamIdField(savedInstanceState);
@@ -152,6 +149,17 @@ public class CameraStreamActivity extends AppCompatActivity {
             updateStatus(getString(R.string.camera_stream_status_idle));
         }
         updateUiState();
+    }
+
+    private void configurePreviewSurface() {
+        binding.cameraPreview.setZOrderOnTop(true);
+        binding.cameraPreview.setZOrderMediaOverlay(true);
+        binding.cameraPreview.setEnableHardwareScaler(true);
+        binding.cameraPreview.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL);
+        binding.cameraPreview.setMirror(false);
+        binding.cameraPreview.setKeepScreenOn(true);
+        binding.cameraPreview.init(eglBase.getEglBaseContext(), null);
+        binding.cameraPreview.setVisibility(View.VISIBLE);
     }
 
     private void initialiseCameraEnumerator() {
