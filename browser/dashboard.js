@@ -890,24 +890,92 @@ let droneAutoCentered = false;
 const DRONE_TRAIL_MAX_POINTS = 300;
 const TELEMETRY_STALE_TIMEOUT_MS = 15000;
 let gcsChannelReady = false;
+const STREAM_RECONNECT_BASE_DELAY_MS = 2000;
+const STREAM_RECONNECT_MAX_DELAY_MS = 20000;
+let streamReconnectTimerId = null;
+let streamReconnectAttempts = 0;
+let pc = null;
+let signalingSocket = null;
 
 markTelemetryWaiting();
 
-const pc = new RTCPeerConnection({
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-});
+function clearStreamReconnectTimer() {
+  if (streamReconnectTimerId !== null) {
+    window.clearTimeout(streamReconnectTimerId);
+    streamReconnectTimerId = null;
+  }
+}
 
-const signalingSocket = new WebSocket(signalingUrl);
+function resetStreamReconnectBackoff() {
+  streamReconnectAttempts = 0;
+  clearStreamReconnectTimer();
+}
+
+function scheduleStreamReconnect(reason) {
+  if (streamReconnectTimerId !== null) {
+    return;
+  }
+
+  streamReconnectAttempts += 1;
+  const delay = Math.min(
+    STREAM_RECONNECT_BASE_DELAY_MS * 2 ** Math.max(streamReconnectAttempts - 1, 0),
+    STREAM_RECONNECT_MAX_DELAY_MS,
+  );
+  console.warn(`Scheduling stream reconnect in ${delay}ms due to: ${reason}`);
+  connectionStatus.textContent = 'reconnecting';
+  markTelemetryStale();
+  streamReconnectTimerId = window.setTimeout(() => {
+    streamReconnectTimerId = null;
+    establishStreamConnection();
+  }, delay);
+}
+
+function cleanupPeerConnection() {
+  if (!pc) {
+    return;
+  }
+  pc.removeEventListener('track', handlePeerTrack);
+  pc.removeEventListener('connectionstatechange', handlePeerConnectionStateChange);
+  pc.removeEventListener('icecandidate', handlePeerIceCandidate);
+  try {
+    pc.close();
+  } catch (error) {
+    console.warn('Failed to close peer connection cleanly', error);
+  }
+  pc = null;
+}
+
+function cleanupSignalingSocket() {
+  if (!signalingSocket) {
+    return;
+  }
+  signalingSocket.removeEventListener('open', handleSignalingOpen);
+  signalingSocket.removeEventListener('close', handleSignalingClose);
+  signalingSocket.removeEventListener('error', handleSignalingError);
+  signalingSocket.removeEventListener('message', handleSignalingMessage);
+  if (gcsControlEnabled && gcsChannelReady) {
+    gcsChannelReady = false;
+    updateGcsStatus('GCS: disconnected');
+  }
+  try {
+    if (signalingSocket.readyState === WebSocket.OPEN || signalingSocket.readyState === WebSocket.CONNECTING) {
+      signalingSocket.close();
+    }
+  } catch (error) {
+    console.warn('Failed to close signaling socket cleanly', error);
+  }
+  signalingSocket = null;
+}
 
 function sendSignalingMessage(payload) {
-  if (signalingSocket.readyState === WebSocket.OPEN) {
+  if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
     signalingSocket.send(JSON.stringify(payload));
   } else {
     console.warn('Signaling socket not open, dropping message', payload);
   }
 }
 
-pc.ontrack = (event) => {
+function handlePeerTrack(event) {
   const [stream] = event.streams;
   if (rawVideo.srcObject !== stream) {
     rawVideo.srcObject = stream;
@@ -926,17 +994,31 @@ pc.ontrack = (event) => {
     track.addEventListener('unmute', () => updateVideoAvailabilityFromStream(stream));
   });
   connectionStatus.textContent = 'media-connected';
-};
+}
 
-pc.onconnectionstatechange = () => {
-  connectionStatus.textContent = pc.connectionState;
-  if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+function handlePeerConnectionStateChange() {
+  if (!pc) {
+    return;
+  }
+  const state = pc.connectionState;
+  connectionStatus.textContent = state;
+  if (state === 'connected') {
+    resetStreamReconnectBackoff();
+    return;
+  }
+  if (['disconnected', 'failed', 'closed'].includes(state)) {
+    const hadMedia = rawVideoAvailable || overlayVideoAvailable;
     setRawVideoAvailability(false);
     setOverlayVideoAvailability(false);
+    rawVideo.srcObject = null;
+    overlayVideo.srcObject = null;
+    if (hadMedia || state !== 'closed') {
+      scheduleStreamReconnect(`peer connection state: ${state}`);
+    }
   }
-};
+}
 
-pc.onicecandidate = (event) => {
+function handlePeerIceCandidate(event) {
   const { candidate } = event;
   if (!candidate) {
     return;
@@ -956,26 +1038,32 @@ pc.onicecandidate = (event) => {
   }
 
   sendSignalingMessage(payload);
-};
+}
 
-signalingSocket.addEventListener('open', () => {
+function handleSignalingOpen() {
   connectionStatus.textContent = 'signaling';
+  resetStreamReconnectBackoff();
   if (gcsControlEnabled) {
     gcsChannelReady = true;
     updateGcsStatus('GCS: connected');
   }
-});
+}
 
-signalingSocket.addEventListener('close', () => {
+function handleSignalingClose() {
   connectionStatus.textContent = 'disconnected';
-  markTelemetryStale();
   if (gcsControlEnabled) {
     gcsChannelReady = false;
     updateGcsStatus('GCS: disconnected');
   }
-});
+  scheduleStreamReconnect('signaling socket closed');
+}
 
-signalingSocket.addEventListener('message', async (event) => {
+function handleSignalingError(event) {
+  console.error('Signaling socket error', event);
+  scheduleStreamReconnect('signaling socket error');
+}
+
+async function handleSignalingMessage(event) {
   try {
     const message = JSON.parse(event.data);
     if (message.error) {
@@ -994,6 +1082,10 @@ signalingSocket.addEventListener('message', async (event) => {
     }
 
     if (message.type === 'sdp') {
+      if (!pc) {
+        console.warn('Peer connection unavailable for SDP message');
+        return;
+      }
       const description = new RTCSessionDescription({
         type: message.sdpType || 'offer',
         sdp: message.sdp,
@@ -1005,6 +1097,10 @@ signalingSocket.addEventListener('message', async (event) => {
         sendSignalingMessage({ type: 'sdp', sdpType: answer.type, sdp: answer.sdp });
       }
     } else if (message.type === 'ice') {
+      if (!pc) {
+        console.warn('Peer connection unavailable for ICE message');
+        return;
+      }
       const candidate = new RTCIceCandidate({
         candidate: message.candidate,
         sdpMid: message.sdpMid || undefined,
@@ -1025,7 +1121,40 @@ signalingSocket.addEventListener('message', async (event) => {
     }
     connectionStatus.textContent = 'error: invalid signaling message';
   }
-});
+}
+
+function establishStreamConnection() {
+  cleanupPeerConnection();
+  cleanupSignalingSocket();
+
+  if (connectionStatus) {
+    connectionStatus.textContent = streamReconnectAttempts > 0 ? 'reconnecting' : 'connecting';
+  }
+
+  if (rawVideo.srcObject) {
+    rawVideo.srcObject = null;
+  }
+  if (overlayVideo.srcObject) {
+    overlayVideo.srcObject = null;
+  }
+  setRawVideoAvailability(false);
+  setOverlayVideoAvailability(false);
+
+  pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  });
+  pc.addEventListener('track', handlePeerTrack);
+  pc.addEventListener('connectionstatechange', handlePeerConnectionStateChange);
+  pc.addEventListener('icecandidate', handlePeerIceCandidate);
+
+  signalingSocket = new WebSocket(signalingUrl);
+  signalingSocket.addEventListener('open', handleSignalingOpen);
+  signalingSocket.addEventListener('close', handleSignalingClose);
+  signalingSocket.addEventListener('error', handleSignalingError);
+  signalingSocket.addEventListener('message', handleSignalingMessage);
+}
+
+establishStreamConnection();
 
 const detectionSocket = new WebSocket(detectionUrl);
 
@@ -1156,9 +1285,15 @@ function streamHasLiveVideoTrack(stream) {
 }
 
 function updateVideoAvailabilityFromStream(stream) {
+  const wasAvailable = rawVideoAvailable || overlayVideoAvailable;
   const available = streamHasLiveVideoTrack(stream);
   setRawVideoAvailability(available);
   setOverlayVideoAvailability(available);
+  if (available) {
+    resetStreamReconnectBackoff();
+  } else if (wasAvailable) {
+    scheduleStreamReconnect('media tracks ended');
+  }
 }
 
 function setRawVideoAvailability(isAvailable) {
