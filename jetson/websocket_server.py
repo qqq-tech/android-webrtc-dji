@@ -13,6 +13,7 @@ import mimetypes
 import os
 import signal
 import ssl
+import re
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from collections.abc import Iterable, Mapping
@@ -73,21 +74,57 @@ class _StaticRequestSilencingLogger:
     def __init__(self, base_logger: logging.Logger):
         self._base_logger = base_logger
 
+    @staticmethod
+    def _coerce_status_code(candidate: Any) -> Optional[int]:
+        """Best-effort extraction of a HTTP status code from ``candidate``."""
+
+        if candidate is None:
+            return None
+
+        if isinstance(candidate, http.HTTPStatus):
+            return candidate.value
+
+        if isinstance(candidate, int):
+            if 100 <= candidate <= 599:
+                return candidate
+            return None
+
+        if isinstance(candidate, (tuple, list)):
+            for item in candidate:
+                status = _StaticRequestSilencingLogger._coerce_status_code(item)
+                if status is not None:
+                    return status
+            return None
+
+        for attr in ("status_code", "status", "code", "value"):
+            try:
+                value = getattr(candidate, attr)
+            except Exception:
+                continue
+            status = _StaticRequestSilencingLogger._coerce_status_code(value)
+            if status is not None:
+                return status
+
+        try:
+            text = str(candidate)
+        except Exception:
+            return None
+
+        match = re.search(r"\b(\d{3})\b", text)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+
+        return None
+
     def info(self, message: str, *args, **kwargs):
         if message.startswith("connection rejected"):
             status_value: Optional[int] = None
             if args:
                 candidate = args[0]
-                if isinstance(candidate, http.HTTPStatus):
-                    status_value = candidate.value
-                else:
-                    try:
-                        status_value = int(candidate)  # type: ignore[arg-type]
-                    except (TypeError, ValueError):
-                        try:
-                            status_value = int(str(candidate).split()[0])
-                        except (Exception,):
-                            status_value = None
+                status_value = self._coerce_status_code(candidate)
             elif "200 OK" in message:
                 status_value = http.HTTPStatus.OK.value
 
