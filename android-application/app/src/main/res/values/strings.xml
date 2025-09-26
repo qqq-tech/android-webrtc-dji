@@ -28,6 +28,9 @@
     <string name="camera_stream_stream_id_hint">예: pilot-cam</string>
     <string name="camera_stream_camera_label">사용할 카메라</string>
     <string name="camera_stream_signaling_url_label">시그널링 URL</string>
+    <string name="camera_stream_control_header">스트리밍 제어</string>
+    <string name="camera_stream_control_expand">스트리밍 제어 펼치기</string>
+    <string name="camera_stream_control_collapse">스트리밍 제어 접기</string>
     <string name="camera_stream_status_idle">대기 중입니다. 스트리밍을 시작하려면 스트림 ID와 카메라를 선택하세요.</string>
     <string name="camera_stream_status_connecting">“%1$s” 스트림으로 연결 중…</string>
     <string name="camera_stream_status_streaming">“%1$s” 스트림을 전송하는 중입니다.</string>

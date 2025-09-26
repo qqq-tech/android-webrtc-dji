@@ -162,7 +162,8 @@
             android:orientation="vertical"
             android:padding="16dp"
             app:behavior_hideable="true"
-            app:behavior_peekHeight="64dp"
+            app:behavior_peekHeight="0dp"
+            app:behavior_skipCollapsed="true"
             app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
 
             <View
@@ -230,6 +231,7 @@
             android:layout_gravity="bottom|center_horizontal"
             android:layout_marginBottom="80dp"
             android:text="@string/toggle_path_panel"
+            app:backgroundTint="@color/pastelBlue"
             app:icon="@drawable/ic_route" />
 
     </androidx.coordinatorlayout.widget.CoordinatorLayout>

@@ -282,7 +282,10 @@ public class MainActivity extends AppCompatActivity {
     private void initializeBottomSheet() {
         // XML 레이아웃 변경 후, 이 코드가 올바르게 작동해야 합니다.
         bottomSheetBehavior = BottomSheetBehavior.from(binding.flightPathSheet);
-        bottomSheetBehavior.setState(BottomSheetBehavior.STATE_COLLAPSED);
+        bottomSheetBehavior.setHideable(true);
+        bottomSheetBehavior.setPeekHeight(0);
+        bottomSheetBehavior.setSkipCollapsed(true);
+        bottomSheetBehavior.setState(BottomSheetBehavior.STATE_HIDDEN);
         binding.togglePathButton.setText(getString(R.string.toggle_path_panel));
         binding.togglePathButton.setOnClickListener(v -> toggleBottomSheet());
         bottomSheetBehavior.addBottomSheetCallback(new BottomSheetBehavior.BottomSheetCallback() {
@@ -300,7 +303,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateToggleText(int state) {
-        if (state == BottomSheetBehavior.STATE_EXPANDED) {
+        if (state == BottomSheetBehavior.STATE_EXPANDED || state == BottomSheetBehavior.STATE_HALF_EXPANDED) {
             binding.togglePathButton.setText(getString(R.string.toggle_path_panel_close));
         } else {
             binding.togglePathButton.setText(getString(R.string.toggle_path_panel));
@@ -310,7 +313,7 @@ public class MainActivity extends AppCompatActivity {
     private void toggleBottomSheet() {
         int currentState = bottomSheetBehavior.getState();
         if (currentState == BottomSheetBehavior.STATE_EXPANDED || currentState == BottomSheetBehavior.STATE_HALF_EXPANDED) {
-            bottomSheetBehavior.setState(BottomSheetBehavior.STATE_COLLAPSED);
+            bottomSheetBehavior.setState(BottomSheetBehavior.STATE_HIDDEN);
         } else {
             bottomSheetBehavior.setState(BottomSheetBehavior.STATE_EXPANDED);
         }
