@@ -12,6 +12,7 @@ import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.View;
+import android.widget.ArrayAdapter;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -58,6 +59,7 @@ public class CameraStreamActivity extends AppCompatActivity {
     private static final float LOCATION_UPDATE_NETWORK_MIN_DISTANCE_M = 5.0f;
     private static final String STATE_STREAM_ID = "state_stream_id";
     private static final String STATE_CAMERA_INDEX = "state_camera_index";
+    private static final String STATE_CONTROLS_COLLAPSED = "state_controls_collapsed";
     private static final long TELEMETRY_MIN_INTERVAL_MS = 1000L;
 
     private ActivityCameraStreamBinding binding;
@@ -68,6 +70,7 @@ public class CameraStreamActivity extends AppCompatActivity {
 
     private StreamingState streamingState = StreamingState.IDLE;
     private boolean pendingStartAfterPermission = false;
+    private boolean controlsCollapsed = false;
 
     private PionSignalingClient signalingClient;
     private WebRTCClient webRtcClient;
@@ -118,6 +121,8 @@ public class CameraStreamActivity extends AppCompatActivity {
         binding = ActivityCameraStreamBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
+        restoreState(savedInstanceState);
+
         setSupportActionBar(binding.toolbar);
         if (getSupportActionBar() != null) {
             getSupportActionBar().setDisplayHomeAsUpEnabled(true);
@@ -133,9 +138,9 @@ public class CameraStreamActivity extends AppCompatActivity {
         binding.cameraPreview.setMirror(false);
 
         initialiseCameraEnumerator();
-        restoreState(savedInstanceState);
         initialiseStreamIdField(savedInstanceState);
         updateSignalingSummary();
+        setupControlPanelToggle();
 
         routeOverlayManager = new RouteOverlayManager(binding.pathMap);
         routeOverlayManager.initialize();
@@ -153,75 +158,117 @@ public class CameraStreamActivity extends AppCompatActivity {
     }
 
     private void initialiseCameraEnumerator() {
+        CameraEnumerator enumerator;
         if (Camera2Enumerator.isSupported(this)) {
-            cameraEnumerator = new Camera2Enumerator(this);
+            enumerator = new Camera2Enumerator(this);
         } else {
-            cameraEnumerator = new Camera1Enumerator(false);
+            enumerator = new Camera1Enumerator(false);
         }
-        if (cameraEnumerator == null) {
-            return;
-        }
-        availableCameras.clear();
-        String[] deviceNames = cameraEnumerator.getDeviceNames();
-        for (String deviceName : deviceNames) {
-            boolean front = cameraEnumerator.isFrontFacing(deviceName);
-            boolean back = cameraEnumerator.isBackFacing(deviceName);
-            String label;
-            if (front) {
-                label = getString(R.string.camera_label_front);
-            } else if (back) {
-                label = getString(R.string.camera_label_back);
-            } else {
-                label = deviceName;
-            }
-            availableCameras.add(new CameraDescriptor(deviceName, label, front));
+        updateCameraEnumerator(enumerator, true);
+    }
+
+    private void updateCameraEnumerator(@Nullable CameraEnumerator enumerator, boolean preserveSelection) {
+        CameraDescriptor previousSelection = null;
+        if (preserveSelection && selectedCameraIndex >= 0 && selectedCameraIndex < availableCameras.size()) {
+            previousSelection = availableCameras.get(selectedCameraIndex);
         }
 
+        cameraEnumerator = enumerator;
+        availableCameras.clear();
+        if (cameraEnumerator != null) {
+            String[] deviceNames = cameraEnumerator.getDeviceNames();
+            for (String deviceName : deviceNames) {
+                boolean front = cameraEnumerator.isFrontFacing(deviceName);
+                boolean back = cameraEnumerator.isBackFacing(deviceName);
+                String label;
+                if (front) {
+                    label = getString(R.string.camera_label_front);
+                } else if (back) {
+                    label = getString(R.string.camera_label_back);
+                } else {
+                    label = deviceName;
+                }
+                availableCameras.add(new CameraDescriptor(deviceName, label, front));
+            }
+        }
+
+        final List<String> displayLabels = buildCameraDisplayLabels();
+        MaterialAutoCompleteTextView dropdown = binding.cameraSelector;
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(
+                this,
+                android.R.layout.simple_list_item_1,
+                displayLabels
+        );
+        dropdown.setAdapter(adapter);
+        dropdown.setOnItemClickListener((parent, view, position, id) -> {
+            setSelectedCamera(position, displayLabels.get(position));
+            updateUiState();
+        });
+
         if (availableCameras.isEmpty()) {
+            selectedCameraIndex = -1;
+            dropdown.setText(null, false);
             binding.cameraSelectorLayout.setEnabled(false);
             binding.cameraSelector.setEnabled(false);
             binding.startButton.setEnabled(false);
             return;
         }
 
+        binding.cameraSelectorLayout.setEnabled(true);
+        binding.cameraSelector.setEnabled(true);
+
+        int indexToSelect = -1;
+        if (previousSelection != null) {
+            indexToSelect = findCameraIndex(previousSelection.deviceName);
+            if (indexToSelect < 0) {
+                indexToSelect = findCameraIndexByFacing(previousSelection.isFrontFacing);
+            }
+        } else if (selectedCameraIndex >= 0 && selectedCameraIndex < availableCameras.size()) {
+            indexToSelect = selectedCameraIndex;
+        }
+
+        if (indexToSelect < 0) {
+            indexToSelect = 0;
+        }
+        setSelectedCamera(indexToSelect, displayLabels.get(indexToSelect));
+    }
+
+    private List<String> buildCameraDisplayLabels() {
         List<String> labels = new ArrayList<>();
         for (int i = 0; i < availableCameras.size(); i++) {
             CameraDescriptor descriptor = availableCameras.get(i);
-            String label = descriptor.label;
-            int duplicates = countLabelOccurrences(label, i);
-            if (duplicates > 0) {
-                label = label + " " + (duplicates + 1);
+            int duplicates = 0;
+            for (int j = 0; j < i; j++) {
+                if (availableCameras.get(j).label.equals(descriptor.label)) {
+                    duplicates++;
+                }
             }
-            labels.add(label);
+            String displayLabel = descriptor.label;
+            if (duplicates > 0) {
+                displayLabel = displayLabel + " " + (duplicates + 1);
+            }
+            labels.add(displayLabel);
         }
-
-        MaterialAutoCompleteTextView dropdown = binding.cameraSelector;
-        android.widget.ArrayAdapter<String> adapter = new android.widget.ArrayAdapter<>(
-                this,
-                android.R.layout.simple_list_item_1,
-                labels
-        );
-        dropdown.setAdapter(adapter);
-        dropdown.setOnItemClickListener((parent, view, position, id) -> {
-            setSelectedCamera(position, labels.get(position));
-            updateUiState();
-        });
-
-        if (selectedCameraIndex < 0 && !availableCameras.isEmpty()) {
-            setSelectedCamera(0, labels.get(0));
-        } else if (selectedCameraIndex >= 0 && selectedCameraIndex < labels.size()) {
-            setSelectedCamera(selectedCameraIndex, labels.get(selectedCameraIndex));
-        }
+        return labels;
     }
 
-    private int countLabelOccurrences(String label, int beforeIndex) {
-        int count = 0;
-        for (int i = 0; i < beforeIndex; i++) {
-            if (availableCameras.get(i).label.equals(label)) {
-                count++;
+    private int findCameraIndex(String deviceName) {
+        for (int i = 0; i < availableCameras.size(); i++) {
+            if (TextUtils.equals(availableCameras.get(i).deviceName, deviceName)) {
+                return i;
             }
         }
-        return count;
+        return -1;
+    }
+
+    private int findCameraIndexByFacing(boolean frontFacing) {
+        for (int i = 0; i < availableCameras.size(); i++) {
+            CameraDescriptor descriptor = availableCameras.get(i);
+            if (descriptor.isFrontFacing == frontFacing) {
+                return i;
+            }
+        }
+        return availableCameras.isEmpty() ? -1 : 0;
     }
 
     private void restoreState(@Nullable Bundle savedInstanceState) {
@@ -229,6 +276,7 @@ public class CameraStreamActivity extends AppCompatActivity {
             return;
         }
         selectedCameraIndex = savedInstanceState.getInt(STATE_CAMERA_INDEX, selectedCameraIndex);
+        controlsCollapsed = savedInstanceState.getBoolean(STATE_CONTROLS_COLLAPSED, controlsCollapsed);
     }
 
     private void initialiseStreamIdField(@Nullable Bundle savedInstanceState) {
@@ -256,6 +304,29 @@ public class CameraStreamActivity extends AppCompatActivity {
             String label = getString(R.string.camera_stream_signaling_url_label);
             binding.signalingUrlValue.setText(label + ": " + signalingUrl);
         }
+    }
+
+    private void setupControlPanelToggle() {
+        View.OnClickListener toggleListener = v -> {
+            controlsCollapsed = !controlsCollapsed;
+            updateControlPanelVisibility();
+        };
+        binding.controlHeader.setOnClickListener(toggleListener);
+        binding.controlToggleButton.setOnClickListener(toggleListener);
+        updateControlPanelVisibility();
+    }
+
+    private void updateControlPanelVisibility() {
+        if (binding == null) {
+            return;
+        }
+        binding.controlContent.setVisibility(controlsCollapsed ? View.GONE : View.VISIBLE);
+        binding.controlToggleButton.setImageResource(
+                controlsCollapsed ? R.drawable.ic_expand_more : R.drawable.ic_expand_less);
+        binding.controlToggleButton.setContentDescription(getString(
+                controlsCollapsed
+                        ? R.string.camera_stream_control_expand
+                        : R.string.camera_stream_control_collapse));
     }
 
     private void setSelectedCamera(int index, String displayLabel) {
@@ -425,7 +496,18 @@ public class CameraStreamActivity extends AppCompatActivity {
             return null;
         }
         CameraDescriptor descriptor = availableCameras.get(selectedCameraIndex);
-        VideoCapturer capturer = cameraEnumerator.createCapturer(descriptor.deviceName, new LoggingCameraEventsHandler(descriptor.label));
+        VideoCapturer capturer = cameraEnumerator.createCapturer(
+                descriptor.deviceName,
+                new LoggingCameraEventsHandler(descriptor.label));
+        if (capturer == null && !(cameraEnumerator instanceof Camera1Enumerator)) {
+            updateCameraEnumerator(new Camera1Enumerator(false), true);
+            if (cameraEnumerator != null && selectedCameraIndex >= 0 && selectedCameraIndex < availableCameras.size()) {
+                descriptor = availableCameras.get(selectedCameraIndex);
+                capturer = cameraEnumerator.createCapturer(
+                        descriptor.deviceName,
+                        new LoggingCameraEventsHandler(descriptor.label));
+            }
+        }
         if (capturer == null) {
             Log.e(TAG, "Unable to create capturer for camera: " + descriptor.deviceName);
         }
@@ -484,6 +566,7 @@ public class CameraStreamActivity extends AppCompatActivity {
         binding.cameraSelectorLayout.setEnabled(idle && hasCamera);
         binding.cameraSelector.setEnabled(idle && hasCamera);
         binding.connectionProgress.setVisibility(streamingState == StreamingState.CONNECTING ? View.VISIBLE : View.GONE);
+        updateControlPanelVisibility();
     }
 
     private void resetTraveledPath() {
@@ -709,6 +792,7 @@ public class CameraStreamActivity extends AppCompatActivity {
         super.onSaveInstanceState(outState);
         outState.putString(STATE_STREAM_ID, getStreamIdInput());
         outState.putInt(STATE_CAMERA_INDEX, selectedCameraIndex);
+        outState.putBoolean(STATE_CONTROLS_COLLAPSED, controlsCollapsed);
     }
 
     @Override
