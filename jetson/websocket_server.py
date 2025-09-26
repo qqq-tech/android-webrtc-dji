@@ -105,6 +105,7 @@ class DetectionBroadcaster:
         self._servers: list[tuple[Any, str, int, Optional[ssl.SSLContext]]] = []
         self._recordings_mount_path = "/recordings"
         self._ssl_context = ssl_context
+        self._send_timeout = 3.0
         if static_dir is None:
             default_static = Path(__file__).resolve().parents[1] / "browser"
             self._static_dir = default_static if default_static.exists() else None
@@ -150,6 +151,7 @@ class DetectionBroadcaster:
                 process_request=self._process_http_request,
                 logger=websocket_logger,
                 ssl=ssl_ctx,
+                open_timeout=self._send_timeout,
             )
             servers.append((server, host, port, ssl_ctx))
 
@@ -205,9 +207,26 @@ class DetectionBroadcaster:
 
     async def _send(self, websocket: WebSocketServerProtocol, message: str) -> None:
         try:
-            await websocket.send(message)
+            await asyncio.wait_for(websocket.send(message), timeout=self._send_timeout)
+        except asyncio.TimeoutError:
+            address = getattr(websocket, "remote_address", None)
+            logging.warning("Send timeout to %s; closing connection", address)
+            await self._drop_client(websocket, code=1011, reason="send timeout")
         except Exception:
-            self._clients.discard(websocket)
+            await self._drop_client(websocket)
+
+    async def _drop_client(
+        self,
+        websocket: WebSocketServerProtocol,
+        *,
+        code: int = 1011,
+        reason: str = "internal error",
+    ) -> None:
+        self._clients.discard(websocket)
+        if getattr(websocket, "closed", True):
+            return
+        with contextlib.suppress(Exception):
+            await websocket.close(code=code, reason=reason)
 
     async def _relay_message(self, websocket: WebSocketServerProtocol, message: Any) -> None:
         if isinstance(message, (str, bytes)):
