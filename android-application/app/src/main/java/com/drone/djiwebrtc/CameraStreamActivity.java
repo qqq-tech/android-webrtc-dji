@@ -152,8 +152,8 @@ public class CameraStreamActivity extends AppCompatActivity {
     }
 
     private void configurePreviewSurface() {
-        binding.cameraPreview.setZOrderOnTop(true);
-        binding.cameraPreview.setZOrderMediaOverlay(true);
+        binding.cameraPreview.setZOrderOnTop(false);
+        binding.cameraPreview.setZOrderMediaOverlay(false);
         binding.cameraPreview.setEnableHardwareScaler(true);
         binding.cameraPreview.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL);
         binding.cameraPreview.setMirror(false);
