@@ -187,6 +187,10 @@ public class WebRTCClient {
 
         videoTrackFromCamera = getFactory(context).createVideoTrack(options.getVideoSourceId(), videoSource);
         videoTrackFromCamera.setEnabled(true);
+
+        for (VideoSink sink : localVideoSinks) {
+            videoTrackFromCamera.addSink(sink);
+        }
     }
 
     private void initializePeerConnection() {
@@ -277,19 +281,23 @@ public class WebRTCClient {
     }
 
     public void addVideoSink(VideoSink sink) {
-        if (sink == null || videoTrackFromCamera == null) {
+        if (sink == null) {
             return;
         }
-        videoTrackFromCamera.addSink(sink);
         localVideoSinks.add(sink);
+        if (videoTrackFromCamera != null) {
+            videoTrackFromCamera.addSink(sink);
+        }
     }
 
     public void removeVideoSink(VideoSink sink) {
-        if (sink == null || videoTrackFromCamera == null) {
+        if (sink == null) {
             return;
         }
-        videoTrackFromCamera.removeSink(sink);
         localVideoSinks.remove(sink);
+        if (videoTrackFromCamera != null) {
+            videoTrackFromCamera.removeSink(sink);
+        }
     }
 
     public synchronized void dispose() {
