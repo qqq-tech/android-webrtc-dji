@@ -633,7 +633,7 @@ class DetectionBroadcaster:
             header_items.append((str(key), "" if value is None else str(value)))
 
         if WebsocketsResponse is not None:
-            headers_value = header_items
+            headers_value: Any = header_items
             if WebsocketsHeaders is not None:
                 headers_obj = WebsocketsHeaders()
                 for key, value in header_items:
@@ -649,9 +649,19 @@ class DetectionBroadcaster:
                 except ValueError:
                     reason_phrase = ""
 
-            return self._create_websockets_response(
-                status_code, headers_value, body, reason_phrase
-            )
+            try:
+                response = self._create_websockets_response(
+                    status_code, headers_value, body, reason_phrase
+                )
+            except Exception:
+                logging.debug(
+                    "Falling back to tuple HTTP response for websockets", exc_info=True
+                )
+            else:
+                status_value = getattr(response, "status_code", status_code)
+                headers_value = getattr(response, "headers", header_items)
+                body_value = getattr(response, "body", body)
+                return status_value, headers_value, body_value
 
         return status_code, header_items, body
 
