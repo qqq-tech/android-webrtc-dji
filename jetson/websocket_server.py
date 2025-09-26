@@ -112,7 +112,13 @@ class DetectionBroadcaster:
     async def start(self) -> None:
         if self._server is not None:
             return
-        base_logger = getattr(websockets.server, "logger", logging.getLogger("websockets.server"))
+        base_logger = logging.getLogger("websockets.server")
+        try:
+            websockets_server_module = importlib.import_module("websockets.server")
+        except ModuleNotFoundError:
+            pass
+        else:
+            base_logger = getattr(websockets_server_module, "logger", base_logger)
         websocket_logger = _StaticRequestSilencingLogger(base_logger)
         self._server = await websockets.serve(
             self._handler,
