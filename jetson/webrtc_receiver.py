@@ -13,7 +13,9 @@ from aiortc.sdp import candidate_from_sdp
 from aiortc.contrib.signaling import BYE
 from aiortc.mediastreams import MediaStreamError
 from av import VideoFrame
+from av import AVError
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 from websocket_server import DetectionBroadcaster
 from yolo_processor import YoloProcessor
@@ -252,7 +254,20 @@ class WebRTCYOLOPipeline:
 
     async def _signaling_loop(self) -> None:
         assert self._signaling is not None
-        async for raw_message in self._signaling:
+        websocket = self._signaling
+        while True:
+            try:
+                raw_message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+            except asyncio.TimeoutError:
+                if self._restart_requested or self._closed:
+                    break
+                continue
+            except asyncio.CancelledError:
+                raise
+            except ConnectionClosed:
+                logging.info("Signaling connection closed")
+                break
+
             if raw_message == BYE:
                 logging.info("Signaling server ended session")
                 break
@@ -336,7 +351,13 @@ class WebRTCYOLOPipeline:
         try:
             while True:
                 frame: VideoFrame = await track.recv()
-                image = frame.to_ndarray(format="bgr24")
+                try:
+                    image = frame.to_ndarray(format="bgr24")
+                except (AVError, ValueError) as exc:
+                    logging.warning(
+                        "Dropping video frame due to decoder error: %s", exc
+                    )
+                    continue
                 result = self._yolo.process(image)
                 await asyncio.gather(*(sink.broadcast(result) for sink in self._sinks))
         except asyncio.CancelledError:
