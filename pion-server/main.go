@@ -307,6 +307,12 @@ func (c *client) handleSignal(msg signalMessage) error {
 			return fmt.Errorf("raw_stream_ack messages only accepted from publishers")
 		}
 		return c.stream.broadcastToSubscribers(msg, c)
+	case "register":
+		// Legacy clients may send a register signal even though the server already
+		// associates the role/stream via query parameters. Treat it as a no-op so
+		// they do not receive an unsupported signal error.
+		log.Printf("received legacy register message for stream %s from %s", c.stream.id, c.role)
+		return nil
 	default:
 		return fmt.Errorf("unsupported signal type: %s", msg.Type)
 	}
@@ -686,16 +692,81 @@ func int64Ptr(v int64) *int64 {
 }
 
 func main() {
-	addr := flag.String("addr", ":8080", "http service address")
+	addr := flag.String("addr", ":8080", "HTTP service address (empty to disable HTTP)")
+	httpsAddr := flag.String("https-addr", "", "HTTPS service address (requires TLS flags; empty disables HTTPS)")
+	certFile := flag.String("tls-cert", "", "Path to a TLS certificate in PEM format")
+	keyFile := flag.String("tls-key", "", "Path to the TLS private key in PEM format")
 	flag.Parse()
+
+	if (*certFile == "") != (*keyFile == "") {
+		log.Fatal("both --tls-cert and --tls-key must be provided to enable TLS")
+	}
+	if *httpsAddr != "" && *certFile == "" {
+		log.Fatal("--https-addr requires both --tls-cert and --tls-key")
+	}
 
 	manager := newStreamManager()
 	http.HandleFunc("/ws", manager.handleWebsocket)
 	if err := os.MkdirAll(recording.DirName, 0o755); err != nil {
 		log.Fatalf("failed to create recording directory: %v", err)
 	}
-	log.Printf("Pion WebRTC relay listening on %s", *addr)
-	if err := http.ListenAndServe(*addr, nil); err != nil {
-		log.Fatalf("server failed: %v", err)
+
+	type listener struct {
+		addr     string
+		protocol string
+		serve    func() error
 	}
+
+	var listeners []listener
+	if *addr != "" {
+		listeners = append(listeners, listener{
+			addr:     *addr,
+			protocol: "HTTP",
+			serve: func() error {
+				log.Printf("Pion WebRTC relay listening on %s (HTTP)", *addr)
+				return http.ListenAndServe(*addr, nil)
+			},
+		})
+	}
+
+	if *httpsAddr != "" {
+		addrCopy := *httpsAddr
+		listeners = append(listeners, listener{
+			addr:     addrCopy,
+			protocol: "HTTPS",
+			serve: func() error {
+				log.Printf("Pion WebRTC relay listening on %s (HTTPS)", addrCopy)
+				return http.ListenAndServeTLS(addrCopy, *certFile, *keyFile, nil)
+			},
+		})
+	} else if *certFile != "" {
+		log.Printf("Pion WebRTC relay listening on %s (HTTPS)", *addr)
+		if err := http.ListenAndServeTLS(*addr, *certFile, *keyFile, nil); err != nil {
+			log.Fatalf("server failed: %v", err)
+		}
+		return
+	}
+
+	if len(listeners) == 0 {
+		log.Fatal("no listeners configured: provide --addr, --https-addr, or TLS flags")
+	}
+
+	if len(listeners) == 1 {
+		if err := listeners[0].serve(); err != nil {
+			log.Fatalf("%s server failed: %v", listeners[0].protocol, err)
+		}
+		return
+	}
+
+	errCh := make(chan error, len(listeners))
+	for i := range listeners {
+		go func(l listener) {
+			if err := l.serve(); err != nil {
+				errCh <- fmt.Errorf("%s server failed: %w", l.protocol, err)
+			}
+		}(listeners[i])
+	}
+
+	err := <-errCh
+	log.Fatal(err)
 }

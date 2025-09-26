@@ -163,6 +163,8 @@ Follow the component-specific notes below to compile and launch each part of the
    go run main.go --addr :8080
    ```
    The server exposes WebSocket endpoints for publishers/subscribers, forwarding SDP/ICE JSON, RTP packets, and propagating structured error responses.
+   * To enable HTTPS alongside HTTP, supply both `--tls-cert`/`--tls-key` and an additional bind using `--https-addr :8443`. The relay continues serving insecure WebSockets on `--addr` while the secure listener answers on the TLS port.
+   * For quick testing you can generate a self-signed certificate with `scripts/generate-self-signed-cert.sh`. The script writes `certs/server.crt` and `certs/server.key`, which map to the relay flags above and the Jetson WebSocket broadcaster (`--certfile`/`--keyfile`).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

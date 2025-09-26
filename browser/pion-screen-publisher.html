@@ -81,7 +81,28 @@
 
     // URL 파라미터 적용
     const params = new URLSearchParams(location.search);
-    $('#signalingHost').value = params.get('signalingHost') || 'ws://localhost:8080';
+    const isSecureContext = window.isSecureContext === true || location.protocol === 'https:';
+    const isLocalhost = /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(location.host || '');
+    const insecureOrigin = !isSecureContext && !isLocalhost;
+    if (insecureOrigin) {
+      const httpsHint = location.host ? `https://${location.host}${location.pathname}${location.search}${location.hash}` : '';
+      log('⚠️ 보안 연결(HTTPS)이 아니어서 화면 공유 권한이 차단될 수 있습니다.', httpsHint ? `→ ${httpsHint} 로 접속해주세요.` : '');
+      const originForHints = location.origin || 'http://example.com';
+      log('HTTP 환경에서 테스트가 꼭 필요하다면 브라우저에 아래 출처를 안전한 사이트로 등록해야 합니다. (테스트용 권장)', originForHints);
+      log('1) Chrome/Edge: 주소창에 chrome://flags/#unsafely-treat-insecure-origin-as-secure 입력 → Enabled 후 아래 도메인 추가', originForHints);
+      log('2) 또는 브라우저 실행 옵션 사용: --unsafely-treat-insecure-origin-as-secure=' + originForHints + ' --user-data-dir=/tmp/chrome-http-test');
+      log('※ 위 설정은 개발/테스트 전용으로만 사용하세요. 실제 배포는 HTTPS 구성이 필요합니다.');
+    }
+    const defaultSignalingHost = (() => {
+      const param = params.get('signalingHost');
+      if (param) return param;
+      if (location.host) {
+        const scheme = isSecureContext ? 'wss' : 'ws';
+        return `${scheme}://${location.host}/ws`;
+      }
+      return 'ws://localhost:8080';
+    })();
+    $('#signalingHost').value = defaultSignalingHost || 'ws://localhost:8080';
     $('#streamId').value      = params.get('streamId') || 'desktop-1';
     $('#iceServers').value    = params.get('ice') || 'stun:stun.l.google.com:19302';
 
@@ -93,12 +114,12 @@
     let signalSender = () => {};
 
     const supportsGeolocation = 'geolocation' in navigator;
-    if (!supportsGeolocation) {
-      const locCheckbox = $('#withLocation');
-      if (locCheckbox) {
-        locCheckbox.disabled = true;
-        locCheckbox.title = '이 브라우저는 위치 공유를 지원하지 않습니다.';
-      }
+    const locCheckbox = $('#withLocation');
+    if (locCheckbox && !supportsGeolocation) {
+      locCheckbox.disabled = true;
+      locCheckbox.title = '이 브라우저는 위치 공유를 지원하지 않습니다.';
+    } else if (locCheckbox && !isSecureContext) {
+      locCheckbox.title = 'HTTP 환경에서는 브라우저 정책으로 위치 공유가 차단될 수 있습니다.';
     }
 
     function stopLocationWatch() {
@@ -150,12 +171,27 @@
       const withAudio = $('#withAudio').checked;
       const locationCheckbox = $('#withLocation');
       shareLocation = !!(locationCheckbox && locationCheckbox.checked && supportsGeolocation);
-      if (locationCheckbox && locationCheckbox.checked && !supportsGeolocation) {
+      if (shareLocation && !isSecureContext && !isLocalhost) {
+        log('HTTP 환경에서는 브라우저 정책으로 위치 공유를 사용할 수 없습니다.');
+        shareLocation = false;
+        if (locationCheckbox) {
+          locationCheckbox.checked = false;
+        }
+      } else if (locationCheckbox && locationCheckbox.checked && !supportsGeolocation) {
         log('이 브라우저는 위치 공유를 지원하지 않습니다.');
       }
       currentCodec    = $('#codec').value;
       pendingRemoteCandidates = [];
       pendingOutboundMessages = [];
+
+      if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
+        const reason = insecureOrigin && !isLocalhost
+          ? '보안(HTTPS) 연결이 아니어서 브라우저가 화면 공유 API(getDisplayMedia)를 차단했습니다.'
+          : '이 브라우저는 화면 공유 API(getDisplayMedia)를 지원하지 않습니다.';
+        log('getDisplayMedia 사용 불가:', reason);
+        setPill('#statePill', 'ERROR', 'bad');
+        return;
+      }
 
       if (!signaling.startsWith('ws://') && !signaling.startsWith('wss://')) {
         alert('signalingHost 는 ws:// 또는 wss:// 로 시작해야 합니다.'); return;
@@ -180,8 +216,21 @@
       wsUrlObject.searchParams.set('streamId', streamId);
       ws = new WebSocket(wsUrlObject.toString());
 
+      const registerMessage = { type: 'register', role: 'publisher', streamId };
+      let registerSent = false;
+
       const flushOutbound = () => {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (!registerSent) {
+          try {
+            ws.send(JSON.stringify(registerMessage));
+            log('→ REGISTER', registerMessage);
+          } catch (err) {
+            log('REGISTER 전송 실패:', err?.message || err);
+            return;
+          }
+          registerSent = true;
+        }
         while (pendingOutboundMessages.length) {
           const item = pendingOutboundMessages.shift();
           ws.send(item.payload);
@@ -193,6 +242,17 @@
         if (!ws) return;
         const payload = JSON.stringify(message);
         if (ws.readyState === WebSocket.OPEN) {
+          if (!registerSent) {
+            try {
+              ws.send(JSON.stringify(registerMessage));
+              log('→ REGISTER', registerMessage);
+              registerSent = true;
+            } catch (err) {
+              log('REGISTER 전송 실패:', err?.message || err);
+              pendingOutboundMessages.unshift({ payload, label, dataForLog: message });
+              return;
+            }
+          }
           ws.send(payload);
           if (label) log(label, message);
         } else if (ws.readyState === WebSocket.CONNECTING) {
@@ -211,7 +271,15 @@
       ws.onopen = () => {
         setPill('#wsPill', 'WS: OPEN', 'ok');
         log('WS open:', ws.url);
-        ws.send(JSON.stringify({ type:'register', role:'publisher', streamId }));
+        if (!registerSent) {
+          try {
+            ws.send(JSON.stringify(registerMessage));
+            log('→ REGISTER', registerMessage);
+            registerSent = true;
+          } catch (err) {
+            log('REGISTER 전송 실패:', err?.message || err);
+          }
+        }
         flushOutbound();
       };
       ws.onerror = (e) => { setPill('#wsPill', 'WS: ERROR', 'bad'); log('WS error', e); };
@@ -365,7 +433,7 @@
     $('#btnStart').addEventListener('click', start);
     $('#btnStop').addEventListener('click', stop);
 
-    navigator.mediaDevices.addEventListener?.('devicechange', () => log('devicechange 감지'));
+    navigator.mediaDevices?.addEventListener?.('devicechange', () => log('devicechange 감지'));
   })();
   </script>
 </body>
