@@ -59,8 +59,10 @@ class WebSocketDetectionPublisher:
 
     async def _ensure_connection(self) -> Optional[websockets.WebSocketClientProtocol]:
         async with self._lock:
-            if self._connection is not None and not self._connection.closed:
-                return self._connection
+            if self._connection is not None:
+                if self._is_connection_open(self._connection):
+                    return self._connection
+                await self._reset_connection_locked()
             try:
                 self._connection = await websockets.connect(self._url, max_queue=None)
                 logging.info("Connected to overlay WebSocket %s", self._url)
@@ -78,6 +80,44 @@ class WebSocketDetectionPublisher:
                     logging.debug("Error while closing overlay WebSocket", exc_info=True)
                 finally:
                     self._connection = None
+
+    async def _reset_connection_locked(self) -> None:
+        """Reset connection without acquiring the public lock again."""
+
+        if self._connection is None:
+            return
+
+        try:
+            await self._connection.close()
+        except Exception:
+            logging.debug("Error while closing overlay WebSocket", exc_info=True)
+        finally:
+            self._connection = None
+
+    @staticmethod
+    def _is_connection_open(connection: websockets.WebSocketClientProtocol) -> bool:
+        """Best-effort compatibility check for open WebSocket connections."""
+
+        closed_attr = getattr(connection, "closed", None)
+        if isinstance(closed_attr, bool):
+            return not closed_attr
+
+        if callable(closed_attr):  # pragma: no cover - legacy coroutine property
+            try:
+                closed_value = closed_attr()
+            except TypeError:
+                closed_value = None
+            if isinstance(closed_value, bool):
+                return not closed_value
+
+        state = getattr(connection, "state", None)
+        if state is not None:
+            # ``ConnectionState`` exists in websockets>=12, older versions expose ``State``.
+            state_name = getattr(state, "name", "").upper()
+            if state_name:
+                return state_name == "OPEN"
+
+        return True
 
 
 class WebRTCYOLOPipeline:
