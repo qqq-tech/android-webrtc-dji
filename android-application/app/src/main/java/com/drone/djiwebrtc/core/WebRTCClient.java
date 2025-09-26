@@ -27,6 +27,8 @@ import org.webrtc.VideoTrack;
 import java.util.ArrayList;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 
 public class WebRTCClient {
@@ -126,9 +128,10 @@ public class WebRTCClient {
         peerConnection.createOffer(new SimpleSdpObserver() {
             @Override
             public void onCreateSuccess(SessionDescription sessionDescription) {
-                peerConnection.setLocalDescription(new SimpleSdpObserver(), sessionDescription);
+                SessionDescription preferredSdp = preferH264(sessionDescription);
+                peerConnection.setLocalDescription(new SimpleSdpObserver(), preferredSdp);
                 try {
-                    sendMessage(SignalingMessageBuilder.buildSdpMessage(sessionDescription));
+                    sendMessage(SignalingMessageBuilder.buildSdpMessage(preferredSdp));
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
@@ -141,9 +144,10 @@ public class WebRTCClient {
         peerConnection.createAnswer(new SimpleSdpObserver() {
             @Override
             public void onCreateSuccess(SessionDescription sessionDescription) {
-                peerConnection.setLocalDescription(new SimpleSdpObserver(), sessionDescription);
+                SessionDescription preferredSdp = preferH264(sessionDescription);
+                peerConnection.setLocalDescription(new SimpleSdpObserver(), preferredSdp);
                 try {
-                    sendMessage(SignalingMessageBuilder.buildSdpMessage(sessionDescription));
+                    sendMessage(SignalingMessageBuilder.buildSdpMessage(preferredSdp));
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
@@ -342,5 +346,71 @@ public class WebRTCClient {
 
     public interface PeerConnectionChangedListener {
         void onDisconnected(); // Is called when our peer disconnects from the call
+    }
+
+    private SessionDescription preferH264(SessionDescription original) {
+        if (original == null || original.description == null) {
+            return original;
+        }
+
+        String[] lines = original.description.split("\\r\\n");
+        int mLineIndex = -1;
+        ArrayList<String> h264PayloadTypes = new ArrayList<>();
+
+        Pattern codecPattern = Pattern.compile("^a=rtpmap:(\\d+) H264(/90000)?$", Pattern.CASE_INSENSITIVE);
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            if (line.startsWith("m=video ")) {
+                mLineIndex = i;
+                continue;
+            }
+
+            Matcher matcher = codecPattern.matcher(line);
+            if (matcher.matches()) {
+                h264PayloadTypes.add(matcher.group(1));
+            }
+        }
+
+        if (mLineIndex == -1 || h264PayloadTypes.isEmpty()) {
+            return original;
+        }
+
+        String[] mLineParts = lines[mLineIndex].split(" ");
+        if (mLineParts.length <= 3) {
+            return original;
+        }
+
+        ArrayList<String> reorderedMLine = new ArrayList<>();
+        // Keep the first three parts ("m=video", port, protocol)
+        for (int i = 0; i < 3; i++) {
+            reorderedMLine.add(mLineParts[i]);
+        }
+
+        // Add H264 payload types first
+        reorderedMLine.addAll(h264PayloadTypes);
+
+        // Append the rest of the payload types, excluding duplicates
+        for (int i = 3; i < mLineParts.length; i++) {
+            String payload = mLineParts[i];
+            if (!h264PayloadTypes.contains(payload)) {
+                reorderedMLine.add(payload);
+            }
+        }
+
+        StringBuilder newMLine = new StringBuilder();
+        for (int i = 0; i < reorderedMLine.size(); i++) {
+            if (i > 0) {
+                newMLine.append(' ');
+            }
+            newMLine.append(reorderedMLine.get(i));
+        }
+        lines[mLineIndex] = newMLine.toString();
+
+        StringBuilder newSdp = new StringBuilder();
+        for (String line : lines) {
+            newSdp.append(line).append("\r\n");
+        }
+
+        return new SessionDescription(original.type, newSdp.toString());
     }
 }
