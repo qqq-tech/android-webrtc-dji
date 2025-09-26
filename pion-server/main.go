@@ -66,7 +66,7 @@ type stream struct {
 	videoTrack  *webrtc.TrackLocalStaticRTP
 	remoteTrack *webrtc.TrackRemote
 	telemetry   *telemetryData
-	recorder    *recording.StreamRecorder
+	recorder    recording.Recorder
 }
 
 type telemetryData struct {
@@ -420,7 +420,7 @@ func (s *stream) registerSubscriber(c *client) error {
 
 func (s *stream) removeClient(c *client) {
 	s.mu.Lock()
-	var recorder *recording.StreamRecorder
+	var recorder recording.Recorder
 	defer func() {
 		s.mu.Unlock()
 		if recorder != nil {
@@ -504,11 +504,7 @@ func (s *stream) setRemoteTrack(remoteTrack *webrtc.TrackRemote) {
 		return
 	}
 	s.videoTrack = localTrack
-	if remoteTrack.Codec().MimeType == webrtc.MimeTypeH264 {
-		s.recorder = recording.NewStreamRecorder(s.id, remoteTrack)
-	} else {
-		s.recorder = nil
-	}
+	s.recorder = recording.NewRecorder(s.id, remoteTrack)
 	pending := append([]*client(nil), s.pending...)
 	s.pending = nil
 	s.mu.Unlock()
