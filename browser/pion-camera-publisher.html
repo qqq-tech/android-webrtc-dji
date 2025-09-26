@@ -11,10 +11,12 @@
     header { padding:18px 20px; border-bottom:1px solid #1d2734; background:linear-gradient(180deg, #10151d, #0b0f14); position:sticky; top:0; z-index:2; }
     h1 { font-size:18px; margin:0 0 6px; }
     .sub { color:var(--muted); font-size:12px; }
-    main { display:grid; grid-template-columns:380px 1fr; gap:14px; padding:14px; }
+    main { display:grid; grid-template-columns:minmax(0, 1.4fr) minmax(320px, 1fr); gap:14px; padding:14px; align-items:start; }
     .card { background:var(--panel); border:1px solid #1d2734; border-radius:14px; box-shadow:0 8px 18px rgba(0,0,0,.35); }
-    .left { padding:14px; }
+    .media { padding:14px; display:flex; flex-direction:column; gap:14px; }
+    .settings { padding:16px 14px; display:flex; flex-direction:column; gap:0; }
     .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
+    .row.is-hidden { display:none; }
     label { width:100px; color:#b9c5d6; font-size:12px; }
     input[type=text], input[type=url], select { flex:1; padding:8px 10px; border-radius:10px; border:1px solid #243247; background:#0f141c; color:#e8eef6; }
     input[type=checkbox]{ transform:scale(1.15); }
@@ -25,12 +27,17 @@
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; border:1px solid #2b3a51; color:#a9b7c8; }
     .ok{ color:var(--ok); border-color:var(--ok); }
     .bad{ color:var(--bad); border-color:var(--bad); }
-    .right { padding:10px; display:grid; grid-template-rows:auto 1fr; gap:10px; }
     .videoWrap { position:relative; aspect-ratio:16/9; background:#0f141c; border-radius:12px; overflow:hidden; border:1px solid #223049; }
     video { width:100%; height:100%; object-fit:contain; background:#0f141c; }
-    pre.log { margin:0; padding:12px; background:#0f141c; border-radius:12px; border:1px solid #223049; white-space:pre-wrap; word-wrap:break-word; max-height:260px; overflow:auto; font-size:12px; }
-    .footer { padding:10px 14px 16px; color:#8ea0b6; font-size:12px; }
+    pre.log { margin:0; padding:12px; background:#0f141c; border-radius:12px; border:1px solid #223049; white-space:pre-wrap; word-wrap:break-word; max-height:260px; overflow:auto; font-size:12px; flex:1 1 auto; }
+    .footer { color:#8ea0b6; font-size:12px; }
     code { color:#c6e2ff; }
+    @media (max-width: 960px) {
+      main { grid-template-columns:1fr; }
+      .media { order:1; }
+      .settings { order:2; }
+      pre.log { max-height:220px; }
+    }
   </style>
 </head>
 <body>
@@ -40,10 +47,16 @@
   </header>
 
   <main>
-    <section class="card left">
+    <section class="card media">
+      <div class="videoWrap"><video id="preview" autoplay playsinline muted></video></div>
+      <pre class="log" id="log"></pre>
+      <div class="footer">Tip: 후면 카메라를 사용하려면 모바일에서는 "후면 카메라" 옵션을 선택하세요 · 문제 시 콘솔 열어 로그를 확인하세요.</div>
+    </section>
+
+    <section class="card settings">
       <div class="row"><label>Signaling</label><input id="signalingHost" type="url" placeholder="ws://localhost:8080/ws" /></div>
       <div class="row"><label>Stream ID</label><input id="streamId" type="text" placeholder="camera-1" /></div>
-      <div class="row"><label>ICE 서버</label><input id="iceServers" type="text" placeholder="stun:stun.l.google.com:19302" /></div>
+      <div class="row is-hidden"><label>ICE 서버</label><input id="iceServers" type="text" placeholder="stun:stun.l.google.com:19302" /></div>
       <div class="row"><label>오디오 포함</label><input id="withAudio" type="checkbox" /> <span class="sub">(마이크 사용 권한이 필요할 수 있음)</span></div>
       <div class="row"><label>카메라 방향</label>
         <select id="facingMode">
@@ -71,12 +84,6 @@
         <span class="pill" id="wsPill">WS: -</span>
         <span class="pill" id="pcPill">PC: -</span>
       </div>
-    </section>
-
-    <section class="card right">
-      <div class="videoWrap"><video id="preview" autoplay playsinline muted></video></div>
-      <pre class="log" id="log"></pre>
-      <div class="footer">Tip: 후면 카메라를 사용하려면 모바일에서는 "후면 카메라" 옵션을 선택하세요 · 문제 시 콘솔 열어 로그를 확인하세요.</div>
     </section>
   </main>
 
