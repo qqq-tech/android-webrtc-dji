@@ -152,14 +152,16 @@ public class CameraStreamActivity extends AppCompatActivity {
     }
 
     private void configurePreviewSurface() {
-        binding.cameraPreview.setZOrderOnTop(false);
-        binding.cameraPreview.setZOrderMediaOverlay(false);
+        binding.cameraPreview.init(eglBase.getEglBaseContext(), null);
+        binding.cameraPreview.setZOrderOnTop(true);
+        binding.cameraPreview.setZOrderMediaOverlay(true);
         binding.cameraPreview.setEnableHardwareScaler(true);
         binding.cameraPreview.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL);
         binding.cameraPreview.setMirror(false);
         binding.cameraPreview.setKeepScreenOn(true);
-        binding.cameraPreview.init(eglBase.getEglBaseContext(), null);
         binding.cameraPreview.setVisibility(View.VISIBLE);
+        binding.cameraPreview.bringToFront();
+        binding.cameraPreview.clearImage();
     }
 
     private void initialiseCameraEnumerator() {
@@ -519,6 +521,10 @@ public class CameraStreamActivity extends AppCompatActivity {
         stopLocationUpdates();
         lastTelemetrySentRealtime = 0L;
         lastKnownLocation = null;
+
+        if (binding != null) {
+            binding.cameraPreview.clearImage();
+        }
 
         if (!availableCameras.isEmpty()) {
             if (TextUtils.isEmpty(statusMessage)) {
