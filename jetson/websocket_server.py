@@ -74,12 +74,25 @@ class _StaticRequestSilencingLogger:
         self._base_logger = base_logger
 
     def info(self, message: str, *args, **kwargs):
-        if (
-            message == "connection rejected (%d %s)"
-            and args
-            and args[0] == http.HTTPStatus.OK.value
-        ):
-            return
+        if message.startswith("connection rejected"):
+            status_value: Optional[int] = None
+            if args:
+                candidate = args[0]
+                if isinstance(candidate, http.HTTPStatus):
+                    status_value = candidate.value
+                else:
+                    try:
+                        status_value = int(candidate)  # type: ignore[arg-type]
+                    except (TypeError, ValueError):
+                        try:
+                            status_value = int(str(candidate).split()[0])
+                        except (Exception,):
+                            status_value = None
+            elif "200 OK" in message:
+                status_value = http.HTTPStatus.OK.value
+
+            if status_value == http.HTTPStatus.OK.value:
+                return
         self._base_logger.info(message, *args, **kwargs)
 
     def __getattr__(self, name):  # pragma: no cover - passthrough helper
