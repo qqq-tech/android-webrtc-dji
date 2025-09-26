@@ -138,6 +138,29 @@
       locCheckbox.title = 'HTTP 환경에서는 브라우저 정책으로 위치 공유가 차단될 수 있습니다.';
     }
 
+    const normaliseSignalingUrl = (url, defaultTerminalSegment = 'ws') => {
+      if (!url) return url;
+
+      const segments = url.pathname.split('/').filter(Boolean);
+      const socketIoIndex = segments.findIndex((segment) => segment.toLowerCase() === 'socket.io');
+      const trimmedSegments = socketIoIndex >= 0 ? segments.slice(0, socketIoIndex) : segments;
+      if (trimmedSegments.length === 0 || trimmedSegments[trimmedSegments.length - 1] !== defaultTerminalSegment) {
+        trimmedSegments.push(defaultTerminalSegment);
+      }
+      url.pathname = `/${trimmedSegments.join('/')}`;
+      url.hash = '';
+
+      const preserved = new URLSearchParams();
+      for (const [key, value] of url.searchParams.entries()) {
+        if (!['eio', 'transport', 't', 'sid'].includes(key.toLowerCase())) {
+          preserved.append(key, value);
+        }
+      }
+      const preservedQuery = preserved.toString();
+      url.search = preservedQuery ? `?${preservedQuery}` : '';
+      return url;
+    };
+
     const resolveGetUserMedia = () => {
       if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
         return navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
@@ -235,8 +258,7 @@
       } catch (err) {
         wsUrlObject = new URL(signaling, window.location.href);
       }
-      const normalizedPath = wsUrlObject.pathname.replace(/\/+$/, '');
-      wsUrlObject.pathname = normalizedPath ? normalizedPath : '/ws';
+      wsUrlObject = normaliseSignalingUrl(wsUrlObject, 'ws');
       wsUrlObject.searchParams.set('role', 'publisher');
       wsUrlObject.searchParams.set('streamId', streamId);
       ws = new WebSocket(wsUrlObject.toString());
