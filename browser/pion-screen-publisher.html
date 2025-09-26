@@ -16,6 +16,7 @@
     .media { padding:14px; display:flex; flex-direction:column; gap:14px; }
     .settings { padding:16px 14px; display:flex; flex-direction:column; gap:0; }
     .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
+    .row.is-hidden { display:none; }
     label { width:100px; color:#b9c5d6; font-size:12px; }
     input[type=text], input[type=url], select { flex:1; padding:8px 10px; border-radius:10px; border:1px solid #243247; background:#0f141c; color:#e8eef6; }
     input[type=checkbox]{ transform:scale(1.15); }
@@ -55,7 +56,7 @@
     <section class="card settings">
       <div class="row"><label>Signaling</label><input id="signalingHost" type="url" placeholder="ws://localhost:8080/ws" /></div>
       <div class="row"><label>Stream ID</label><input id="streamId" type="text" placeholder="desktop-1" /></div>
-      <div class="row"><label>ICE 서버</label><input id="iceServers" type="text" placeholder="stun:stun.l.google.com:19302" /></div>
+      <div class="row is-hidden"><label>ICE 서버</label><input id="iceServers" type="text" placeholder="stun:stun.l.google.com:19302" /></div>
       <div class="row"><label>오디오 포함</label><input id="withAudio" type="checkbox" /> <span class="sub">(Chrome 탭/시스템 오디오는 브라우저 정책에 따라 제한될 수 있음)</span></div>
       <div class="row"><label>위치 공유</label><input id="withLocation" type="checkbox" /> <span class="sub">(가능한 경우 장치 위치를 실시간으로 전송)</span></div>
       <div class="row"><label>비트레이트</label><input id="bitrate" type="text" value="4000000" /> <span class="sub">bps (예: 4,000,000 = 4Mbps)</span></div>
