@@ -176,11 +176,13 @@ public class WebRTCClient {
         }
         try {
             videoCapturer.startCapture(options.getVideoResolutionWidth(), options.getVideoResolutionHeight(), options.getFps());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            Log.e(TAG, "Capture start interrupted", e);
         } catch (Exception e) {
             Log.e(TAG, "Unable to start capture", e);
+            if (Thread.currentThread().isInterrupted()) {
+                Log.w(TAG, "Thread was interrupted during or after startCapture attempt.");
+                // Decide if you need to re-propagate the interrupt status
+                // Thread.currentThread().interrupt();
+            }
         }
 
         videoTrackFromCamera = getFactory(context).createVideoTrack(options.getVideoSourceId(), videoSource);
