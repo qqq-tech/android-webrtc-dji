@@ -162,13 +162,19 @@ class DroneStream {
             // NOTE: We will need one RTCPeerConnection for each drone we are connecting to
             this.peerConnection = new RTCPeerConnection(iceConfiguration);  // Our P2P connection with another client (drone)
             this.peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                    this.sendMessage({
+                const { candidate } = event;
+                if (candidate) {
+                    const payload = {
                         type: 'ice',
-                        sdpMLineIndex: event.candidate.sdpMLineIndex,
-                        sdpMid: event.candidate.sdpMid,
-                        candidate: event.candidate.candidate
-                    });
+                        candidate: candidate.candidate
+                    };
+                    if (typeof candidate.sdpMid === 'string' && candidate.sdpMid.length > 0) {
+                        payload.sdpMid = candidate.sdpMid;
+                    }
+                    if (typeof candidate.sdpMLineIndex === 'number' && Number.isFinite(candidate.sdpMLineIndex)) {
+                        payload.sdpMLineIndex = candidate.sdpMLineIndex;
+                    }
+                    this.sendMessage(payload);
                 } else {
                     console.log('End of candidates.');
                 }

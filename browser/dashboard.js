@@ -937,14 +937,25 @@ pc.onconnectionstatechange = () => {
 };
 
 pc.onicecandidate = (event) => {
-  if (event.candidate) {
-    sendSignalingMessage({
-      type: 'ice',
-      candidate: event.candidate.candidate,
-      sdpMid: event.candidate.sdpMid,
-      sdpMLineIndex: event.candidate.sdpMLineIndex,
-    });
+  const { candidate } = event;
+  if (!candidate) {
+    return;
   }
+
+  const payload = {
+    type: 'ice',
+    candidate: candidate.candidate,
+  };
+
+  if (typeof candidate.sdpMid === 'string' && candidate.sdpMid.length > 0) {
+    payload.sdpMid = candidate.sdpMid;
+  }
+
+  if (typeof candidate.sdpMLineIndex === 'number' && Number.isFinite(candidate.sdpMLineIndex)) {
+    payload.sdpMLineIndex = candidate.sdpMLineIndex;
+  }
+
+  sendSignalingMessage(payload);
 };
 
 signalingSocket.addEventListener('open', () => {

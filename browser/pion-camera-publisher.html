@@ -328,7 +328,13 @@
         if (!ws) return;
         const base = { type:'ice', role:'publisher', streamId };
         if (candidate) {
-          const msg = { ...base, candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex };
+          const msg = { ...base, candidate: candidate.candidate };
+          if (typeof candidate.sdpMid === 'string' && candidate.sdpMid.length > 0) {
+            msg.sdpMid = candidate.sdpMid;
+          }
+          if (typeof candidate.sdpMLineIndex === 'number' && Number.isFinite(candidate.sdpMLineIndex)) {
+            msg.sdpMLineIndex = candidate.sdpMLineIndex;
+          }
           sendSignal(msg, '→ ICE');
         } else {
           const msg = { ...base, candidate: '' };
