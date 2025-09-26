@@ -1,6 +1,8 @@
 """Utility WebSocket server to push YOLO detections to browser clients."""
 from __future__ import annotations
 
+import argparse
+import contextlib
 import importlib
 import inspect
 import asyncio
@@ -9,14 +11,19 @@ import json
 import logging
 import mimetypes
 import os
+import signal
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Optional, Set, Union
+from typing import TYPE_CHECKING, Any, Optional, Set, Union
 
 import websockets
-from websockets.server import WebSocketServer, WebSocketServerProtocol
+
+if TYPE_CHECKING:  # pragma: no cover - import only for static type checking
+    from websockets.server import WebSocketServerProtocol
+else:  # pragma: no cover - allow runtime without importing deprecated names
+    WebSocketServerProtocol = Any  # type: ignore[assignment]
 
 try:  # websockets >= 12 exposes an explicit HTTP response type
     from websockets.datastructures import Headers as WebsocketsHeaders
@@ -93,7 +100,7 @@ class DetectionBroadcaster:
         self._port = port
         self._path = path
         self._clients: Set[WebSocketServerProtocol] = set()
-        self._server: Optional[WebSocketServer] = None
+        self._server: Optional[Any] = None
         self._recordings_mount_path = "/recordings"
         if static_dir is None:
             default_static = Path(__file__).resolve().parents[1] / "browser"
@@ -122,11 +129,24 @@ class DetectionBroadcaster:
         await self._server.wait_closed()
         self._server = None
 
-    async def broadcast(self, payload: dict) -> None:
+    async def broadcast(self, payload: Any, sender: Optional[WebSocketServerProtocol] = None) -> None:
         if not self._clients:
             return
-        message = json.dumps(payload)
-        await asyncio.gather(*(self._send(client, message) for client in list(self._clients)))
+
+        if isinstance(payload, (bytes, str)):
+            message = payload
+        else:
+            try:
+                message = json.dumps(payload)
+            except TypeError:
+                logging.exception("Unable to serialize detection payload")
+                return
+
+        targets = [client for client in list(self._clients) if client is not sender]
+        if not targets:
+            return
+
+        await asyncio.gather(*(self._send(client, message) for client in targets), return_exceptions=True)
 
     async def _handler(self, websocket: WebSocketServerProtocol):
         if self._path and getattr(websocket, "path", self._path) != self._path:
@@ -135,7 +155,10 @@ class DetectionBroadcaster:
 
         self._clients.add(websocket)
         try:
-            await websocket.wait_closed()
+            async for message in websocket:
+                await self._relay_message(websocket, message)
+        except Exception:
+            logging.exception("WebSocket handler error")
         finally:
             self._clients.discard(websocket)
 
@@ -144,6 +167,20 @@ class DetectionBroadcaster:
             await websocket.send(message)
         except Exception:
             self._clients.discard(websocket)
+
+    async def _relay_message(self, websocket: WebSocketServerProtocol, message: Any) -> None:
+        if isinstance(message, (str, bytes)):
+            await self.broadcast(message, sender=websocket)
+            return
+
+        try:
+            serialised = json.dumps(message)
+        except TypeError:
+            address = getattr(websocket, "remote_address", None)
+            logging.warning("Ignoring non-serialisable message from %s", address)
+            return
+
+        await self.broadcast(serialised, sender=websocket)
 
     async def _process_http_request(self, path_or_connection, request_headers=None):
         request_path, request_headers, query_string = self._normalise_http_request(
@@ -612,4 +649,60 @@ class DetectionBroadcaster:
             raise last_error
 
         raise RuntimeError("Unable to instantiate websockets Response")
+
+
+async def _serve_forever(args) -> None:
+    broadcaster = DetectionBroadcaster(
+        host=args.host,
+        port=args.port,
+        path=args.path,
+        static_dir=args.static_dir,
+        recordings_dir=args.recordings_dir,
+    )
+
+    await broadcaster.start()
+    logging.info("Detection broadcaster listening on %s:%s%s", args.host, args.port, args.path)
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(sig, stop_event.set)
+
+    try:
+        await stop_event.wait()
+    finally:
+        await broadcaster.stop()
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="YOLO detection WebSocket broadcaster")
+    parser.add_argument("--host", default="0.0.0.0", help="Interface to bind the WebSocket server to")
+    parser.add_argument("--port", type=int, default=8765, help="Port for the WebSocket server")
+    parser.add_argument("--path", default="/detections", help="WebSocket path for detection messages")
+    parser.add_argument(
+        "--static-dir",
+        help="Optional directory with dashboard assets to serve over HTTP",
+    )
+    parser.add_argument(
+        "--recordings-dir",
+        help="Directory containing MP4 recordings exposed via the /recordings mount",
+    )
+    return parser
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s")
+
+    try:
+        asyncio.run(_serve_forever(args))
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI entry point
+    main()
 
