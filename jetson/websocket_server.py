@@ -650,18 +650,13 @@ class DetectionBroadcaster:
                     reason_phrase = ""
 
             try:
-                response = self._create_websockets_response(
+                return self._create_websockets_response(
                     status_code, headers_value, body, reason_phrase
                 )
             except Exception:
                 logging.debug(
                     "Falling back to tuple HTTP response for websockets", exc_info=True
                 )
-            else:
-                status_value = getattr(response, "status_code", status_code)
-                headers_value = getattr(response, "headers", header_items)
-                body_value = getattr(response, "body", body)
-                return status_value, headers_value, body_value
 
         return status_code, header_items, body
 
