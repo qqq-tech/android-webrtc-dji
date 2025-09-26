@@ -412,7 +412,13 @@ class WebRTCYOLOPipeline:
         last_analysis = 0.0
         try:
             while True:
-                frame: VideoFrame = await track.recv()
+                try:
+                    frame: VideoFrame = await asyncio.wait_for(
+                        track.recv(), timeout=RECV_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    logging.warning("Timed out waiting for video frame")
+                    continue
                 now = loop.time()
                 if now - last_analysis < ANALYSIS_INTERVAL:
                     continue
