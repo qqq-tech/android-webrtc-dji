@@ -62,11 +62,14 @@ class WebSocketDetectionPublisher:
         self._reconnect_delay = reconnect_delay
         self._connection: Optional[websockets.WebSocketClientProtocol] = None
         self._lock = asyncio.Lock()
+        self._stopping = False
 
     async def start(self) -> None:
-        await self._ensure_connection()
+        self._stopping = False
+        await self._connect_once()
 
     async def stop(self) -> None:
+        self._stopping = True
         async with self._lock:
             if self._connection is not None:
                 await self._connection.close()
@@ -84,11 +87,10 @@ class WebSocketDetectionPublisher:
             logging.exception("Failed to encode detection payload")
             return
 
-        for attempt in range(2):
+        while not self._stopping:
             websocket = await self._ensure_connection()
             if websocket is None:
-                await asyncio.sleep(self._reconnect_delay)
-                continue
+                return
             try:
                 await websocket.send(message)
                 return
@@ -96,9 +98,19 @@ class WebSocketDetectionPublisher:
                 logging.warning("Overlay WebSocket send failed, resetting connection")
                 await self._reset_connection()
 
-        logging.error("Dropping detection payload after connection failures")
+        logging.debug("Overlay WebSocket publisher stopped; skipping payload")
 
     async def _ensure_connection(self) -> Optional[websockets.WebSocketClientProtocol]:
+        while not self._stopping:
+            websocket = await self._connect_once()
+            if websocket is not None:
+                return websocket
+
+            await asyncio.sleep(self._reconnect_delay)
+
+        return None
+
+    async def _connect_once(self) -> Optional[websockets.WebSocketClientProtocol]:
         async with self._lock:
             if self._connection is not None:
                 if self._is_connection_open(self._connection):
