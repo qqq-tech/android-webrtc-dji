@@ -37,6 +37,11 @@ class WebSocketDetectionPublisher:
                 await self._connection.close()
                 self._connection = None
 
+    async def reset(self) -> None:
+        """Drop the current connection so the next send reconnects."""
+
+        await self._reset_connection()
+
     async def broadcast(self, payload: dict) -> None:
         try:
             message = json.dumps(payload)
@@ -381,11 +386,22 @@ class WebRTCYOLOPipeline:
         if self._closed or self._restart_requested:
             return
         self._restart_requested = True
+        await self._reset_detection_sinks()
         if self._signaling is not None:
             try:
                 await self._signaling.close()
             except Exception:
                 logging.debug("Error while closing signaling connection", exc_info=True)
+
+    async def _reset_detection_sinks(self) -> None:
+        for sink in self._sinks:
+            reset = getattr(sink, "reset", None)
+            if not callable(reset):
+                continue
+            try:
+                await reset()
+            except Exception:
+                logging.exception("Failed to reset detection sink")
 
     async def close(self) -> None:
         self._closed = True

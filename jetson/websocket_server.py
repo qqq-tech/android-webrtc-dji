@@ -165,6 +165,35 @@ class DetectionBroadcaster:
         await asyncio.gather(*(server.wait_closed() for server, *_ in self._servers))
         self._servers.clear()
 
+    async def reset(self) -> None:
+        """Proactively close client sessions so they can reconnect cleanly."""
+
+        if not self._clients:
+            return
+
+        await asyncio.gather(
+            *(self._close_client_connection(client) for client in list(self._clients)),
+            return_exceptions=True,
+        )
+
+    async def _close_client_connection(self, websocket: WebSocketServerProtocol) -> None:
+        close = getattr(websocket, "close", None)
+        if not callable(close):  # pragma: no cover - defensive fallback
+            return
+
+        close_kwargs = {"code": 1012, "reason": "Detection stream restarting"}
+        try:
+            await close(**close_kwargs)
+        except TypeError:
+            # Older websockets versions only accept the ``code`` positional
+            # argument or no arguments at all.
+            try:
+                await close(close_kwargs["code"])  # type: ignore[misc]
+            except TypeError:
+                await close()
+        except Exception:  # pragma: no cover - best effort logging
+            logging.debug("Error while closing client WebSocket", exc_info=True)
+
     @property
     def active_listeners(self) -> list[tuple[str, int, bool]]:
         return [
