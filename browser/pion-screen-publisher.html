@@ -36,12 +36,12 @@
 <body>
   <header>
     <h1>Pion Relay – Desktop Screen Publisher <span class="pill" id="statePill">IDLE</span></h1>
-    <div class="sub">URL 쿼리로 <code>streamId</code>, <code>signalingHost</code>를 넘겨 사용할 수 있어요. 예) <code>?streamId=desktop-1&signalingHost=ws://127.0.0.1:8080</code></div>
+    <div class="sub">URL 쿼리로 <code>streamId</code>, <code>signalingHost</code>를 넘겨 사용할 수 있어요. 예) <code>?streamId=desktop-1&signalingHost=ws://127.0.0.1:8080/ws</code></div>
   </header>
 
   <main>
     <section class="card left">
-      <div class="row"><label>Signaling</label><input id="signalingHost" type="url" placeholder="ws://localhost:8080" /></div>
+      <div class="row"><label>Signaling</label><input id="signalingHost" type="url" placeholder="ws://localhost:8080/ws" /></div>
       <div class="row"><label>Stream ID</label><input id="streamId" type="text" placeholder="desktop-1" /></div>
       <div class="row"><label>ICE 서버</label><input id="iceServers" type="text" placeholder="stun:stun.l.google.com:19302" /></div>
       <div class="row"><label>오디오 포함</label><input id="withAudio" type="checkbox" /> <span class="sub">(Chrome 탭/시스템 오디오는 브라우저 정책에 따라 제한될 수 있음)</span></div>
@@ -96,13 +96,11 @@
     const defaultSignalingHost = (() => {
       const param = params.get('signalingHost');
       if (param) return param;
-      if (location.host) {
-        const scheme = isSecureContext ? 'wss' : 'ws';
-        return `${scheme}://${location.host}/ws`;
-      }
-      return 'ws://localhost:8080';
+      const hostname = location.hostname || 'localhost';
+      const hostForUrl = hostname.includes(':') ? `[${hostname}]` : hostname;
+      return `ws://${hostForUrl}:8080/ws`;
     })();
-    $('#signalingHost').value = defaultSignalingHost || 'ws://localhost:8080';
+    $('#signalingHost').value = defaultSignalingHost || 'ws://localhost:8080/ws';
     $('#streamId').value      = params.get('streamId') || 'desktop-1';
     $('#iceServers').value    = params.get('ice') || 'stun:stun.l.google.com:19302';
 
