@@ -8,7 +8,8 @@ import json
 import logging
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
+from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc.sdp import candidate_from_sdp
 from aiortc.contrib.signaling import BYE
 from av import VideoFrame
 import websockets
@@ -196,29 +197,27 @@ class WebRTCYOLOPipeline:
                     await self._pc.addIceCandidate(None)
                     continue
 
-                candidate_kwargs = {"candidate": candidate_value}
+                try:
+                    rtc_candidate = candidate_from_sdp(candidate_value)
+                except Exception:
+                    logging.exception(
+                        "Failed to parse ICE candidate from payload: %s", message
+                    )
+                    continue
 
                 sdp_mid = message.get("sdpMid")
                 if sdp_mid:
-                    candidate_kwargs["sdpMid"] = sdp_mid
+                    rtc_candidate.sdpMid = sdp_mid
 
                 sdp_mline_index = message.get("sdpMLineIndex")
                 if sdp_mline_index is not None:
                     try:
-                        candidate_kwargs["sdpMLineIndex"] = int(sdp_mline_index)
+                        rtc_candidate.sdpMLineIndex = int(sdp_mline_index)
                     except (TypeError, ValueError):
                         logging.warning(
                             "Discarding invalid sdpMLineIndex in ICE candidate: %s",
                             message,
                         )
-
-                try:
-                    rtc_candidate = RTCIceCandidate(**candidate_kwargs)
-                except Exception:
-                    logging.exception(
-                        "Failed to construct RTCIceCandidate from payload: %s", message
-                    )
-                    continue
 
                 try:
                     await self._pc.addIceCandidate(rtc_candidate)
