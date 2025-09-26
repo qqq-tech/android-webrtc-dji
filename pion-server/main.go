@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -395,9 +396,13 @@ func (s *stream) registerSubscriber(c *client) error {
 	s.subscribers[c] = struct{}{}
 	track := s.videoTrack
 	if track != nil {
-		if _, err := pc.AddTrack(track); err != nil {
+		sender, err := pc.AddTrack(track)
+		if err != nil {
 			s.mu.Unlock()
 			return err
+		}
+		if err := preferH264VideoCodec(pc, sender); err != nil {
+			log.Printf("failed to set codec preference: %v", err)
 		}
 	}
 	if track == nil {
@@ -490,6 +495,44 @@ func (s *stream) createPeerConnection(c *client) (*webrtc.PeerConnection, error)
 	return pc, nil
 }
 
+func preferH264VideoCodec(pc *webrtc.PeerConnection, sender *webrtc.RTPSender) error {
+	if pc == nil || sender == nil {
+		return nil
+	}
+
+	var transceiver *webrtc.RTPTransceiver
+	for _, t := range pc.GetTransceivers() {
+		if t.Sender() == sender {
+			transceiver = t
+			break
+		}
+	}
+	if transceiver == nil || transceiver.Kind() != webrtc.RTPCodecTypeVideo {
+		return nil
+	}
+
+	params := sender.GetParameters()
+	if len(params.Codecs) == 0 {
+		return nil
+	}
+
+	var preferred []webrtc.RTPCodecParameters
+	var fallback []webrtc.RTPCodecParameters
+	for _, codec := range params.Codecs {
+		if strings.EqualFold(codec.MimeType, webrtc.MimeTypeH264) {
+			preferred = append(preferred, codec)
+		} else {
+			fallback = append(fallback, codec)
+		}
+	}
+	if len(preferred) == 0 {
+		return nil
+	}
+
+	preferred = append(preferred, fallback...)
+	return transceiver.SetCodecPreferences(preferred)
+}
+
 func (s *stream) setRemoteTrack(remoteTrack *webrtc.TrackRemote) {
 	s.mu.Lock()
 	oldRecorder := s.recorder
@@ -516,9 +559,13 @@ func (s *stream) setRemoteTrack(remoteTrack *webrtc.TrackRemote) {
 		if subscriber.peer == nil {
 			continue
 		}
-		if _, err := subscriber.peer.AddTrack(localTrack); err != nil {
+		sender, err := subscriber.peer.AddTrack(localTrack)
+		if err != nil {
 			log.Printf("failed to add track to subscriber: %v", err)
 			continue
+		}
+		if err := preferH264VideoCodec(subscriber.peer, sender); err != nil {
+			log.Printf("failed to set codec preference: %v", err)
 		}
 		if err := subscriber.sendOffer(); err != nil {
 			log.Printf("failed to send offer to subscriber: %v", err)
