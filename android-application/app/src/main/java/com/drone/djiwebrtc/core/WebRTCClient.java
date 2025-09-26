@@ -83,7 +83,7 @@ public class WebRTCClient {
         // Initialize the PeerConnectionFactory
         PeerConnectionFactory.InitializationOptions options = PeerConnectionFactory.InitializationOptions.builder(context)
                 .setEnableInternalTracer(true)
-                .setFieldTrials("WebRTC-H264HighProfile/Enabled/")
+                .setFieldTrials("WebRTC-H264HighProfile/Disabled/")
                 .createInitializationOptions();
         PeerConnectionFactory.initialize(options);
 
@@ -91,7 +91,7 @@ public class WebRTCClient {
         factory = PeerConnectionFactory
                 .builder()
                 .setVideoDecoderFactory(new DefaultVideoDecoderFactory(rootEglBase.getEglBaseContext()))
-                .setVideoEncoderFactory(new DefaultVideoEncoderFactory(rootEglBase.getEglBaseContext(), true, true))
+                .setVideoEncoderFactory(new DefaultVideoEncoderFactory(rootEglBase.getEglBaseContext(), true, false))
                 .setOptions(new PeerConnectionFactory.Options()).createPeerConnectionFactory();
     }
 
