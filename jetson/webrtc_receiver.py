@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
 from aiortc.contrib.signaling import BYE
 from av import VideoFrame
 import websockets
@@ -191,18 +191,37 @@ class WebRTCYOLOPipeline:
                         )
                     )
             elif msg_type == "ice":
-                candidate = message.get("candidate")
-                if not candidate:
+                candidate_value = message.get("candidate")
+                if not candidate_value:
+                    await self._pc.addIceCandidate(None)
                     continue
-                ice_payload = {
-                    "candidate": candidate,
-                }
-                if "sdpMid" in message:
-                    ice_payload["sdpMid"] = message["sdpMid"]
-                if "sdpMLineIndex" in message:
-                    ice_payload["sdpMLineIndex"] = message["sdpMLineIndex"]
+
+                candidate_kwargs = {"candidate": candidate_value}
+
+                sdp_mid = message.get("sdpMid")
+                if sdp_mid:
+                    candidate_kwargs["sdpMid"] = sdp_mid
+
+                sdp_mline_index = message.get("sdpMLineIndex")
+                if sdp_mline_index is not None:
+                    try:
+                        candidate_kwargs["sdpMLineIndex"] = int(sdp_mline_index)
+                    except (TypeError, ValueError):
+                        logging.warning(
+                            "Discarding invalid sdpMLineIndex in ICE candidate: %s",
+                            message,
+                        )
+
                 try:
-                    await self._pc.addIceCandidate(ice_payload)
+                    rtc_candidate = RTCIceCandidate(**candidate_kwargs)
+                except Exception:
+                    logging.exception(
+                        "Failed to construct RTCIceCandidate from payload: %s", message
+                    )
+                    continue
+
+                try:
+                    await self._pc.addIceCandidate(rtc_candidate)
                 except Exception as exc:
                     logging.warning("Failed to add ICE candidate: %s", exc)
             else:
