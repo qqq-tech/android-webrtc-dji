@@ -229,19 +229,14 @@
       setPill('#statePill', 'STARTING', '');
 
       // 1) WS 연결
-      let baseWsUrl;
+      let wsUrlObject;
       try {
-        baseWsUrl = new URL(signaling);
+        wsUrlObject = new URL(signaling);
       } catch (err) {
-        baseWsUrl = new URL(signaling, window.location.href);
+        wsUrlObject = new URL(signaling, window.location.href);
       }
-      const pathSegments = baseWsUrl.pathname.split('/').filter(Boolean);
-      if (pathSegments[pathSegments.length - 1] !== 'ws') {
-        pathSegments.push('ws');
-      }
-      baseWsUrl.pathname = `/${pathSegments.join('/')}`;
-      const baseWs = baseWsUrl.toString();
-      const wsUrlObject = new URL(baseWs);
+      const normalizedPath = wsUrlObject.pathname.replace(/\/+$/, '');
+      wsUrlObject.pathname = normalizedPath ? normalizedPath : '/ws';
       wsUrlObject.searchParams.set('role', 'publisher');
       wsUrlObject.searchParams.set('streamId', streamId);
       ws = new WebSocket(wsUrlObject.toString());
