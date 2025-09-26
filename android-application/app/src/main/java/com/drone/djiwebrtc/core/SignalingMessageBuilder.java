@@ -27,8 +27,14 @@ public final class SignalingMessageBuilder {
         JSONObject message = new JSONObject();
         message.put("type", "ice");
         message.put("candidate", candidate.sdp);
-        message.put("sdpMid", candidate.sdpMid);
-        message.put("sdpMLineIndex", candidate.sdpMLineIndex);
+
+        if (candidate.sdpMid != null && !candidate.sdpMid.trim().isEmpty()) {
+            message.put("sdpMid", candidate.sdpMid);
+        }
+
+        if (candidate.sdpMLineIndex >= 0) {
+            message.put("sdpMLineIndex", candidate.sdpMLineIndex);
+        }
         return message;
     }
 
