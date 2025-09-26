@@ -3,6 +3,7 @@ package com.drone.djiwebrtc;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -51,7 +52,7 @@ import java.util.List;
  * drone video streaming.
  */
 public class CameraStreamActivity extends AppCompatActivity {
-    private static final String TAG = "CameraStream";
+    private static final String TAG = "CameraStreamActivity";
     private static final int REQUEST_PERMISSIONS = 0xCA01;
     private static final long LOCATION_UPDATE_INTERVAL_MS = 1500L;
     private static final float LOCATION_UPDATE_MIN_DISTANCE_M = 1.0f;
@@ -152,16 +153,22 @@ public class CameraStreamActivity extends AppCompatActivity {
     }
 
     private void configurePreviewSurface() {
-        binding.cameraPreview.init(eglBase.getEglBaseContext(), null);
-        binding.cameraPreview.setZOrderOnTop(true);
-        binding.cameraPreview.setZOrderMediaOverlay(true);
-        binding.cameraPreview.setEnableHardwareScaler(true);
-        binding.cameraPreview.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL);
-        binding.cameraPreview.setMirror(false);
+        Log.d(TAG, "configurePreviewSurface called.");
+        // binding.cameraPreview.init(eglBase.getEglBaseContext(), null); // 주석 처리 유지
+        Log.d(TAG, "EGL Context for preview (will be used later): " + (eglBase != null ? eglBase.getEglBaseContext() : "null"));
+
+        // 임시 배경색 설정 제거
+        // binding.cameraPreview.setBackgroundColor(Color.RED);
+        // Log.d(TAG, "Set cameraPreview background to RED for visibility test."); // 로그도 제거
+
+        binding.cameraPreview.setZOrderOnTop(true); // ZOrderMediaOverlay(true) 대신 setZOrderOnTop(true) 사용
+        Log.d(TAG, "Set ZOrderOnTop(true) for cameraPreview.");
+
+        binding.cameraPreview.setEnableHardwareScaler(false);
+        binding.cameraPreview.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT);
         binding.cameraPreview.setKeepScreenOn(true);
         binding.cameraPreview.setVisibility(View.VISIBLE);
-        binding.cameraPreview.bringToFront();
-        binding.cameraPreview.clearImage();
+        Log.d(TAG, "configurePreviewSurface completed (ZOrderOnTop, scaler false, FIT).");
     }
 
     private void initialiseCameraEnumerator() {
@@ -439,20 +446,68 @@ public class CameraStreamActivity extends AppCompatActivity {
     }
 
     private void onSignalingConnected() {
+        Log.d(TAG, "onSignalingConnected called. activeCapturer: " + (activeCapturer != null));
         if (activeCapturer == null) {
             stopStreamingInternal(getString(R.string.camera_stream_status_error, getString(R.string.camera_stream_no_cameras)));
             return;
         }
 
         SurfaceTextureHelper surfaceTextureHelper = SurfaceTextureHelper.create("MOBILE_CAMERA", eglBase.getEglBaseContext());
+        Log.d(TAG, "SurfaceTextureHelper created: " + (surfaceTextureHelper != null));
+
         WebRTCMediaOptions options = new WebRTCMediaOptions()
                 .setMediaStreamId(activeStreamId)
                 .setVideoSourceId(activeStreamId + "-video")
                 .setVideoResolution(1280, 720)
                 .setFps(30);
         try {
+            Log.d(TAG, "Attempting to create WebRTCClient.");
             webRtcClient = new WebRTCClient(getApplicationContext(), activeCapturer, options, signalingClient, surfaceTextureHelper);
-            webRtcClient.addVideoSink(binding.cameraPreview);
+            Log.d(TAG, "WebRTCClient created: " + (webRtcClient != null));
+
+            if (webRtcClient != null && binding.cameraPreview != null) {
+                Log.d(TAG, "Preparing to init and add cameraPreview as VideoSink.");
+                Log.d(TAG, "cameraPreview dimensions just before post: " + binding.cameraPreview.getWidth() + "x" + binding.cameraPreview.getHeight());
+
+                binding.cameraPreview.post(() -> {
+                    int width = binding.cameraPreview.getWidth();
+                    int height = binding.cameraPreview.getHeight();
+                    Log.d(TAG, "Inside post. cameraPreview dimensions: " + width + "x" + height);
+
+                    if (width > 0 && height > 0) {
+                        if (webRtcClient != null && eglBase != null) { // webRtcClient와 eglBase 유효성 확인
+                            Log.d(TAG, "Dimensions are valid. Initializing cameraPreview EGL.");
+                            binding.cameraPreview.init(eglBase.getEglBaseContext(), new RendererCommon.RendererEvents() {
+                                @Override
+                                public void onFirstFrameRendered() {
+                                    Log.i(TAG, "****** CameraPreview: First frame rendered! ******");
+                                }
+
+                                @Override
+                                public void onFrameResolutionChanged(int videoWidth, int videoHeight, int rotation) {
+                                    Log.i(TAG, "CameraPreview: Frame resolution changed to " + videoWidth + "x" + videoHeight + " rotation " + rotation);
+                                    if (binding != null && binding.cameraPreview != null) {
+                                        Log.d(TAG, "CameraPreview current view dimensions at resolution change: " + binding.cameraPreview.getWidth() + "x" + binding.cameraPreview.getHeight());
+                                    }
+                                }
+                            });
+                            Log.d(TAG, "cameraPreview EGL initialized.");
+                            binding.cameraPreview.clearImage(); // init 호출 후 clearImage 호출
+
+                            Log.d(TAG, "Attempting to add VideoSink.");
+                            webRtcClient.addVideoSink(binding.cameraPreview);
+                            Log.d(TAG, "cameraPreview VideoSink added to WebRTCClient (inside post).");
+                        } else {
+                            Log.e(TAG, "WebRTCClient or eglBase is null inside post. Cannot init/add VideoSink.");
+                        }
+                    } else {
+                        Log.e(TAG, "cameraPreview dimensions are still 0x0 or invalid inside post. VideoSink NOT added.");
+                    }
+                });
+            } else {
+                Log.e(TAG, "WebRTCClient or cameraPreview is null. Cannot prepare to add VideoSink.");
+            }
+
             webRtcClient.setConnectionChangedListener(() -> runOnUiThread(() ->
                     stopStreamingInternal(getString(R.string.camera_stream_status_peer_disconnected))));
             streamingState = StreamingState.STREAMING;
@@ -461,8 +516,8 @@ public class CameraStreamActivity extends AppCompatActivity {
                 sendTelemetryUpdate(lastKnownLocation, true);
             }
         } catch (RuntimeException e) {
-            surfaceTextureHelper.dispose();
-            Log.e(TAG, "Failed to start WebRTC client", e);
+            if (surfaceTextureHelper != null) surfaceTextureHelper.dispose();
+            Log.e(TAG, "Failed to start WebRTC client in onSignalingConnected", e);
             String errorMessage = e.getMessage();
             if (TextUtils.isEmpty(errorMessage)) {
                 errorMessage = "WebRTC";
@@ -857,12 +912,12 @@ public class CameraStreamActivity extends AppCompatActivity {
 
         @Override
         public void onCameraOpening(String cameraName) {
-            Log.d(TAG, "Opening camera: " + cameraName);
+            Log.d(TAG, "Opening camera: " + cameraName + " for label: " + cameraLabel);
         }
 
         @Override
         public void onFirstFrameAvailable() {
-            Log.d(TAG, "First frame available from camera: " + cameraLabel);
+            Log.i(TAG, "****** First frame available from camera: " + cameraLabel + " ******");
         }
 
         @Override

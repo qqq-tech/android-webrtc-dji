@@ -25,12 +25,8 @@ import org.webrtc.VideoSource;
 import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
-// import java.util.Arrays; // No longer needed for forceH264OnlyInSdp
-// import java.util.List; // No longer needed for forceH264OnlyInSdp
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
-// import java.util.regex.Matcher; // No longer needed for forceH264OnlyInSdp
-// import java.util.regex.Pattern; // No longer needed for forceH264OnlyInSdp
 
 
 public class WebRTCClient {
@@ -92,8 +88,6 @@ public class WebRTCClient {
         Log.d(TAG, "PeerConnectionFactory initialized with H264 preferred (VP8 disabled in factory).");
     }
 
-    // forceH264OnlyInSdp method removed
-
     public void handleWebRTCMessage(JSONObject message){
         try {
             Log.d(TAG, "handleWebRTCMessage: got message " + message.toString(2));
@@ -127,7 +121,6 @@ public class WebRTCClient {
             @Override
             public void onCreateSuccess(SessionDescription sessionDescription) {
                 Log.d(TAG, "Original SDP offer created by library:\n" + sessionDescription.description);
-                // Use original SDP directly
                 peerConnection.setLocalDescription(new SimpleSdpObserver(), sessionDescription);
                 try {
                     sendMessage(SignalingMessageBuilder.buildSdpMessage(sessionDescription));
@@ -144,7 +137,6 @@ public class WebRTCClient {
             @Override
             public void onCreateSuccess(SessionDescription sessionDescription) {
                 Log.d(TAG, "Original SDP answer created by library:\n" + sessionDescription.description);
-                // Use original SDP directly
                 peerConnection.setLocalDescription(new SimpleSdpObserver(), sessionDescription);
                 try {
                     sendMessage(SignalingMessageBuilder.buildSdpMessage(sessionDescription));
@@ -168,25 +160,40 @@ public class WebRTCClient {
     }
 
     private void createVideoTrackFromVideoCapturer() {
+        Log.d(TAG, "createVideoTrackFromVideoCapturer called.");
         videoSource = getFactory(context).createVideoSource(videoCapturer.isScreencast());
+        Log.d(TAG, "VideoSource created: " + (videoSource != null) + ", Capturer isScreencast: " + videoCapturer.isScreencast());
 
         if (surfaceTextureHelper != null) {
             videoCapturer.initialize(surfaceTextureHelper, context, videoSource.getCapturerObserver());
         } else {
             videoCapturer.initialize(null, context, videoSource.getCapturerObserver());
         }
+        Log.d(TAG, "VideoCapturer initialized.");
+
         try {
-            videoCapturer.startCapture(options.getVideoResolutionWidth(), options.getVideoResolutionHeight(), options.getFps());
+            int requestedWidth = options.getVideoResolutionWidth();
+            int requestedHeight = options.getVideoResolutionHeight();
+            int requestedFps = options.getFps();
+            Log.d(TAG, "Attempting to start video capture with requested options: " + requestedWidth + "x" + requestedHeight + "@" + requestedFps + "fps");
+
+            videoCapturer.startCapture(requestedWidth, requestedHeight, requestedFps);
+            Log.i(TAG, "Video capture started successfully (requested " + requestedWidth + "x" + requestedHeight + "@" + requestedFps + "fps).");
         } catch (Exception e) {
-            Log.e(TAG, "Unable to start video capture", e);
+            Log.e(TAG, "Unable to start video capture using specified options", e);
             if (Thread.currentThread().isInterrupted()) {
                 Log.w(TAG, "Thread was interrupted during or after startCapture attempt.");
             }
-            return;
         }
 
         videoTrackFromCamera = getFactory(context).createVideoTrack(options.getVideoSourceId(), videoSource);
-        videoTrackFromCamera.setEnabled(true);
+        Log.d(TAG, "VideoTrackFromCamera created: " + (videoTrackFromCamera != null) + ", ID: " + options.getVideoSourceId());
+        if (videoTrackFromCamera != null) {
+            videoTrackFromCamera.setEnabled(true);
+            Log.d(TAG, "videoTrackFromCamera enabled.");
+        } else {
+            Log.e(TAG, "Failed to create videoTrackFromCamera!");
+        }
     }
 
     private void initializePeerConnection() {
@@ -290,16 +297,18 @@ public class WebRTCClient {
     }
 
     public void addVideoSink(VideoSink sink) {
+        Log.d(TAG, "addVideoSink called. Sink: " + (sink != null) + ", videoTrackFromCamera: " + (videoTrackFromCamera != null));
         if (sink == null) {
             Log.w(TAG, "addVideoSink: sink is null");
             return;
         }
         if (videoTrackFromCamera == null) {
-            Log.w(TAG, "addVideoSink: videoTrackFromCamera is null");
+            Log.w(TAG, "addVideoSink: videoTrackFromCamera is null, cannot add sink.");
             return;
         }
         videoTrackFromCamera.addSink(sink);
         localVideoSinks.add(sink);
+        Log.i(TAG, "VideoSink added to videoTrackFromCamera. Current localVideoSinks count: " + localVideoSinks.size());
     }
 
     public void removeVideoSink(VideoSink sink) {
@@ -315,7 +324,6 @@ public class WebRTCClient {
         localVideoSinks.remove(sink);
     }
 
-    // Corrected dispose order with try-catch for track disposal
     public synchronized void dispose() {
         if (disposed) {
             return;
@@ -323,7 +331,6 @@ public class WebRTCClient {
         disposed = true;
         Log.d(TAG, "Disposing WebRTCClient...");
 
-        // 1. Stop capturer
         Log.d(TAG, "Stopping video capturer...");
         try {
             if (videoCapturer != null) {
@@ -337,32 +344,25 @@ public class WebRTCClient {
             Log.w(TAG, "Error stopping video capturer", e);
         }
 
-        // 2. Dispose local video track
         if (videoTrackFromCamera != null) {
-            String trackIdInfo = "videoTrackFromCamera"; // Placeholder in case .id() fails early
+            String trackIdInfo = "videoTrackFromCamera";
             try {
-                // Try to get the track ID for logging, but be aware it might fail if track is severely broken
                 trackIdInfo = videoTrackFromCamera.id();
                 Log.d(TAG, "Attempting to dispose video track: " + trackIdInfo);
 
-                // Remove sinks before disposing the track. This might also throw if track is already disposed.
                 for (VideoSink sink : localVideoSinks) {
                     videoTrackFromCamera.removeSink(sink);
                 }
                 localVideoSinks.clear();
 
-                // Attempt to dispose the track itself
                 videoTrackFromCamera.dispose();
                 Log.d(TAG, "VideoTrack " + trackIdInfo + " disposed successfully.");
 
             } catch (IllegalStateException e) {
-                // This is the specific exception we are trying to handle
                 Log.w(TAG, "VideoTrack " + trackIdInfo + ": " + e.getMessage() + ". (Likely already disposed or native resource is gone).");
             } catch (Exception e) {
-                // Catch any other unexpected errors during track cleanup
                 Log.e(TAG, "Generic exception while cleaning up VideoTrack " + trackIdInfo + ".", e);
             } finally {
-                // Crucial: always nullify the reference to prevent further attempts to use it
                 videoTrackFromCamera = null;
                 Log.d(TAG, "videoTrackFromCamera reference set to null for track: " + trackIdInfo);
             }
@@ -370,7 +370,6 @@ public class WebRTCClient {
             Log.d(TAG, "videoTrackFromCamera was already null before explicit disposal in dispose().");
         }
 
-        // 3. Dispose video source
         if (videoSource != null) {
             Log.d(TAG, "Disposing video source...");
             try {
@@ -383,7 +382,6 @@ public class WebRTCClient {
             }
         }
 
-        // 4. Dispose video capturer object
         if (videoCapturer != null) {
             Log.d(TAG, "Disposing video capturer object...");
             try {
@@ -394,7 +392,6 @@ public class WebRTCClient {
             }
         }
 
-        // 5. Dispose PeerConnection
         if (peerConnection != null) {
             Log.d(TAG, "Closing and disposing PeerConnection...");
             try {
@@ -408,7 +405,6 @@ public class WebRTCClient {
             }
         }
 
-        // 6. Dispose SurfaceTextureHelper
         if (surfaceTextureHelper != null) {
             Log.d(TAG, "Disposing SurfaceTextureHelper...");
             try {
