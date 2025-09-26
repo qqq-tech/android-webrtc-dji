@@ -68,6 +68,9 @@ for _candidate in ("reason_phrase", "reason"):
         break
 
 
+HTTP_REQUEST_LOGGER = logging.getLogger("websocket_server.http")
+
+
 class _StaticRequestSilencingLogger:
     """Filter websockets info logs for successful HTTP responses."""
 
@@ -119,18 +122,36 @@ class _StaticRequestSilencingLogger:
 
         return None
 
-    def info(self, message: str, *args, **kwargs):
-        if message.startswith("connection rejected"):
-            status_value: Optional[int] = None
-            if args:
-                candidate = args[0]
-                status_value = self._coerce_status_code(candidate)
-            elif "200 OK" in message:
-                status_value = http.HTTPStatus.OK.value
+    def _should_silence(self, level: int, message: Any, args, kwargs) -> bool:
+        if level != logging.INFO:
+            return False
+        if not isinstance(message, str):
+            return False
+        if not message.startswith("connection rejected"):
+            return False
 
-            if status_value == http.HTTPStatus.OK.value:
-                return
-        self._base_logger.info(message, *args, **kwargs)
+        status_value: Optional[int] = None
+        if args:
+            candidate = args[0]
+            status_value = self._coerce_status_code(candidate)
+        if status_value is None:
+            for key in ("status", "code", "status_code"):
+                if key in kwargs:
+                    status_value = self._coerce_status_code(kwargs[key])
+                    if status_value is not None:
+                        break
+        if status_value is None and isinstance(message, str) and "200 OK" in message:
+            status_value = http.HTTPStatus.OK.value
+
+        return status_value == http.HTTPStatus.OK.value
+
+    def log(self, level: int, message, *args, **kwargs):
+        if self._should_silence(level, message, args, kwargs):
+            return
+        self._base_logger.log(level, message, *args, **kwargs)
+
+    def info(self, message: str, *args, **kwargs):
+        self.log(logging.INFO, message, *args, **kwargs)
 
     def __getattr__(self, name):  # pragma: no cover - passthrough helper
         return getattr(self._base_logger, name)
@@ -329,6 +350,13 @@ class DetectionBroadcaster:
         upgrade_header = self._get_header_value(request_headers, "Upgrade")
         if "websocket" in upgrade_header.lower():
             return None
+
+        full_path = request_path or "/"
+        if query_string:
+            full_path = f"{full_path}?{query_string}"
+        HTTP_REQUEST_LOGGER.info(
+            "Handled websocket_server HTTP request: %s", full_path
+        )
 
         recordings_response = self._handle_recordings_request(request_path, query_string)
         if recordings_response is not None:
