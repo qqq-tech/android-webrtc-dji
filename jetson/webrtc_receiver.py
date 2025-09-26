@@ -12,8 +12,13 @@ from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 from aiortc.contrib.signaling import BYE
 from aiortc.mediastreams import MediaStreamError
+import av
 from av import VideoFrame
-from av import AVError
+
+if hasattr(av, "AVError"):
+    AVError = av.AVError
+else:  # pragma: no cover - compatibility shim for newer PyAV
+    from av.error import AVError  # type: ignore[attr-defined]
 import websockets
 from websockets.exceptions import ConnectionClosed
 
