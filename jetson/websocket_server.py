@@ -12,6 +12,7 @@ import logging
 import mimetypes
 import os
 import signal
+import ssl
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from collections.abc import Iterable, Mapping
@@ -95,13 +96,15 @@ class DetectionBroadcaster:
         path: str = "/detections",
         static_dir: Optional[Union[str, Path]] = None,
         recordings_dir: Optional[Union[str, Path]] = None,
+        ssl_context: Optional[ssl.SSLContext] = None,
     ):
         self._host = host
         self._port = port
         self._path = path
         self._clients: Set[WebSocketServerProtocol] = set()
-        self._server: Optional[Any] = None
+        self._servers: list[tuple[Any, str, int, Optional[ssl.SSLContext]]] = []
         self._recordings_mount_path = "/recordings"
+        self._ssl_context = ssl_context
         if static_dir is None:
             default_static = Path(__file__).resolve().parents[1] / "browser"
             self._static_dir = default_static if default_static.exists() else None
@@ -109,9 +112,27 @@ class DetectionBroadcaster:
             self._static_dir = Path(static_dir).resolve()
         self._recordings_dir = self._resolve_recordings_dir(recordings_dir)
 
-    async def start(self) -> None:
-        if self._server is not None:
+    async def start(
+        self,
+        listeners: Optional[Iterable[tuple[str, int, Optional[ssl.SSLContext]]]] = None,
+    ) -> None:
+        if self._servers:
             return
+        listener_specs: list[tuple[str, int, Optional[ssl.SSLContext]]]
+        if listeners is None:
+            listener_specs = [(self._host, self._port, self._ssl_context)]
+        else:
+            listener_specs = list(listeners)
+        if not listener_specs:
+            raise ValueError("At least one listener must be specified")
+
+        seen_bindings: Set[tuple[str, int]] = set()
+        for host, port, _ in listener_specs:
+            binding = (host, port)
+            if binding in seen_bindings:
+                raise ValueError(f"Duplicate listener binding requested for {host}:{port}")
+            seen_bindings.add(binding)
+
         base_logger = logging.getLogger("websockets.server")
         try:
             websockets_server_module = importlib.import_module("websockets.server")
@@ -120,20 +141,34 @@ class DetectionBroadcaster:
         else:
             base_logger = getattr(websockets_server_module, "logger", base_logger)
         websocket_logger = _StaticRequestSilencingLogger(base_logger)
-        self._server = await websockets.serve(
-            self._handler,
-            self._host,
-            self._port,
-            process_request=self._process_http_request,
-            logger=websocket_logger,
-        )
+        servers: list[tuple[Any, str, int, Optional[ssl.SSLContext]]] = []
+        for host, port, ssl_ctx in listener_specs:
+            server = await websockets.serve(
+                self._handler,
+                host,
+                port,
+                process_request=self._process_http_request,
+                logger=websocket_logger,
+                ssl=ssl_ctx,
+            )
+            servers.append((server, host, port, ssl_ctx))
+
+        self._servers = servers
 
     async def stop(self) -> None:
-        if self._server is None:
+        if not self._servers:
             return
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
+        for server, *_ in self._servers:
+            server.close()
+        await asyncio.gather(*(server.wait_closed() for server, *_ in self._servers))
+        self._servers.clear()
+
+    @property
+    def active_listeners(self) -> list[tuple[str, int, bool]]:
+        return [
+            (host, port, ssl_ctx is not None)
+            for _server, host, port, ssl_ctx in self._servers
+        ]
 
     async def broadcast(self, payload: Any, sender: Optional[WebSocketServerProtocol] = None) -> None:
         if not self._clients:
@@ -657,17 +692,43 @@ class DetectionBroadcaster:
         raise RuntimeError("Unable to instantiate websockets Response")
 
 
+def _create_ssl_context(
+    certfile: Optional[str], keyfile: Optional[str]
+) -> Optional[ssl.SSLContext]:
+    if not certfile or not keyfile:
+        return None
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+    return context
+
+
 async def _serve_forever(args) -> None:
+    ssl_context = _create_ssl_context(args.certfile, args.keyfile)
     broadcaster = DetectionBroadcaster(
         host=args.host,
         port=args.port,
         path=args.path,
         static_dir=args.static_dir,
         recordings_dir=args.recordings_dir,
+        ssl_context=ssl_context,
     )
 
-    await broadcaster.start()
-    logging.info("Detection broadcaster listening on %s:%s%s", args.host, args.port, args.path)
+    listeners: list[tuple[str, int, Optional[ssl.SSLContext]]] = []
+    listeners.append((args.host, args.port, ssl_context))
+    if args.insecure_port is not None:
+        listeners.append((args.host, args.insecure_port, None))
+
+    await broadcaster.start(listeners=listeners)
+    for host, port, is_secure in broadcaster.active_listeners:
+        scheme = "wss" if is_secure else "ws"
+        logging.info(
+            "Detection broadcaster listening on %s://%s:%s%s",
+            scheme,
+            host,
+            port,
+            args.path,
+        )
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -694,12 +755,28 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--recordings-dir",
         help="Directory containing MP4 recordings exposed via the /recordings mount",
     )
+    parser.add_argument(
+        "--certfile",
+        help="Enable TLS using the provided certificate file (PEM). Requires --keyfile.",
+    )
+    parser.add_argument(
+        "--keyfile",
+        help="TLS private key file (PEM) used alongside --certfile.",
+    )
+    parser.add_argument(
+        "--insecure-port",
+        type=int,
+        help="Optional additional port that serves plain WS alongside TLS.",
+    )
     return parser
 
 
 def main(argv: Optional[list[str]] = None) -> None:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
+
+    if (args.certfile is None) != (args.keyfile is None):
+        parser.error("--certfile and --keyfile must be provided together to enable TLS")
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s")
 
