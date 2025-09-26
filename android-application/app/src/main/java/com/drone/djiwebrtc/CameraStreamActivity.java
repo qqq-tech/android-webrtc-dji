@@ -59,7 +59,6 @@ public class CameraStreamActivity extends AppCompatActivity {
     private static final float LOCATION_UPDATE_NETWORK_MIN_DISTANCE_M = 5.0f;
     private static final String STATE_STREAM_ID = "state_stream_id";
     private static final String STATE_CAMERA_INDEX = "state_camera_index";
-    private static final String STATE_CONTROLS_COLLAPSED = "state_controls_collapsed";
     private static final long TELEMETRY_MIN_INTERVAL_MS = 1000L;
 
     private ActivityCameraStreamBinding binding;
@@ -70,7 +69,6 @@ public class CameraStreamActivity extends AppCompatActivity {
 
     private StreamingState streamingState = StreamingState.IDLE;
     private boolean pendingStartAfterPermission = false;
-    private boolean controlsCollapsed = false;
 
     private PionSignalingClient signalingClient;
     private WebRTCClient webRtcClient;
@@ -140,7 +138,6 @@ public class CameraStreamActivity extends AppCompatActivity {
         initialiseCameraEnumerator();
         initialiseStreamIdField(savedInstanceState);
         updateSignalingSummary();
-        setupControlPanelToggle();
 
         routeOverlayManager = new RouteOverlayManager(binding.pathMap);
         routeOverlayManager.initialize();
@@ -276,7 +273,6 @@ public class CameraStreamActivity extends AppCompatActivity {
             return;
         }
         selectedCameraIndex = savedInstanceState.getInt(STATE_CAMERA_INDEX, selectedCameraIndex);
-        controlsCollapsed = savedInstanceState.getBoolean(STATE_CONTROLS_COLLAPSED, controlsCollapsed);
     }
 
     private void initialiseStreamIdField(@Nullable Bundle savedInstanceState) {
@@ -304,29 +300,6 @@ public class CameraStreamActivity extends AppCompatActivity {
             String label = getString(R.string.camera_stream_signaling_url_label);
             binding.signalingUrlValue.setText(label + ": " + signalingUrl);
         }
-    }
-
-    private void setupControlPanelToggle() {
-        View.OnClickListener toggleListener = v -> {
-            controlsCollapsed = !controlsCollapsed;
-            updateControlPanelVisibility();
-        };
-        binding.controlHeader.setOnClickListener(toggleListener);
-        binding.controlToggleButton.setOnClickListener(toggleListener);
-        updateControlPanelVisibility();
-    }
-
-    private void updateControlPanelVisibility() {
-        if (binding == null) {
-            return;
-        }
-        binding.controlContent.setVisibility(controlsCollapsed ? View.GONE : View.VISIBLE);
-        binding.controlToggleButton.setImageResource(
-                controlsCollapsed ? R.drawable.ic_expand_more : R.drawable.ic_expand_less);
-        binding.controlToggleButton.setContentDescription(getString(
-                controlsCollapsed
-                        ? R.string.camera_stream_control_expand
-                        : R.string.camera_stream_control_collapse));
     }
 
     private void setSelectedCamera(int index, String displayLabel) {
@@ -566,7 +539,6 @@ public class CameraStreamActivity extends AppCompatActivity {
         binding.cameraSelectorLayout.setEnabled(idle && hasCamera);
         binding.cameraSelector.setEnabled(idle && hasCamera);
         binding.connectionProgress.setVisibility(streamingState == StreamingState.CONNECTING ? View.VISIBLE : View.GONE);
-        updateControlPanelVisibility();
     }
 
     private void resetTraveledPath() {
@@ -792,7 +764,6 @@ public class CameraStreamActivity extends AppCompatActivity {
         super.onSaveInstanceState(outState);
         outState.putString(STATE_STREAM_ID, getStreamIdInput());
         outState.putInt(STATE_CAMERA_INDEX, selectedCameraIndex);
-        outState.putBoolean(STATE_CONTROLS_COLLAPSED, controlsCollapsed);
     }
 
     @Override

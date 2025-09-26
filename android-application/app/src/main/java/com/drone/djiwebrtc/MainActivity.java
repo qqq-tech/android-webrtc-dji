@@ -18,6 +18,7 @@ import android.view.View;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.ActionBarDrawerToggle;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -331,6 +332,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initializeSettingsDrawer() {
+        ActionBarDrawerToggle toggle = new ActionBarDrawerToggle(
+                this,
+                binding.drawerLayout,
+                binding.toolbar,
+                R.string.streaming_drawer_open,
+                R.string.streaming_drawer_close);
+        binding.drawerLayout.addDrawerListener(toggle);
+        toggle.syncState();
+
         binding.settingsNavigationView.setNavigationItemSelectedListener(item -> {
             int itemId = item.getItemId();
             if (itemId == R.id.menu_open_mobile_stream) {
@@ -416,6 +426,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void handleStreamingAction() {
+        binding.drawerLayout.closeDrawer(GravityCompat.START);
         if (selectedStreamSource == StreamSource.MOBILE) {
             Intent intent = new Intent(this, CameraStreamActivity.class);
             startActivity(intent);
