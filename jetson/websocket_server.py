@@ -480,8 +480,6 @@ class DetectionBroadcaster:
             for file_path in files:
                 if not file_path.is_file():
                     continue
-                if file_path.suffix.lower() != ".mp4":
-                    continue
                 try:
                     stat_result = file_path.stat()
                 except FileNotFoundError:
