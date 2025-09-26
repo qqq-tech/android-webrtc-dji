@@ -17,6 +17,68 @@ from websocket_server import DetectionBroadcaster
 from yolo_processor import YoloProcessor
 
 
+class WebSocketDetectionPublisher:
+    """Pushes detection payloads to an external WebSocket broadcaster."""
+
+    def __init__(self, url: str, reconnect_delay: float = 2.0) -> None:
+        self._url = url
+        self._reconnect_delay = reconnect_delay
+        self._connection: Optional[websockets.WebSocketClientProtocol] = None
+        self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        await self._ensure_connection()
+
+    async def stop(self) -> None:
+        async with self._lock:
+            if self._connection is not None:
+                await self._connection.close()
+                self._connection = None
+
+    async def broadcast(self, payload: dict) -> None:
+        try:
+            message = json.dumps(payload)
+        except TypeError:
+            logging.exception("Failed to encode detection payload")
+            return
+
+        for attempt in range(2):
+            websocket = await self._ensure_connection()
+            if websocket is None:
+                await asyncio.sleep(self._reconnect_delay)
+                continue
+            try:
+                await websocket.send(message)
+                return
+            except Exception:
+                logging.warning("Overlay WebSocket send failed, resetting connection")
+                await self._reset_connection()
+
+        logging.error("Dropping detection payload after connection failures")
+
+    async def _ensure_connection(self) -> Optional[websockets.WebSocketClientProtocol]:
+        async with self._lock:
+            if self._connection is not None and not self._connection.closed:
+                return self._connection
+            try:
+                self._connection = await websockets.connect(self._url, max_queue=None)
+                logging.info("Connected to overlay WebSocket %s", self._url)
+            except Exception:
+                logging.exception("Failed to connect to overlay WebSocket %s", self._url)
+                self._connection = None
+            return self._connection
+
+    async def _reset_connection(self) -> None:
+        async with self._lock:
+            if self._connection is not None:
+                try:
+                    await self._connection.close()
+                except Exception:
+                    logging.debug("Error while closing overlay WebSocket", exc_info=True)
+                finally:
+                    self._connection = None
+
+
 class WebRTCYOLOPipeline:
     def __init__(
         self,
@@ -26,6 +88,7 @@ class WebRTCYOLOPipeline:
         signaling_url: Optional[str] = None,
         detection_host: str = "0.0.0.0",
         detection_port: int = 8765,
+        overlay_ws: Optional[str] = None,
         model_path: str = "yolov8n.pt",
         confidence_threshold: float = 0.25,
         recordings_dir: Optional[str] = None,
@@ -39,17 +102,28 @@ class WebRTCYOLOPipeline:
         )
         self._pc = RTCPeerConnection()
         self._yolo = YoloProcessor(model_path=model_path, confidence_threshold=confidence_threshold)
-        self._broadcaster = DetectionBroadcaster(
-            host=detection_host,
-            port=detection_port,
-            recordings_dir=recordings_dir,
-        )
+        self._sinks = []
+        self._overlay_client: Optional[WebSocketDetectionPublisher] = None
+        self._broadcaster: Optional[DetectionBroadcaster] = None
+
+        if overlay_ws:
+            self._overlay_client = WebSocketDetectionPublisher(overlay_ws)
+            self._sinks.append(self._overlay_client)
+        else:
+            self._broadcaster = DetectionBroadcaster(
+                host=detection_host,
+                port=detection_port,
+                recordings_dir=recordings_dir,
+            )
+            self._sinks.append(self._broadcaster)
+
         self._video_task: Optional[asyncio.Task] = None
         self._signaling: Optional[websockets.WebSocketClientProtocol] = None
 
     async def run(self) -> None:
         logging.info("Connecting to signaling server %s", self._signaling_url)
-        await self._broadcaster.start()
+        for sink in self._sinks:
+            await sink.start()
 
         async with websockets.connect(self._signaling_url) as websocket:
             self._signaling = websocket
@@ -141,7 +215,7 @@ class WebRTCYOLOPipeline:
                 frame: VideoFrame = await track.recv()
                 image = frame.to_ndarray(format="bgr24")
                 result = self._yolo.process(image)
-                await self._broadcaster.broadcast(result)
+                await asyncio.gather(*(sink.broadcast(result) for sink in self._sinks))
         except asyncio.CancelledError:
             logging.info("Video processing task cancelled")
         except Exception:  # pragma: no cover - best effort logging
@@ -154,7 +228,11 @@ class WebRTCYOLOPipeline:
                 await self._video_task
             self._video_task = None
         await self._pc.close()
-        await self._broadcaster.stop()
+        for sink in self._sinks:
+            try:
+                await sink.stop()
+            except Exception:
+                logging.exception("Failed to stop detection sink")
 
     @staticmethod
     def _build_signaling_url(
@@ -194,6 +272,10 @@ async def main() -> None:
     )
     parser.add_argument("--detection-host", default="0.0.0.0")
     parser.add_argument("--detection-port", type=int, default=8765)
+    parser.add_argument(
+        "--overlay-ws",
+        help="WebSocket URL of the detection broadcaster (overrides --detection-host/--detection-port)",
+    )
     parser.add_argument("--model", default="yolov8n.pt")
     parser.add_argument("--confidence", type=float, default=0.25)
     parser.add_argument(
@@ -212,6 +294,7 @@ async def main() -> None:
         signaling_url=args.signaling_url,
         detection_host=args.detection_host,
         detection_port=args.detection_port,
+        overlay_ws=args.overlay_ws,
         model_path=args.model,
         confidence_threshold=args.confidence,
         recordings_dir=args.recordings_dir,
