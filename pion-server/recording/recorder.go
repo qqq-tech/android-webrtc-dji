@@ -27,6 +27,11 @@ const (
 	defaultTimescale = 90000
 )
 
+type Recorder interface {
+	Close()
+	Push(packet *rtp.Packet)
+}
+
 type StreamRecorder struct {
 	streamID   string
 	clockRate  uint32
@@ -57,6 +62,8 @@ func NewStreamRecorder(streamID string, track *webrtc.TrackRemote) *StreamRecord
 	recorder.initFromSDP(track.Codec().SDPFmtpLine)
 	return recorder
 }
+
+var _ Recorder = (*StreamRecorder)(nil)
 
 func (r *StreamRecorder) Close() {
 	r.mu.Lock()
