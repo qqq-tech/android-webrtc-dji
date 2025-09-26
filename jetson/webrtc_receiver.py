@@ -19,6 +19,41 @@ from websocket_server import DetectionBroadcaster
 from yolo_processor import YoloProcessor
 
 
+def _patch_aioice_transaction_timeout() -> None:
+    """Work around aioice TransactionTimeout InvalidStateError on Python 3.13."""
+
+    try:  # pragma: no cover - optional dependency guard
+        from aioice import stun
+    except Exception:  # pragma: no cover - only triggered when aioice missing
+        return
+
+    original_retry = getattr(stun.Transaction, "_Transaction__retry", None)
+    if original_retry is None:
+        return
+
+    if getattr(original_retry, "__patched_safe__", False):
+        return
+
+    def _safe_retry(self, _orig=original_retry, _timeout_exc=stun.TransactionTimeout):
+        tries = getattr(self, "_Transaction__tries", 0)
+        tries_max = getattr(self, "_Transaction__tries_max", 0)
+        if tries_max != 3:
+            tries_max = 3
+            setattr(self, "_Transaction__tries_max", 3)
+        if tries >= tries_max:
+            future = getattr(self, "_Transaction__future", None)
+            if future is not None and not future.done():
+                future.set_exception(_timeout_exc())
+            return
+        return _orig(self)
+
+    setattr(_safe_retry, "__patched_safe__", True)
+    setattr(stun.Transaction, "_Transaction__retry", _safe_retry)
+
+
+_patch_aioice_transaction_timeout()
+
+
 class WebSocketDetectionPublisher:
     """Pushes detection payloads to an external WebSocket broadcaster."""
 
