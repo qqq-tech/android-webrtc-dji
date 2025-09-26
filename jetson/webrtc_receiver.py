@@ -410,14 +410,27 @@ class WebRTCYOLOPipeline:
         logging.info("Starting YOLO video loop")
         loop = asyncio.get_running_loop()
         last_analysis = 0.0
+        timeout_count = 0
+        max_timeouts = 2
         try:
             while True:
                 try:
                     frame: VideoFrame = await asyncio.wait_for(
                         track.recv(), timeout=RECV_TIMEOUT
                     )
+                    timeout_count = 0
                 except asyncio.TimeoutError:
-                    logging.warning("Timed out waiting for video frame")
+                    timeout_count += 1
+                    logging.warning(
+                        "Timed out waiting for video frame (%s/%s)",
+                        timeout_count,
+                        max_timeouts,
+                    )
+                    if timeout_count >= max_timeouts:
+                        logging.warning(
+                            "Reached maximum video frame timeouts; restarting connection"
+                        )
+                        raise MediaStreamError("video frame timeouts exceeded")
                     continue
                 now = loop.time()
                 if now - last_analysis < ANALYSIS_INTERVAL:
@@ -436,6 +449,7 @@ class WebRTCYOLOPipeline:
             logging.info("Video processing task cancelled")
         except MediaStreamError:
             logging.warning("Video stream interrupted; waiting for reconnection")
+            raise
         except Exception:  # pragma: no cover - best effort logging
             logging.exception("Video processing failed")
 
