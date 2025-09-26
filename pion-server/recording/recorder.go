@@ -2,6 +2,7 @@ package recording
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,6 +54,7 @@ func NewStreamRecorder(streamID string, track *webrtc.TrackRemote) *StreamRecord
 		clockRate: clockRate,
 	}
 	recorder.builder = samplebuilder.New(512, &codecs.H264Packet{}, clockRate)
+	recorder.initFromSDP(track.Codec().SDPFmtpLine)
 	return recorder
 }
 
@@ -200,6 +203,24 @@ func (r *StreamRecorder) handlePPS(nalu []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pps = append([]byte(nil), nalu...)
+}
+
+func (r *StreamRecorder) initFromSDP(fmtp string) {
+	if fmtp == "" {
+		return
+	}
+	nalus := parseParameterSetsFromSDP(fmtp)
+	for _, nalu := range nalus {
+		if len(nalu) == 0 {
+			continue
+		}
+		switch nalu[0] & 0x1F {
+		case 7:
+			r.handleSPS(nalu)
+		case 8:
+			r.handlePPS(nalu)
+		}
+	}
 }
 
 func (r *StreamRecorder) convertDuration(d time.Duration) uint32 {
@@ -888,6 +909,32 @@ func parseSPS(data []byte) (width, height uint16, profile, constraint, level uin
 	width = uint16(mbsWidth*16 - cropUnitX*(cropLeft+cropRight))
 	height = uint16(mbsHeight*16 - cropUnitY*(cropTop+cropBottom))
 	return
+}
+
+func parseParameterSetsFromSDP(fmtp string) [][]byte {
+	fields := strings.Split(fmtp, ";")
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if !strings.HasPrefix(field, "sprop-parameter-sets=") {
+			continue
+		}
+		raw := strings.TrimPrefix(field, "sprop-parameter-sets=")
+		parts := strings.Split(raw, ",")
+		nalus := make([][]byte, 0, len(parts))
+		for _, part := range parts {
+			data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(part))
+			if err != nil {
+				log.Printf("failed to decode sprop-parameter-sets value: %v", err)
+				continue
+			}
+			if len(data) == 0 {
+				continue
+			}
+			nalus = append(nalus, data)
+		}
+		return nalus
+	}
+	return nil
 }
 
 type bitReader struct {
