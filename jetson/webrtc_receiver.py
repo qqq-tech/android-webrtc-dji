@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 from aiortc.contrib.signaling import BYE
+from aiortc.mediastreams import MediaStreamError
 from av import VideoFrame
 import websockets
 
@@ -133,6 +134,7 @@ class WebRTCYOLOPipeline:
         model_path: str = "yolov8n.pt",
         confidence_threshold: float = 0.25,
         recordings_dir: Optional[str] = None,
+        reconnect_delay: float = 2.0,
     ) -> None:
         self._stream_id = stream_id
         self._signaling_url = self._build_signaling_url(
@@ -141,7 +143,7 @@ class WebRTCYOLOPipeline:
             host=signaling_host,
             port=signaling_port,
         )
-        self._pc = RTCPeerConnection()
+        self._pc: Optional[RTCPeerConnection] = None
         self._yolo = YoloProcessor(model_path=model_path, confidence_threshold=confidence_threshold)
         self._sinks = []
         self._overlay_client: Optional[WebSocketDetectionPublisher] = None
@@ -160,39 +162,41 @@ class WebRTCYOLOPipeline:
 
         self._video_task: Optional[asyncio.Task] = None
         self._signaling: Optional[websockets.WebSocketClientProtocol] = None
+        self._reconnect_delay = reconnect_delay
+        self._closed = False
+        self._restart_requested = False
+        self._sinks_started = False
+        self._sleep_task: Optional[asyncio.Task] = None
 
     async def run(self) -> None:
-        logging.info("Connecting to signaling server %s", self._signaling_url)
-        for sink in self._sinks:
-            await sink.start()
+        if not self._sinks_started:
+            for sink in self._sinks:
+                await sink.start()
+            self._sinks_started = True
 
-        async with websockets.connect(self._signaling_url) as websocket:
-            self._signaling = websocket
+        while not self._closed:
+            try:
+                await self._connect_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logging.exception("WebRTC session failed; attempting to reconnect")
+            finally:
+                await self._cleanup_connection()
 
-            @self._pc.on("icecandidate")
-            async def on_icecandidate(event):
-                candidate = event.candidate
-                if candidate is None:
-                    return
-                payload = {
-                    "type": "ice",
-                    "candidate": candidate.candidate,
-                }
-                if candidate.sdpMid is not None:
-                    payload["sdpMid"] = candidate.sdpMid
-                if candidate.sdpMLineIndex is not None:
-                    payload["sdpMLineIndex"] = candidate.sdpMLineIndex
-                await websocket.send(json.dumps(payload))
+            if self._closed:
+                break
 
-            @self._pc.on("track")
-            async def on_track(track):
-                logging.info("Received remote track kind=%s", track.kind)
-                if track.kind == "video":
-                    if self._video_task is not None:
-                        self._video_task.cancel()
-                    self._video_task = asyncio.create_task(self._consume_video(track))
-
-            await self._signaling_loop()
+            logging.info("Reconnecting in %.1f seconds", self._reconnect_delay)
+            self._sleep_task = asyncio.create_task(asyncio.sleep(self._reconnect_delay))
+            try:
+                await self._sleep_task
+            except asyncio.CancelledError:
+                if self._closed:
+                    break
+                raise
+            finally:
+                self._sleep_task = None
 
     async def _signaling_loop(self) -> None:
         assert self._signaling is not None
@@ -218,6 +222,9 @@ class WebRTCYOLOPipeline:
                     continue
                 sdp_type = message.get("sdpType", "offer")
                 desc = RTCSessionDescription(sdp=sdp, type=sdp_type)
+                if self._pc is None:
+                    logging.warning("Peer connection missing while processing SDP")
+                    continue
                 await self._pc.setRemoteDescription(desc)
                 if desc.type == "offer":
                     answer = await self._pc.createAnswer()
@@ -234,7 +241,10 @@ class WebRTCYOLOPipeline:
             elif msg_type == "ice":
                 candidate_value = message.get("candidate")
                 if not candidate_value:
-                    await self._pc.addIceCandidate(None)
+                    if self._pc is not None:
+                        await self._pc.addIceCandidate(None)
+                    else:
+                        logging.warning("Peer connection missing while clearing ICE candidate")
                     continue
 
                 try:
@@ -259,6 +269,9 @@ class WebRTCYOLOPipeline:
                             message,
                         )
 
+                if self._pc is None:
+                    logging.warning("Peer connection missing while adding ICE candidate")
+                    continue
                 try:
                     await self._pc.addIceCandidate(rtc_candidate)
                 except Exception as exc:
@@ -276,16 +289,122 @@ class WebRTCYOLOPipeline:
                 await asyncio.gather(*(sink.broadcast(result) for sink in self._sinks))
         except asyncio.CancelledError:
             logging.info("Video processing task cancelled")
+        except MediaStreamError:
+            logging.warning("Video stream interrupted; waiting for reconnection")
         except Exception:  # pragma: no cover - best effort logging
             logging.exception("Video processing failed")
 
+    async def _connect_once(self) -> None:
+        logging.info("Connecting to signaling server %s", self._signaling_url)
+        self._restart_requested = False
+        self._pc = RTCPeerConnection()
+        pc = self._pc
+
+        @pc.on("icecandidate")
+        async def on_icecandidate(event):
+            if self._signaling is None:
+                return
+            candidate = event.candidate
+            if candidate is None:
+                return
+            payload = {
+                "type": "ice",
+                "candidate": candidate.candidate,
+            }
+            if candidate.sdpMid is not None:
+                payload["sdpMid"] = candidate.sdpMid
+            if candidate.sdpMLineIndex is not None:
+                payload["sdpMLineIndex"] = candidate.sdpMLineIndex
+            await self._signaling.send(json.dumps(payload))
+
+        @pc.on("track")
+        async def on_track(track):
+            logging.info("Received remote track kind=%s", track.kind)
+            if track.kind == "video":
+                await self._cancel_video_task()
+                self._video_task = asyncio.create_task(self._consume_video(track))
+                self._video_task.add_done_callback(self._on_video_task_done)
+
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            state = pc.connectionState
+            logging.info("Peer connection state changed to %s", state)
+            if state in {"failed", "closed"}:
+                await self._trigger_restart()
+
+        async with websockets.connect(self._signaling_url) as websocket:
+            self._signaling = websocket
+            try:
+                await self._signaling_loop()
+            finally:
+                self._signaling = None
+
+    async def _cleanup_connection(self) -> None:
+        await self._cancel_video_task()
+        if self._pc is not None:
+            try:
+                await self._pc.close()
+            except Exception:
+                logging.debug("Error while closing peer connection", exc_info=True)
+            finally:
+                self._pc = None
+
+    async def _cancel_video_task(self) -> None:
+        if self._video_task is None:
+            return
+        task = self._video_task
+        self._video_task = None
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    def _on_video_task_done(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        if self._closed:
+            return
+        if self._video_task is task:
+            self._video_task = None
+        with contextlib.suppress(asyncio.CancelledError):
+            try:
+                task.result()
+            except MediaStreamError:
+                logging.warning("Video processing task ended due to stream error")
+            except Exception:
+                logging.exception("Video processing task ended with an error")
+            else:
+                logging.warning("Video processing task ended unexpectedly")
+        asyncio.create_task(self._trigger_restart())
+
+    async def _trigger_restart(self) -> None:
+        if self._closed or self._restart_requested:
+            return
+        self._restart_requested = True
+        if self._signaling is not None:
+            try:
+                await self._signaling.close()
+            except Exception:
+                logging.debug("Error while closing signaling connection", exc_info=True)
+
     async def close(self) -> None:
+        self._closed = True
+        if self._sleep_task is not None:
+            self._sleep_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._sleep_task
+            self._sleep_task = None
+        if self._signaling is not None:
+            try:
+                await self._signaling.close()
+            except Exception:
+                logging.debug("Error while closing signaling connection", exc_info=True)
         if self._video_task is not None:
             self._video_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._video_task
             self._video_task = None
-        await self._pc.close()
+        await self._cleanup_connection()
         for sink in self._sinks:
             try:
                 await sink.stop()
