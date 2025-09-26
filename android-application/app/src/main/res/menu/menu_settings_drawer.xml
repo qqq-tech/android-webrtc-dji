@@ -2,10 +2,6 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <group android:checkableBehavior="none">
         <item
-            android:id="@+id/menu_configure_pion"
-            android:icon="@drawable/ic_settings"
-            android:title="@string/menu_configure_pion" />
-        <item
             android:id="@+id/menu_open_mobile_stream"
             android:icon="@drawable/ic_videocam"
             android:title="@string/menu_open_mobile_stream" />

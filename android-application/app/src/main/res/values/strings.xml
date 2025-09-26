@@ -49,4 +49,16 @@
     <string name="camera_stream_path_status">%1$d개 위치 기록, 총 %2$s 이동</string>
     <string name="camera_stream_distance_meters">%.0f m</string>
     <string name="camera_stream_distance_kilometers">%.2f km</string>
+    <string name="streaming_options_title">스트리밍 제어</string>
+    <string name="streaming_options_description">실시간 영상 공유와 텔레메트리 전송 옵션을 선택하세요.</string>
+    <string name="streaming_source_drone">드론 카메라</string>
+    <string name="streaming_source_mobile">모바일 카메라</string>
+    <string name="streaming_option_include_gps">GPS 데이터 전송</string>
+    <string name="streaming_option_include_audio">마이크 오디오 포함</string>
+    <string name="streaming_summary_format">%1$s • GPS %2$s • 오디오 %3$s</string>
+    <string name="streaming_option_enabled">사용</string>
+    <string name="streaming_option_disabled">미사용</string>
+    <string name="streaming_action_drone">드론 스트림 관리</string>
+    <string name="streaming_action_mobile">모바일 스트림 열기</string>
+    <string name="streaming_action_drone_message">드론 스트리밍은 자동으로 관리됩니다. 필요한 경우 DJI 연결 상태를 확인하세요.</string>
 </resources>
