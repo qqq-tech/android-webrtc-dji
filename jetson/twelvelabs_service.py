@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-from scripts.twelvelabs_client import (
+from .twelvelabs_client import (
     DEFAULT_ANALYSIS_PATH,
     DEFAULT_BASE_URL,
     DEFAULT_EMBEDDING_TASK_PATH,

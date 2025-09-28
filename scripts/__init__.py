@@ -1,5 +1,3 @@
-"""Helper utilities for interacting with the Twelve Labs APIs."""
+"""Helper utilities for maintaining the development stack."""
 
-__all__ = [
-    "twelvelabs_client",
-]
+__all__ = []

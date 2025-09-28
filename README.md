@@ -170,10 +170,10 @@ The helper keeps track of the spawned processes under `.run/webrtc_stack.pids`. 
 
 ### Twelve Labs video analysis client
 
-Use the helper in [`scripts/twelvelabs_client.py`](scripts/twelvelabs_client.py) to upload videos, create embeddings, and run Twelve Labs' analysis API from the command line. The tool first posts the video to the `/v1.3/embed/tasks` endpoint, waits until it is completed, and then sends the analysis prompt using the returned `video_id`.
+Use the helper in [`jetson/twelvelabs_client.py`](jetson/twelvelabs_client.py) to upload videos, create embeddings, and run Twelve Labs' analysis API from the command line. The tool first posts the video to the `/v1.3/embed/tasks` endpoint, waits until it is completed, and then sends the analysis prompt using the returned `video_id`.
 
 ```bash
-python scripts/twelvelabs_client.py \
+python -m jetson.twelvelabs_client \
     --api-key "$TWELVE_LABS_API_KEY" \
     --model-name Marengo-retrieval-2.7 \
     --video-file /path/to/video.mp4 \
