@@ -145,9 +145,28 @@ Follow the component-specific notes below to compile and launch each part of the
        --signaling-url ws://<RELAY_HOST>:8080/ws \
        --overlay-ws ws://<JETSON_HOST>:8765 \
        --model yolov8n.pt
-   ```
-   The receiver relays detection metadata that matches the agreed JSON format, enabling the dashboard to render overlays in real time. With the bundled static file handler you can load the dashboard directly from the broadcaster at `http://<JETSON_HOST>:8765/dashboard.html?streamId=<STREAM_ID>&signalingHost=<RELAY_HOST>`, which already reflects the latest compatibility fixes for serving HTML alongside WebSocket upgrades.
-   If you prefer to specify the relay host/port separately, continue using `--signaling-host` and `--signaling-port` (provide them without the `ws://` prefix).
+  ```
+  The receiver relays detection metadata that matches the agreed JSON format, enabling the dashboard to render overlays in real time. With the bundled static file handler you can load the dashboard directly from the broadcaster at `http://<JETSON_HOST>:8765/dashboard.html?streamId=<STREAM_ID>&signalingHost=<RELAY_HOST>`, which already reflects the latest compatibility fixes for serving HTML alongside WebSocket upgrades.
+  If you prefer to specify the relay host/port separately, continue using `--signaling-host` and `--signaling-port` (provide them without the `ws://` prefix).
+
+   > ℹ️ **Note** – `jetson/webrtc_receiver.py`는 브라우저 화면을 렌더링하지 않습니다. 이 모듈은 Pion 릴레이에서 비디오를 구독하고 YOLO 추론 결과를 `websocket_server.py`로 전달해 줄 뿐이며, 대시보드 HTML은 오직 WebSocket 브로드캐스터가 제공하는 정적 자산에 의해 표시됩니다.
+
+#### Stack automation script
+
+When you want to start or stop the relay, Jetson broadcaster, and WebRTC receiver together, use [`scripts/manage_stack.sh`](scripts/manage_stack.sh):
+
+```bash
+STREAM_ID=demo \
+SIGNALING_URL=ws://127.0.0.1:8080/ws \
+OVERLAY_WS=ws://127.0.0.1:8765 \
+MODEL_PATH=yolov8n.pt \
+PION_ADDR=:8080 \
+WS_PORT=8765 \
+WS_INSECURE_PORT=8081 \
+./scripts/manage_stack.sh start
+```
+
+The helper keeps track of the spawned processes under `.run/webrtc_stack.pids`. Stop them (from any shell) with `./scripts/manage_stack.sh stop`, or check their status via `./scripts/manage_stack.sh status`. Supply `PION_HTTPS_ADDR`, `PION_TLS_CERT`, `PION_TLS_KEY`, `WS_CERTFILE`, and `WS_KEYFILE` when you need dual HTTP/HTTPS listeners, and override `GO_BIN`/`PYTHON_BIN` if your toolchains live in non-default paths.
 
 ### Twelve Labs video analysis client
 
@@ -202,6 +221,43 @@ When the environment is configured the “Analyze” button in `browser/dashboar
    The server exposes WebSocket endpoints for publishers/subscribers, forwarding SDP/ICE JSON, RTP packets, and propagating structured error responses.
    * To enable HTTPS alongside HTTP, supply both `--tls-cert`/`--tls-key` and an additional bind using `--https-addr :8443`. The relay continues serving insecure WebSockets on `--addr` while the secure listener answers on the TLS port.
    * For quick testing you can generate a self-signed certificate with `scripts/generate-self-signed-cert.sh`. The script writes `certs/server.crt` and `certs/server.key`, which map to the relay flags above and the Jetson WebSocket broadcaster (`--certfile`/`--keyfile`).
+
+#### Example: Run HTTP and HTTPS side-by-side
+
+The following terminal sessions demonstrate how to expose both insecure and TLS-secured endpoints for the Pion relay and the browser dashboard at the same time.
+
+1. **Generate certificates (optional)** – if you do not already have a trusted certificate/key pair, create one for local testing:
+   ```bash
+   ./scripts/generate-self-signed-cert.sh
+   ```
+   This command produces `certs/server.crt` and `certs/server.key` which will be reused in the next steps.
+2. **Start the Pion relay with dual listeners** – run the relay with both `--addr` (HTTP/WebSocket) and `--https-addr` (HTTPS/WSS):
+   ```bash
+   cd pion-server
+   go run main.go \
+       --addr :8080 \
+       --https-addr :8443 \
+       --tls-cert ../certs/server.crt \
+       --tls-key ../certs/server.key
+   ```
+   Clients that need plain WebSockets can continue to use `ws://<host>:8080/ws`, while browsers that require secure contexts (for example when loaded from an `https://` origin) connect via `wss://<host>:8443/ws`.
+3. **Serve the dashboard with the bundled Python server** – the detection broadcaster in [`jetson/websocket_server.py`](jetson/websocket_server.py) already exposes both the WebSocket API and static assets. Launch it once with TLS enabled and request an additional insecure listener for backwards compatibility:
+   ```bash
+   cd jetson
+   python websocket_server.py \
+       --host 0.0.0.0 \
+       --port 8765 \
+       --certfile ../certs/server.crt \
+       --keyfile ../certs/server.key \
+       --insecure-port 8081 \
+       --static-dir ../browser
+   ```
+   This single process now serves:
+   * `https://<host>:8765/dashboard.html` and `wss://<host>:8765/detections` with the provided certificate.
+   * `http://<host>:8081/dashboard.html` and `ws://<host>:8081/detections` for devices that still need plain HTTP.
+   Adjust `--path` when you want to expose the WebSocket on a custom route, and point `--recordings-dir` to a folder that should be downloadable via `/recordings`.
+
+> 💡 **Tip (KOR)** – 위 순서를 따르면 Pion 릴레이와 대시보드를 `http://`와 `https://` 모드로 동시에 노출할 수 있습니다. HTTPS로 접속해야 하는 브라우저(예: 보안 맥락이 필요한 모바일 기기)와 기존 HTTP 장비를 한 번에 테스트할 때 유용합니다.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
