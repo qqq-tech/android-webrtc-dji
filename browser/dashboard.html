@@ -370,6 +370,47 @@
       color: #e2e8f0;
     }
 
+    .analysis-result-block {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid rgba(148, 163, 184, 0.18);
+    }
+
+    .analysis-result-block h4 {
+      margin: 0;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #cbd5f5;
+    }
+
+    .analysis-output-body {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      background: rgba(15, 23, 42, 0.55);
+      padding: 0.75rem;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.15);
+      color: #e2e8f0;
+      font-size: 0.9rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .analysis-output-body pre {
+      margin: 0;
+      padding: 0.5rem;
+      border-radius: 6px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      overflow: auto;
+      font-family: 'Fira Code', 'SFMono-Regular', Consolas, monospace;
+      font-size: 0.85rem;
+    }
+
     .analysis-meta-grid {
       display: grid;
       grid-template-columns: minmax(120px, 0.4fr) minmax(180px, 1fr);
@@ -1052,7 +1093,7 @@
               <p class="analysis-meta" id="analysisRecordingMeta">Choose a recording on the left to see its details.</p>
             </div>
             <div class="analysis-output" id="analysisDetails">
-              <p>The analysis workspace will display AI insights once the integration details are configured.</p>
+              <p>Select a recording and choose “Analyze” to run the Twelve Labs summary when the server integration is configured.</p>
             </div>
           </section>
         </div>
