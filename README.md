@@ -149,6 +149,43 @@ Follow the component-specific notes below to compile and launch each part of the
    The receiver relays detection metadata that matches the agreed JSON format, enabling the dashboard to render overlays in real time. With the bundled static file handler you can load the dashboard directly from the broadcaster at `http://<JETSON_HOST>:8765/dashboard.html?streamId=<STREAM_ID>&signalingHost=<RELAY_HOST>`, which already reflects the latest compatibility fixes for serving HTML alongside WebSocket upgrades.
    If you prefer to specify the relay host/port separately, continue using `--signaling-host` and `--signaling-port` (provide them without the `ws://` prefix).
 
+### Twelve Labs video analysis client
+
+Use the helper in [`scripts/twelvelabs_client.py`](scripts/twelvelabs_client.py) to upload videos, create embeddings, and run Twelve Labs' analysis API from the command line. The tool first posts the video to the `/v1.3/embed/tasks` endpoint, waits until it is completed, and then sends the analysis prompt using the returned `video_id`.
+
+```bash
+python scripts/twelvelabs_client.py \
+    --api-key "$TWELVE_LABS_API_KEY" \
+    --model-name Marengo-retrieval-2.7 \
+    --video-file /path/to/video.mp4 \
+    --prompt "주요 이벤트를 요약해줘" \
+    --temperature 0.2 \
+    --response-format '{"type":"json_schema","json_schema":{"type":"object","properties":{"summary":{"type":"string"}}}}'
+```
+
+You can replace `--video-file` with `--video-url` when the source is already hosted at a publicly accessible address. Flags such as `--video-embedding-scope video`, `--video-clip-length 10`, `--temperature 0.4`, `--analysis-stream`, `--max-tokens 1500`, and `--poll-interval 5` help tune the request. When uploading files the helper gzips the multipart body to match Twelve Labs' reference implementation; opt out with `--disable-upload-gzip` if you need to send raw bytes. The script prints the final embedding/analysis payload to stdout as JSON and falls back to `--analysis-video-id` when the video identifier cannot be derived automatically. To load complex response formats from disk, point `--response-format` to a JSON file instead of inlining the payload.
+
+By default the helper targets the v1.3 embedding task endpoint described at [Create video embedding task](https://docs.twelvelabs.io/v1.3/api-reference/video-embeddings/create-video-embedding-task). If your account is still pinned to a different API revision supply `--embedding-path` (and optionally `--analysis-path`) to override the paths while keeping the rest of the workflow intact. Install the Python dependency with `pip install requests` before running the script.
+
+### Dashboard analysis workflow
+
+The detection broadcaster (`jetson/websocket_server.py`) now exposes a REST endpoint at `/analysis` that reuses the helper library to upload recordings, wait for embeddings, and persist Twelve Labs analysis responses. Results are cached in `recordings/twelvelabs_analysis.json` so a given recording is analysed only once; subsequent requests return the stored payload immediately.
+
+Configure the integration with the following environment variables before launching the Jetson server:
+
+| Variable | Description |
+| --- | --- |
+| `TWELVE_LABS_API_KEY` | **Required.** Twelve Labs API key used for all requests. |
+| `TWELVE_LABS_MODEL_NAME` | Embedding model name (defaults to `Marengo-retrieval-2.7`). |
+| `TWELVE_LABS_DEFAULT_PROMPT` | Prompt sent when the dashboard does not override it. |
+| `TWELVE_LABS_TEMPERATURE` | Optional temperature for the analysis request. |
+| `TWELVE_LABS_MAX_TOKENS` | Optional response token budget. |
+| `TWELVE_LABS_EMBED_SCOPE` | Comma-separated embedding scopes (for example `clip,video`). |
+| `TWELVE_LABS_DISABLE_UPLOAD_GZIP` | Set to `1` to upload raw bytes instead of gzipping the multipart body. |
+| `TWELVE_LABS_CACHE_PATH` | Override the cache file location (defaults to `recordings/twelvelabs_analysis.json`). |
+
+When the environment is configured the “Analyze” button in `browser/dashboard.html` invokes `/analysis?action=start` with the selected recording identifiers. Existing results are surfaced without re-running the pipeline, and the UI reports the stored completion time alongside the generated summary.
+
 ### Pion relay server
 
 1. **Install Go toolchain** – Go 1.20+ is recommended.

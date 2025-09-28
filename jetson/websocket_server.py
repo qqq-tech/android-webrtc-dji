@@ -18,9 +18,24 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Set, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Union
 
 import websockets
+
+try:  # Optional Twelve Labs integration
+    from twelvelabs_service import (
+        AnalysisServiceError,
+        RecordingNotFoundError,
+        TwelveLabsAnalysisService,
+        TwelveLabsError,
+        DEFAULT_ANALYSIS_PATH as TL_DEFAULT_ANALYSIS_PATH,
+        DEFAULT_BASE_URL as TL_DEFAULT_BASE_URL,
+        DEFAULT_EMBEDDING_TASK_PATH as TL_DEFAULT_EMBEDDING_PATH,
+    )
+except Exception:  # pragma: no cover - integration is optional at runtime
+    TwelveLabsAnalysisService = None  # type: ignore[assignment]
+    AnalysisServiceError = RecordingNotFoundError = TwelveLabsError = None  # type: ignore[assignment]
+    TL_DEFAULT_BASE_URL = TL_DEFAULT_EMBEDDING_PATH = TL_DEFAULT_ANALYSIS_PATH = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:  # pragma: no cover - import only for static type checking
     from websockets.server import WebSocketServerProtocol
@@ -69,6 +84,46 @@ for _candidate in ("reason_phrase", "reason"):
 
 
 HTTP_REQUEST_LOGGER = logging.getLogger("websocket_server.http")
+
+
+def _parse_bool(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_float_param(params: Mapping[str, list[str]], name: str) -> Optional[float]:
+    values = params.get(name) if isinstance(params, Mapping) else None
+    if not values:
+        return None
+    for item in values:
+        if item is None:
+            continue
+        candidate = str(item).strip()
+        if not candidate:
+            continue
+        try:
+            return float(candidate)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_int_param(params: Mapping[str, list[str]], name: str) -> Optional[int]:
+    values = params.get(name) if isinstance(params, Mapping) else None
+    if not values:
+        return None
+    for item in values:
+        if item is None:
+            continue
+        candidate = str(item).strip()
+        if not candidate:
+            continue
+        try:
+            return int(candidate)
+        except ValueError:
+            continue
+    return None
 
 
 class _StaticRequestSilencingLogger:
@@ -183,6 +238,11 @@ class DetectionBroadcaster:
         else:
             self._static_dir = Path(static_dir).resolve()
         self._recordings_dir = self._resolve_recordings_dir(recordings_dir)
+        self._analysis_service: Optional[TwelveLabsAnalysisService]
+        self._analysis_disabled_reason: Optional[str]
+        self._analysis_service = None
+        self._analysis_disabled_reason = None
+        self._init_analysis_service()
 
     async def start(
         self,
@@ -358,6 +418,10 @@ class DetectionBroadcaster:
             "Handled websocket_server HTTP request: %s", full_path
         )
 
+        analysis_response = await self._handle_analysis_request(request_path, query_string)
+        if analysis_response is not None:
+            return analysis_response
+
         recordings_response = self._handle_recordings_request(request_path, query_string)
         if recordings_response is not None:
             return recordings_response
@@ -423,6 +487,97 @@ class DetectionBroadcaster:
 
         return fallback
 
+    def _init_analysis_service(self) -> None:
+        if TwelveLabsAnalysisService is None:
+            self._analysis_disabled_reason = "integration_unavailable"
+            logging.info("Twelve Labs analysis integration not available")
+            return
+
+        if self._recordings_dir is None or not self._recordings_dir.exists():
+            self._analysis_disabled_reason = "recordings_unavailable"
+            logging.info(
+                "Twelve Labs analysis integration disabled: recordings directory missing"
+            )
+            return
+
+        api_key = os.environ.get("TWELVE_LABS_API_KEY")
+        if not api_key:
+            self._analysis_disabled_reason = "missing_api_key"
+            logging.info(
+                "Twelve Labs analysis integration disabled: TWELVE_LABS_API_KEY not set"
+            )
+            return
+
+        model_name = os.environ.get("TWELVE_LABS_MODEL_NAME", "Marengo-retrieval-2.7")
+        base_url = os.environ.get("TWELVE_LABS_BASE_URL") or TL_DEFAULT_BASE_URL
+        embedding_path = os.environ.get("TWELVE_LABS_EMBEDDING_PATH") or TL_DEFAULT_EMBEDDING_PATH
+        analysis_path = os.environ.get("TWELVE_LABS_ANALYSIS_PATH") or TL_DEFAULT_ANALYSIS_PATH
+        poll_env = os.environ.get("TWELVE_LABS_POLL_INTERVAL")
+        try:
+            poll_interval = int(poll_env) if poll_env and poll_env.strip() else 10
+        except ValueError:
+            poll_interval = 10
+        temperature = None
+        temp_env = os.environ.get("TWELVE_LABS_TEMPERATURE")
+        if temp_env and temp_env.strip():
+            try:
+                temperature = float(temp_env)
+            except ValueError:
+                temperature = None
+        max_tokens = None
+        max_tokens_env = os.environ.get("TWELVE_LABS_MAX_TOKENS")
+        if max_tokens_env and max_tokens_env.strip():
+            try:
+                max_tokens = int(max_tokens_env)
+            except ValueError:
+                max_tokens = None
+        scope_env = os.environ.get("TWELVE_LABS_EMBED_SCOPE", "")
+        scopes = [
+            scope.strip()
+            for scope in scope_env.split(",")
+            if scope and scope.strip()
+        ]
+        disable_gzip = _parse_bool(os.environ.get("TWELVE_LABS_DISABLE_UPLOAD_GZIP"))
+        storage_override = os.environ.get("TWELVE_LABS_CACHE_PATH")
+        if storage_override:
+            storage_path = Path(storage_override).expanduser()
+        else:
+            storage_path = self._recordings_dir / "twelvelabs_analysis.json"
+        default_prompt = os.environ.get(
+            "TWELVE_LABS_DEFAULT_PROMPT",
+            "Summarize the mission footage with notable events and safety notes.",
+        )
+
+        try:
+            client = TwelveLabsClient(
+                api_key=api_key,
+                base_url=base_url or TL_DEFAULT_BASE_URL,
+                embedding_path=embedding_path or TL_DEFAULT_EMBEDDING_PATH,
+                analysis_path=analysis_path or TL_DEFAULT_ANALYSIS_PATH,
+            )
+            self._analysis_service = TwelveLabsAnalysisService(
+                client=client,
+                model_name=model_name,
+                recordings_dir=self._recordings_dir,
+                storage_path=storage_path,
+                default_prompt=default_prompt,
+                poll_interval=poll_interval,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                video_embedding_scope=scopes or None,
+                gzip_upload=not disable_gzip,
+            )
+        except Exception:  # pragma: no cover - best effort logging
+            logging.exception("Failed to initialise Twelve Labs analysis integration")
+            self._analysis_service = None
+            self._analysis_disabled_reason = "initialisation_failed"
+            return
+
+        self._analysis_disabled_reason = None
+        logging.info(
+            "Twelve Labs analysis integration enabled (cache: %s)", storage_path
+        )
+
     def _handle_recordings_request(self, request_path: str, query_string: str):
         mount = self._recordings_mount_path
         if not mount:
@@ -451,6 +606,131 @@ class DetectionBroadcaster:
             return self._serve_recording_file(relative)
 
         return None
+
+    async def _handle_analysis_request(self, request_path: str, query_string: str):
+        if request_path not in {"/analysis", "/analysis/"}:
+            return None
+
+        if self._analysis_service is None:
+            reason = self._analysis_disabled_reason or "analysis_disabled"
+            payload = {
+                "error": reason,
+                "message": "Twelve Labs analysis integration is not configured.",
+            }
+            return self._json_response(
+                payload, status=http.HTTPStatus.SERVICE_UNAVAILABLE
+            )
+
+        try:
+            params = parse_qs(query_string or "", keep_blank_values=False)
+        except Exception:
+            params = {}
+
+        action = (params.get("action") or ["status"])[0].strip().lower() or "status"
+
+        if action in {"list", "all"} or (
+            not params and action in {"status", "get", "cached"}
+        ):
+            records = self._analysis_service.list_cached_records()
+            return self._json_response({"status": "ok", "records": records})
+
+        stream_id = (params.get("streamId") or [""])[0].strip()
+        file_name = (params.get("fileName") or [""])[0].strip()
+        if not stream_id or not file_name:
+            return self._json_response(
+                {
+                    "error": "missing_parameters",
+                    "message": "Both streamId and fileName must be provided.",
+                },
+                status=http.HTTPStatus.BAD_REQUEST,
+            )
+
+        prompt = (params.get("prompt") or [None])[0]
+        prompt_value = prompt.strip() if isinstance(prompt, str) else None
+        temperature = _parse_float_param(params, "temperature")
+        max_tokens = _parse_int_param(params, "maxTokens")
+
+        if action in {"start", "run", "analyze", "analyse"}:
+            try:
+                result = await asyncio.to_thread(
+                    self._analysis_service.ensure_analysis,
+                    stream_id=stream_id,
+                    file_name=file_name,
+                    prompt=prompt_value,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except RecordingNotFoundError as exc:
+                return self._json_response(
+                    {"error": "recording_not_found", "message": str(exc)},
+                    status=http.HTTPStatus.NOT_FOUND,
+                )
+            except TwelveLabsError as exc:
+                return self._json_response(
+                    {"error": "twelve_labs_error", "message": str(exc)},
+                    status=http.HTTPStatus.BAD_GATEWAY,
+                )
+            except AnalysisServiceError as exc:
+                return self._json_response(
+                    {"error": "analysis_failed", "message": str(exc)},
+                    status=http.HTTPStatus.BAD_GATEWAY,
+                )
+            except Exception:  # pragma: no cover - defensive logging
+                logging.exception("Unexpected Twelve Labs analysis failure")
+                return self._json_response(
+                    {
+                        "error": "analysis_failed",
+                        "message": "Unexpected error while running Twelve Labs analysis.",
+                    },
+                    status=http.HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+
+            message = self._format_analysis_message(result.record, result.cached)
+            payload = {
+                "status": "cached" if result.cached else "ok",
+                "cached": result.cached,
+                "record": result.record,
+                "message": message,
+            }
+            return self._json_response(payload)
+
+        existing = self._analysis_service.get_cached_record(stream_id, file_name)
+        if existing is None:
+            return self._json_response(
+                {
+                    "status": "not_found",
+                    "error": "analysis_missing",
+                    "message": "No stored Twelve Labs analysis for this recording.",
+                },
+                status=http.HTTPStatus.NOT_FOUND,
+            )
+
+        payload = {
+            "status": "cached",
+            "cached": True,
+            "record": existing,
+            "message": self._format_analysis_message(existing, True),
+        }
+        return self._json_response(payload)
+
+    @staticmethod
+    def _format_analysis_message(record: Dict[str, Any], cached: bool) -> str:
+        timestamp = record.get("updatedAt") if isinstance(record, dict) else None
+        human = ""
+        if isinstance(timestamp, str) and timestamp:
+            try:
+                parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                human = parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            except ValueError:
+                human = timestamp
+        base = (
+            "Returning stored Twelve Labs analysis"
+            if cached
+            else "Twelve Labs analysis completed"
+        )
+        if human:
+            return f"{base} (generated {human})."
+        return f"{base}."
 
     def _list_recordings(self, stream_id: str) -> list[dict[str, Any]]:
         base = self._recordings_dir

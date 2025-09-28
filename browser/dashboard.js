@@ -223,10 +223,61 @@ function resolveRecordingsEndpoints(searchParams, signalingUrlObject) {
   return endpoints;
 }
 
+function resolveAnalysisEndpoint(searchParams, recordingsEndpoints) {
+  const explicit = (searchParams.get('analysisUrl') || '').trim();
+  if (explicit) {
+    const parsed = parseUrl(explicit, isSecurePage ? 'https://' : 'http://');
+    if (parsed) {
+      if (!parsed.pathname || parsed.pathname === '/') {
+        parsed.pathname = '/analysis';
+      }
+      parsed.search = '';
+      parsed.hash = '';
+      return parsed;
+    }
+  }
+
+  if (Array.isArray(recordingsEndpoints) && recordingsEndpoints.length > 0) {
+    try {
+      const base = new URL(recordingsEndpoints[0].toString());
+      if (!base.pathname || base.pathname === '/') {
+        base.pathname = '/analysis';
+      } else if (base.pathname.endsWith('/recordings')) {
+        base.pathname = `${base.pathname.slice(0, -'/recordings'.length)}/analysis`;
+      } else {
+        base.pathname = '/analysis';
+      }
+      base.search = '';
+      base.hash = '';
+      return base;
+    } catch (error) {
+      console.warn('Failed to derive analysis endpoint from recordings endpoint', error);
+    }
+  }
+
+  if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+    try {
+      const sameOrigin = new URL(window.location.href);
+      sameOrigin.pathname = '/analysis';
+      sameOrigin.search = '';
+      sameOrigin.hash = '';
+      return sameOrigin;
+    } catch (error) {
+      console.warn('Failed to derive same-origin analysis endpoint', error);
+    }
+  }
+
+  return null;
+}
+
 const signalingUrlObject = resolveSignalingEndpoint(params, streamId);
 const signalingUrl = signalingUrlObject.toString();
 const detectionUrl = resolveDetectionUrl(params, signalingUrlObject);
 const recordingsEndpoints = resolveRecordingsEndpoints(params, signalingUrlObject);
+const analysisEndpoint = resolveAnalysisEndpoint(params, recordingsEndpoints);
+const analysisPromptParam = (params.get('analysisPrompt') || '').trim();
+const analysisTemperatureParam = (params.get('analysisTemperature') || '').trim();
+const analysisMaxTokensParam = (params.get('analysisMaxTokens') || '').trim();
 
 const rawVideo = document.getElementById('rawVideo');
 const overlayVideo = document.getElementById('overlayVideo');
@@ -291,22 +342,221 @@ const recordingsState = {
 let selectedRecordingId = null;
 
 const defaultAnalysisMessage =
-  'Select a recording from the list to preview its metadata and prepare an AI analysis request.';
+  'Select a recording from the list to preview its metadata and request Twelve Labs analysis.';
 
 const analysisViewState = {
   recording: null,
   status: 'idle',
   message: defaultAnalysisMessage,
+  result: null,
+  cached: false,
+  errorCode: null,
 };
 
-let analysisStatusTimer = null;
+const analysisCache = new Map();
+let activeAnalysisPromise = null;
 
 const ANALYSIS_STATUS_CONFIG = {
   idle: { label: 'Idle', tone: 'muted' },
   ready: { label: 'Ready', tone: 'ready' },
-  pending: { label: 'Preparing', tone: 'pending' },
-  awaiting: { label: 'Awaiting AI server', tone: 'warning' },
+  loading: { label: 'Analyzing…', tone: 'pending' },
+  cached: { label: 'Completed', tone: 'ready' },
+  error: { label: 'Error', tone: 'warning' },
+  disabled: { label: 'Unavailable', tone: 'warning' },
 };
+
+if (!analysisEndpoint) {
+  analysisViewState.status = 'disabled';
+  analysisViewState.message =
+    'Configure the Twelve Labs API integration on the server to enable video analysis.';
+}
+
+function getAnalysisIdentifiers(recording) {
+  if (!recording || typeof recording !== 'object') {
+    return null;
+  }
+  const streamIdValue =
+    typeof recording.streamId === 'string' && recording.streamId.trim().length > 0
+      ? recording.streamId.trim()
+      : typeof recording.StreamID === 'string' && recording.StreamID.trim().length > 0
+      ? recording.StreamID.trim()
+      : '';
+  let fileNameValue =
+    typeof recording.fileName === 'string' && recording.fileName.trim().length > 0
+      ? recording.fileName.trim()
+      : typeof recording.FileName === 'string' && recording.FileName.trim().length > 0
+      ? recording.FileName.trim()
+      : '';
+  if (!fileNameValue) {
+    const urlValue =
+      (typeof recording.url === 'string' && recording.url.trim()) ||
+      (typeof recording.URL === 'string' && recording.URL.trim());
+    if (urlValue) {
+      try {
+        const parsed = new URL(urlValue, window.location.href);
+        const segments = parsed.pathname.split('/').filter((segment) => segment.length > 0);
+        if (segments.length > 0) {
+          fileNameValue = segments[segments.length - 1];
+        }
+      } catch (error) {
+        // Ignore parse errors and fall back to the recording ID.
+      }
+    }
+  }
+  if (!fileNameValue && typeof recording.id === 'string' && recording.id.includes('/')) {
+    const parts = recording.id.split('/').filter((segment) => segment.length > 0);
+    if (parts.length > 0) {
+      fileNameValue = parts[parts.length - 1];
+    }
+  }
+  if (!fileNameValue && typeof recording.displayName === 'string') {
+    fileNameValue = recording.displayName.trim();
+  }
+  if (!fileNameValue) {
+    return null;
+  }
+  return { streamId: streamIdValue, fileName: fileNameValue };
+}
+
+function getAnalysisCacheKey(recording) {
+  const identifiers = getAnalysisIdentifiers(recording);
+  if (!identifiers) {
+    return null;
+  }
+  return `${identifiers.streamId || 'default'}::${identifiers.fileName}`;
+}
+
+function getCachedAnalysis(recording) {
+  const key = getAnalysisCacheKey(recording);
+  if (!key) {
+    return null;
+  }
+  return analysisCache.get(key) || null;
+}
+
+function storeAnalysisRecord(recording, record, cached) {
+  const key = getAnalysisCacheKey(recording);
+  if (!key || !record) {
+    return;
+  }
+  analysisCache.set(key, { record, cached: Boolean(cached) });
+}
+
+function buildAnalysisCompleteMessage(record, cached) {
+  if (!record || typeof record !== 'object') {
+    return cached
+      ? 'Showing stored Twelve Labs analysis.'
+      : 'Twelve Labs analysis completed.';
+  }
+  const updatedAt =
+    typeof record.updatedAt === 'string' && record.updatedAt ? new Date(record.updatedAt) : null;
+  const formatted =
+    updatedAt && !Number.isNaN(updatedAt.valueOf())
+      ? updatedAt.toLocaleString()
+      : typeof record.updatedAt === 'string'
+      ? record.updatedAt
+      : '';
+  if (cached) {
+    return formatted
+      ? `Showing stored Twelve Labs analysis generated on ${formatted}.`
+      : 'Showing stored Twelve Labs analysis.';
+  }
+  return formatted
+    ? `Twelve Labs analysis completed on ${formatted}.`
+    : 'Twelve Labs analysis completed.';
+}
+
+async function fetchAnalysis(recording, options = {}) {
+  const { start = false } = options;
+  if (!analysisEndpoint) {
+    return {
+      ok: false,
+      status: 'disabled',
+      error: 'Analysis endpoint is unavailable.',
+    };
+  }
+
+  const identifiers = getAnalysisIdentifiers(recording);
+  if (!identifiers) {
+    return {
+      ok: false,
+      status: 'error',
+      error: 'Recording is missing stream or filename metadata.',
+    };
+  }
+
+  const url = new URL(analysisEndpoint.toString());
+  if (identifiers.streamId) {
+    url.searchParams.set('streamId', identifiers.streamId);
+  }
+  url.searchParams.set('fileName', identifiers.fileName);
+  if (start) {
+    url.searchParams.set('action', 'start');
+    if (analysisPromptParam) {
+      url.searchParams.set('prompt', analysisPromptParam);
+    }
+    if (analysisTemperatureParam) {
+      url.searchParams.set('temperature', analysisTemperatureParam);
+    }
+    if (analysisMaxTokensParam) {
+      url.searchParams.set('maxTokens', analysisMaxTokensParam);
+    }
+  } else {
+    url.searchParams.set('action', 'status');
+  }
+
+  let response;
+  try {
+    response = await fetch(url.toString(), { cache: 'no-store' });
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'network_error',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  let payload = null;
+  const contentType = response.headers.get('Content-Type') || '';
+  if (contentType.includes('application/json')) {
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+  } else {
+    try {
+      payload = { raw: await response.text() };
+    } catch (error) {
+      payload = null;
+    }
+  }
+
+  if (!response.ok) {
+    const status = (payload && payload.status) || 'error';
+    const errorMessage =
+      (payload && (payload.message || payload.error)) || `HTTP ${response.status}`;
+    return {
+      ok: false,
+      status,
+      error: errorMessage,
+      code: payload && (payload.error || payload.code),
+      details: payload,
+    };
+  }
+
+  const record = payload && payload.record ? payload.record : null;
+  const cached = Boolean(payload && (payload.cached || payload.status === 'cached'));
+  const status = (payload && payload.status) || (cached ? 'cached' : 'ok');
+  const message = (payload && payload.message) || '';
+  return {
+    ok: true,
+    status,
+    record,
+    cached,
+    message,
+  };
+}
 
 function formatRecordingDuration(durationSeconds) {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
@@ -542,6 +792,15 @@ function renderRecordingsList() {
       setSelectedRecording(recording);
       requestRecordingAnalysis(recording);
     });
+    if (!analysisEndpoint) {
+      analyzeButton.disabled = true;
+      analyzeButton.title = 'Configure the Twelve Labs integration to enable analysis.';
+    } else {
+      const cached = getCachedAnalysis(recording);
+      if (cached?.record) {
+        analyzeButton.textContent = 'View analysis';
+      }
+    }
     item.appendChild(analyzeButton);
 
     recordingsListElement.appendChild(item);
@@ -559,6 +818,78 @@ function appendAnalysisMeta(container, label, value) {
   const dd = document.createElement('dd');
   dd.textContent = value;
   container.append(dt, dd);
+}
+
+function renderAnalysisResult(record, cached) {
+  const section = document.createElement('section');
+  section.className = 'analysis-result-block';
+
+  const heading = document.createElement('h4');
+  heading.textContent = cached ? 'Stored Twelve Labs response' : 'Twelve Labs response';
+  section.appendChild(heading);
+
+  const metaGrid = document.createElement('dl');
+  metaGrid.className = 'analysis-meta-grid';
+
+  const updatedAt =
+    typeof record?.updatedAt === 'string' && record.updatedAt
+      ? new Date(record.updatedAt)
+      : null;
+  const updatedLabel =
+    updatedAt && !Number.isNaN(updatedAt.valueOf())
+      ? updatedAt.toLocaleString()
+      : typeof record?.updatedAt === 'string'
+      ? record.updatedAt
+      : '';
+
+  if (record?.videoId) {
+    appendAnalysisMeta(metaGrid, 'Video ID', record.videoId);
+  }
+  if (record?.prompt) {
+    appendAnalysisMeta(metaGrid, 'Prompt', record.prompt);
+  }
+  if (record?.temperature !== undefined && record.temperature !== null) {
+    appendAnalysisMeta(metaGrid, 'Temperature', String(record.temperature));
+  }
+  if (record?.maxTokens !== undefined && record.maxTokens !== null) {
+    appendAnalysisMeta(metaGrid, 'Max tokens', String(record.maxTokens));
+  }
+  if (updatedLabel) {
+    appendAnalysisMeta(metaGrid, 'Generated', updatedLabel);
+  }
+
+  section.appendChild(metaGrid);
+
+  const response = record?.analysis?.response ?? record?.analysis ?? null;
+  if (response) {
+    const outputBlock = document.createElement('div');
+    outputBlock.className = 'analysis-output-body';
+
+    const dataText = typeof response.data === 'string' ? response.data.trim() : '';
+    if (dataText) {
+      dataText
+        .split(/\n+/)
+        .map((paragraph) => paragraph.trim())
+        .filter((paragraph) => paragraph.length > 0)
+        .forEach((paragraph) => {
+          const p = document.createElement('p');
+          p.textContent = paragraph;
+          outputBlock.appendChild(p);
+        });
+    } else {
+      const pre = document.createElement('pre');
+      try {
+        pre.textContent = JSON.stringify(response, null, 2);
+      } catch (error) {
+        pre.textContent = String(response);
+      }
+      outputBlock.appendChild(pre);
+    }
+
+    section.appendChild(outputBlock);
+  }
+
+  return section;
 }
 
 function renderAnalysisView() {
@@ -579,9 +910,11 @@ function renderAnalysisView() {
   }
   if (analysisDetailsContainer) {
     analysisDetailsContainer.replaceChildren();
-    const messageParagraph = document.createElement('p');
-    messageParagraph.textContent = analysisViewState.message || defaultAnalysisMessage;
-    analysisDetailsContainer.appendChild(messageParagraph);
+    if (analysisViewState.message) {
+      const messageParagraph = document.createElement('p');
+      messageParagraph.textContent = analysisViewState.message;
+      analysisDetailsContainer.appendChild(messageParagraph);
+    }
     if (analysisViewState.recording) {
       const grid = document.createElement('dl');
       grid.className = 'analysis-meta-grid';
@@ -606,19 +939,58 @@ function renderAnalysisView() {
       }
       analysisDetailsContainer.appendChild(grid);
     }
+    if (analysisViewState.result) {
+      const resultBlock = renderAnalysisResult(
+        analysisViewState.result,
+        Boolean(analysisViewState.cached)
+      );
+      analysisDetailsContainer.appendChild(resultBlock);
+    }
   }
 }
 
-function setAnalysisView(recording, status, message) {
+function setAnalysisView(recording, status, message, result = null, cached = false, errorCode = null) {
   analysisViewState.recording = recording;
   analysisViewState.status = status;
   analysisViewState.message = message || defaultAnalysisMessage;
+  analysisViewState.result = result;
+  analysisViewState.cached = Boolean(cached);
+  analysisViewState.errorCode = errorCode;
   renderAnalysisView();
 }
 
+async function loadCachedAnalysis(recording) {
+  if (!analysisEndpoint) {
+    return;
+  }
+  const key = getAnalysisCacheKey(recording);
+  if (!key || analysisCache.has(key)) {
+    return;
+  }
+  try {
+    const result = await fetchAnalysis(recording, { start: false });
+    if (!result.ok || !result.record) {
+      if (result.status === 'not_found') {
+        const key = getAnalysisCacheKey(recording);
+        if (key && !analysisCache.has(key)) {
+          analysisCache.set(key, { record: null, cached: false });
+        }
+      }
+      return;
+    }
+    storeAnalysisRecord(recording, result.record, true);
+    if (analysisViewState.recording?.id === recording.id) {
+      const message =
+        result.message || buildAnalysisCompleteMessage(result.record, true);
+      setAnalysisView(recording, 'cached', message, result.record, true);
+    }
+  } catch (error) {
+    console.error('Failed to load stored Twelve Labs analysis', error);
+  }
+}
+
 function setSelectedRecording(recording) {
-  clearTimeout(analysisStatusTimer);
-  analysisStatusTimer = null;
+  activeAnalysisPromise = null;
   if (!recording) {
     selectedRecordingId = null;
     setAnalysisView(null, 'idle', defaultAnalysisMessage);
@@ -626,34 +998,92 @@ function setSelectedRecording(recording) {
     return;
   }
   selectedRecordingId = recording.id;
-  setAnalysisView(
-    recording,
-    'ready',
-    `Press “Analyze” to request AI insights for “${recording.displayName}” once the analysis service is configured.`
-  );
+
+  if (!analysisEndpoint) {
+    setAnalysisView(
+      recording,
+      'disabled',
+      'Configure the Twelve Labs integration on the server to enable analysis for stored recordings.'
+    );
+    renderRecordingsList();
+    return;
+  }
+
+  const cached = getCachedAnalysis(recording);
+  if (cached?.record) {
+    const message = buildAnalysisCompleteMessage(cached.record, true);
+    setAnalysisView(recording, 'cached', message, cached.record, true);
+  } else {
+    setAnalysisView(
+      recording,
+      'ready',
+      `Press “Analyze” to request AI insights for “${recording.displayName}” via Twelve Labs.`
+    );
+    void loadCachedAnalysis(recording);
+  }
   renderRecordingsList();
 }
 
-function requestRecordingAnalysis(recording) {
+async function requestRecordingAnalysis(recording) {
   if (!recording) {
     return;
   }
-  clearTimeout(analysisStatusTimer);
-  setAnalysisView(
-    recording,
-    'pending',
-    `Preparing AI analysis request for “${recording.displayName}”. The dashboard will forward this metadata when the external service is connected.`
-  );
-  analysisStatusTimer = window.setTimeout(() => {
+  if (!analysisEndpoint) {
+    setAnalysisView(
+      recording,
+      'disabled',
+      'Twelve Labs analysis is not configured on the server.'
+    );
+    return;
+  }
+
+  const cached = getCachedAnalysis(recording);
+  if (cached?.record) {
+    const message = buildAnalysisCompleteMessage(cached.record, true);
+    setAnalysisView(recording, 'cached', message, cached.record, true);
+    return;
+  }
+
+  const pendingMessage = `Requesting Twelve Labs analysis for “${recording.displayName}”…`;
+  setAnalysisView(recording, 'loading', pendingMessage);
+
+  try {
+    activeAnalysisPromise = fetchAnalysis(recording, { start: true });
+    const result = await activeAnalysisPromise;
     if (analysisViewState.recording?.id !== recording.id) {
       return;
     }
+    if (!result.ok || !result.record) {
+      const errorMessage =
+        result.error || 'Failed to obtain a Twelve Labs analysis response.';
+      setAnalysisView(recording, 'error', errorMessage, null, false, result.code || result.status);
+      return;
+    }
+    storeAnalysisRecord(recording, result.record, result.cached);
+    const message =
+      result.message || buildAnalysisCompleteMessage(result.record, result.cached);
     setAnalysisView(
       recording,
-      'awaiting',
-      'Awaiting integration with the external AI analysis server. When the API details are available, send the recording metadata above and surface the response here.'
+      'cached',
+      message,
+      result.record,
+      result.cached
     );
-  }, 850);
+  } catch (error) {
+    if (analysisViewState.recording?.id !== recording.id) {
+      return;
+    }
+    const fallback = error instanceof Error ? error.message : String(error);
+    setAnalysisView(
+      recording,
+      'error',
+      `Failed to request Twelve Labs analysis: ${fallback}`
+    );
+  } finally {
+    if (analysisViewState.recording?.id === recording.id) {
+      activeAnalysisPromise = null;
+    }
+  }
 }
 
 function updateRefreshButtonState(isLoading) {
@@ -782,8 +1212,24 @@ async function refreshRecordingsList() {
     if (selectedRecordingId) {
       const selected = normalized.find((item) => item.id === selectedRecordingId);
       if (selected) {
-        analysisViewState.recording = selected;
-        renderAnalysisView();
+        const cached = getCachedAnalysis(selected);
+        if (!analysisEndpoint) {
+          setAnalysisView(
+            selected,
+            'disabled',
+            'Configure the Twelve Labs integration on the server to enable analysis for stored recordings.'
+          );
+        } else if (cached?.record) {
+          const message = buildAnalysisCompleteMessage(cached.record, true);
+          setAnalysisView(selected, 'cached', message, cached.record, true);
+        } else {
+          setAnalysisView(
+            selected,
+            'ready',
+            `Press “Analyze” to request AI insights for “${selected.displayName}” via Twelve Labs.`
+          );
+          void loadCachedAnalysis(selected);
+        }
       } else {
         selectedRecordingId = null;
         setAnalysisView(null, 'idle', defaultAnalysisMessage);
