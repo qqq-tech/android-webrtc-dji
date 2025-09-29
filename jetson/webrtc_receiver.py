@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import ssl
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from aiortc import RTCPeerConnection, RTCSessionDescription
@@ -69,15 +70,34 @@ def _patch_aioice_transaction_timeout() -> None:
 _patch_aioice_transaction_timeout()
 
 
+def _insecure_ssl_context_for_url(url: str) -> Optional[ssl.SSLContext]:
+    """Return an SSL context with certificate verification disabled."""
+
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in {"wss", "https"}:
+        return None
+
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
 class WebSocketDetectionPublisher:
     """Pushes detection payloads to an external WebSocket broadcaster."""
 
-    def __init__(self, url: str, reconnect_delay: float = 2.0) -> None:
+    def __init__(
+        self,
+        url: str,
+        reconnect_delay: float = 2.0,
+        ssl_context: Optional[ssl.SSLContext] = None,
+    ) -> None:
         self._url = url
         self._reconnect_delay = reconnect_delay
         self._connection: Optional[websockets.WebSocketClientProtocol] = None
         self._lock = asyncio.Lock()
         self._stopping = False
+        self._ssl_context = ssl_context
 
     async def start(self) -> None:
         self._stopping = False
@@ -137,7 +157,11 @@ class WebSocketDetectionPublisher:
                 await self._reset_connection_locked()
             try:
                 self._connection = await asyncio.wait_for(
-                    websockets.connect(self._url, max_queue=None),
+                    websockets.connect(
+                        self._url,
+                        max_queue=None,
+                        ssl=self._ssl_context,
+                    ),
                     timeout=CONNECT_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -228,9 +252,13 @@ class WebRTCYOLOPipeline:
         self._sinks = []
         self._overlay_client: Optional[WebSocketDetectionPublisher] = None
         self._broadcaster: Optional[DetectionBroadcaster] = None
+        self._signaling_ssl_context = _insecure_ssl_context_for_url(self._signaling_url)
 
         if overlay_ws:
-            self._overlay_client = WebSocketDetectionPublisher(overlay_ws)
+            self._overlay_client = WebSocketDetectionPublisher(
+                overlay_ws,
+                ssl_context=_insecure_ssl_context_for_url(overlay_ws),
+            )
             self._sinks.append(self._overlay_client)
         else:
             self._broadcaster = DetectionBroadcaster(
@@ -493,7 +521,11 @@ class WebRTCYOLOPipeline:
 
         try:
             websocket = await asyncio.wait_for(
-                websockets.connect(self._signaling_url), timeout=CONNECT_TIMEOUT
+                websockets.connect(
+                    self._signaling_url,
+                    ssl=self._signaling_ssl_context,
+                ),
+                timeout=CONNECT_TIMEOUT,
             )
         except asyncio.TimeoutError:
             logging.warning(
