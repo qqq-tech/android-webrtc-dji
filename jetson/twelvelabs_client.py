@@ -171,7 +171,7 @@ class TwelveLabsClient:
         parsed_addons = _parse_scopes(addons)
 
         list_error: Optional[Exception] = None
-        existing: Optional[list[Any]] = None
+        existing: list[Dict[str, Any]] = []
         try:
             response = self._sdk.indexes.list(index_name=index_name)
         except (ApiError, HTTPError) as exc:
@@ -181,20 +181,53 @@ class TwelveLabsClient:
             list_error = exc
         else:
             try:
-                normalised = _normalise_index_collection(response)
+                serialised = _serialise_sdk_payload(response)
+                collection = _normalise_index_collection(serialised)
             except Exception as exc:
+                existing.clear()
                 list_error = exc
-                existing = []
             else:
-                if isinstance(normalised, list):
-                    existing = normalised
-                elif normalised is None:
-                    existing = []
-                else:
-                    list_error = list_error or TypeError(
-                        "Expected list of index payloads from Twelve Labs response"
+                for item in collection:
+                    payload = _serialise_sdk_payload(item)
+                    if not isinstance(payload, dict):
+                        continue
+                    payload_name = (
+                        payload.get("index_name")
+                        or payload.get("indexName")
+                        or payload.get("name")
                     )
-                    existing = []
+                    if payload_name:
+                        payload.setdefault("index_name", payload_name)
+                    index_id = extract_index_id(payload)
+                    if index_id:
+                        payload.setdefault("index_id", index_id)
+                    existing.append(payload)
+
+        def _retrieve_index(index_payload: Dict[str, Any]) -> Dict[str, Any]:
+            index_id = extract_index_id(index_payload)
+            if not index_id:
+                index_payload.setdefault("index_name", index_name)
+                return index_payload
+            try:
+                retrieved = self._sdk.indexes.retrieve(index_id=index_id)
+            except (ApiError, HTTPError):
+                index_payload.setdefault("index_id", index_id)
+                index_payload.setdefault("index_name", index_name)
+                return index_payload
+            payload = _serialise_sdk_payload(retrieved)
+            if not isinstance(payload, dict):
+                index_payload.setdefault("index_id", index_id)
+                index_payload.setdefault("index_name", index_name)
+                return index_payload
+            payload.setdefault("index_id", index_id)
+            payload.setdefault(
+                "index_name",
+                payload.get("index_name")
+                or payload.get("indexName")
+                or payload.get("name")
+                or index_name,
+            )
+            return payload
 
         def _create_index() -> Dict[str, Any]:
             model = IndexesCreateRequestModelsItem(
@@ -220,28 +253,18 @@ class TwelveLabsClient:
 
             payload = _serialise_sdk_payload(created)
             if isinstance(payload, dict):
-                index_id = extract_index_id(payload)
-                if index_id:
-                    payload.setdefault("index_id", index_id)
                 payload.setdefault("index_name", index_name)
-            return payload
+                return _retrieve_index(payload)
+            return {
+                "index_name": index_name,
+                "raw": payload,
+            }
 
         if existing:
-            for index in existing:
-                payload = _serialise_sdk_payload(index)
-                if not isinstance(payload, dict):
-                    continue
-                payload_name = (
-                    payload.get("index_name")
-                    or payload.get("indexName")
-                    or payload.get("name")
-                )
+            for payload in existing:
+                payload_name = payload.get("index_name") or payload.get("name")
                 if payload_name == index_name:
-                    index_id = extract_index_id(payload)
-                    if index_id:
-                        payload.setdefault("index_id", index_id)
-                    payload.setdefault("index_name", payload_name)
-                    return payload
+                    return _retrieve_index(payload)
 
         return _create_index()
 
