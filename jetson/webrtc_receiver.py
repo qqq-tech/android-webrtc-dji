@@ -698,12 +698,12 @@ async def main() -> None:
         recordings_dir=args.recordings_dir,
     )
 
-    try:
-        await pipeline.run()
-    except KeyboardInterrupt:
-        logging.info("Interrupted by user")
-    finally:
-        await pipeline.close()
+    # try:
+    await pipeline.run()
+    # except KeyboardInterrupt:
+    #     logging.info("Interrupted by user")
+    # finally:
+    #     await pipeline.close()
 
 
 if __name__ == "__main__":

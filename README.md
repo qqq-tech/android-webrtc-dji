@@ -161,19 +161,23 @@ SIGNALING_URL=ws://127.0.0.1:8080/ws \
 OVERLAY_WS=ws://127.0.0.1:8765 \
 MODEL_PATH=yolov8n.pt \
 PION_ADDR=:8080 \
+PION_TLS_CERT=./scripts/certs/server.crt \
+PION_TLS_KEY=./scripts/certs/server.key \
 WS_PORT=8765 \
 WS_INSECURE_PORT=8081 \
+WS_CERTFILE=./scripts/certs/server.crt \
+WS_KEYFILE=./scripts/certs/server.key \
 ./scripts/manage_stack.sh start
 ```
 
-The helper keeps track of the spawned processes under `.run/webrtc_stack.pids`. Stop them (from any shell) with `./scripts/manage_stack.sh stop`, or check their status via `./scripts/manage_stack.sh status`. Supply `PION_HTTPS_ADDR`, `PION_TLS_CERT`, `PION_TLS_KEY`, `WS_CERTFILE`, and `WS_KEYFILE` when you need dual HTTP/HTTPS listeners, and override `GO_BIN`/`PYTHON_BIN` if your toolchains live in non-default paths.
+The helper keeps track of the spawned processes under `.run/webrtc_stack.pids`. Stop them (from any shell) with `./scripts/manage_stack.sh stop`, or check their status via `./scripts/manage_stack.sh status`. The example above expects a shared certificate/key pair at `scripts/certs/server.crt` and `scripts/certs/server.key` so both the relay and broadcaster terminate TLS with the same assets. Supply `PION_HTTPS_ADDR`, `PION_TLS_CERT`, `PION_TLS_KEY`, `WS_CERTFILE`, and `WS_KEYFILE` when you need dual HTTP/HTTPS listeners, and override `GO_BIN`/`PYTHON_BIN` if your toolchains live in non-default paths.
 
 ### Twelve Labs video analysis client
 
-Use the helper in [`scripts/twelvelabs_client.py`](scripts/twelvelabs_client.py) to upload videos, create embeddings, and run Twelve Labs' analysis API from the command line. The tool first posts the video to the `/v1.3/embed/tasks` endpoint, waits until it is completed, and then sends the analysis prompt using the returned `video_id`.
+Use the helper in [`jetson/twelvelabs_client.py`](jetson/twelvelabs_client.py) to upload videos, create embeddings, and run Twelve Labs' analysis API from the command line. The tool first posts the video to the `/v1.3/embed/tasks` endpoint, waits until it is completed, and then sends the analysis prompt using the returned `video_id`. The implementation follows the official [Twelve Labs Python SDK](https://github.com/twelvelabs-io/twelvelabs-python), reusing the primitives shipped under `src/twelvelabs/` and the end-to-end workflows showcased in the `examples/` directory.
 
 ```bash
-python scripts/twelvelabs_client.py \
+python -m jetson.twelvelabs_client \
     --api-key "$TWELVE_LABS_API_KEY" \
     --model-name Marengo-retrieval-2.7 \
     --video-file /path/to/video.mp4 \
@@ -184,7 +188,7 @@ python scripts/twelvelabs_client.py \
 
 You can replace `--video-file` with `--video-url` when the source is already hosted at a publicly accessible address. Flags such as `--video-embedding-scope video`, `--video-clip-length 10`, `--temperature 0.4`, `--analysis-stream`, `--max-tokens 1500`, and `--poll-interval 5` help tune the request. When uploading files the helper gzips the multipart body to match Twelve Labs' reference implementation; opt out with `--disable-upload-gzip` if you need to send raw bytes. The script prints the final embedding/analysis payload to stdout as JSON and falls back to `--analysis-video-id` when the video identifier cannot be derived automatically. To load complex response formats from disk, point `--response-format` to a JSON file instead of inlining the payload.
 
-By default the helper targets the v1.3 embedding task endpoint described at [Create video embedding task](https://docs.twelvelabs.io/v1.3/api-reference/video-embeddings/create-video-embedding-task). If your account is still pinned to a different API revision supply `--embedding-path` (and optionally `--analysis-path`) to override the paths while keeping the rest of the workflow intact. Install the Python dependency with `pip install requests` before running the script.
+By default the helper targets the v1.3 embedding task endpoint described at [Create video embedding task](https://docs.twelvelabs.io/v1.3/api-reference/video-embeddings/create-video-embedding-task). If your account is still pinned to a different API revision supply `--embedding-path` (and optionally `--analysis-path`) to override the paths while keeping the rest of the workflow intact. Install the SDK dependency with `pip install twelvelabs` (or follow the instructions in the [official repository](https://github.com/twelvelabs-io/twelvelabs-python)) before running the script.
 
 ### Dashboard analysis workflow
 
