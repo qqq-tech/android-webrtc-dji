@@ -161,12 +161,16 @@ SIGNALING_URL=ws://127.0.0.1:8080/ws \
 OVERLAY_WS=ws://127.0.0.1:8765 \
 MODEL_PATH=yolov8n.pt \
 PION_ADDR=:8080 \
+PION_TLS_CERT=./scripts/certs/server.crt \
+PION_TLS_KEY=./scripts/certs/server.key \
 WS_PORT=8765 \
 WS_INSECURE_PORT=8081 \
+WS_CERTFILE=./scripts/certs/server.crt \
+WS_KEYFILE=./scripts/certs/server.key \
 ./scripts/manage_stack.sh start
 ```
 
-The helper keeps track of the spawned processes under `.run/webrtc_stack.pids`. Stop them (from any shell) with `./scripts/manage_stack.sh stop`, or check their status via `./scripts/manage_stack.sh status`. Supply `PION_HTTPS_ADDR`, `PION_TLS_CERT`, `PION_TLS_KEY`, `WS_CERTFILE`, and `WS_KEYFILE` when you need dual HTTP/HTTPS listeners, and override `GO_BIN`/`PYTHON_BIN` if your toolchains live in non-default paths.
+The helper keeps track of the spawned processes under `.run/webrtc_stack.pids`. Stop them (from any shell) with `./scripts/manage_stack.sh stop`, or check their status via `./scripts/manage_stack.sh status`. The example above expects a shared certificate/key pair at `scripts/certs/server.crt` and `scripts/certs/server.key` so both the relay and broadcaster terminate TLS with the same assets. Supply `PION_HTTPS_ADDR`, `PION_TLS_CERT`, `PION_TLS_KEY`, `WS_CERTFILE`, and `WS_KEYFILE` when you need dual HTTP/HTTPS listeners, and override `GO_BIN`/`PYTHON_BIN` if your toolchains live in non-default paths.
 
 ### Twelve Labs video analysis client
 
