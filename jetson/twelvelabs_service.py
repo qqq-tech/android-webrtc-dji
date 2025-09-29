@@ -14,9 +14,14 @@ from typing import Any, Dict, Iterable, Optional
 from .twelvelabs_client import (
     DEFAULT_ANALYSIS_PATH,
     DEFAULT_BASE_URL,
+    DEFAULT_EMBEDDING_OPTIONS,
     DEFAULT_EMBEDDING_TASK_PATH,
+    DEFAULT_INDEX_MODEL_NAME,
+    DEFAULT_INDEX_MODEL_OPTIONS,
+    DEFAULT_INDEX_NAME,
     TwelveLabsClient,
     TwelveLabsError,
+    extract_index_id,
     extract_video_id,
 )
 
@@ -79,6 +84,13 @@ class TwelveLabsAnalysisService:
         max_tokens: Optional[int] = None,
         video_embedding_scope: Optional[Iterable[str]] = None,
         gzip_upload: bool = True,
+        index_name: str = DEFAULT_INDEX_NAME,
+        index_model_name: str = DEFAULT_INDEX_MODEL_NAME,
+        index_model_options: Optional[Iterable[str]] = None,
+        index_addons: Optional[Iterable[str]] = None,
+        embedding_options: Optional[Iterable[str]] = None,
+        enable_video_stream: bool = False,
+        retrieve_transcription: bool = False,
     ) -> None:
         self._client = client
         self._model_name = model_name
@@ -88,8 +100,22 @@ class TwelveLabsAnalysisService:
         self._poll_interval = max(1, int(poll_interval))
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._scopes = [scope for scope in video_embedding_scope or [] if scope]
+        scope_values = (
+            [scope for scope in embedding_options or [] if scope]
+            if embedding_options is not None
+            else [scope for scope in video_embedding_scope or [] if scope]
+        )
+        if not scope_values:
+            scope_values = list(DEFAULT_EMBEDDING_OPTIONS)
+        self._embedding_options = scope_values
         self._gzip_upload = gzip_upload
+        self._index_name = index_name or DEFAULT_INDEX_NAME
+        self._index_model_name = index_model_name or DEFAULT_INDEX_MODEL_NAME
+        model_opts = [option for option in (index_model_options or DEFAULT_INDEX_MODEL_OPTIONS) if option]
+        self._index_model_options = model_opts or list(DEFAULT_INDEX_MODEL_OPTIONS)
+        self._index_addons = [addon for addon in index_addons or [] if addon]
+        self._enable_video_stream = enable_video_stream
+        self._retrieve_transcription = retrieve_transcription
         self._lock = threading.Lock()
         self._records: Dict[str, Dict[str, Any]] = {}
         self._load_cache()
@@ -200,45 +226,57 @@ class TwelveLabsAnalysisService:
         temperature_value = self._temperature if temperature is None else temperature
         max_tokens_value = self._max_tokens if max_tokens is None else max_tokens
 
-        embedding_kwargs: Dict[str, Any] = {
-            "model_name": self._model_name,
-            "video_embedding_scope": self._scopes or None,
-        }
+        index_response = self._client.ensure_index(
+            index_name=self._index_name,
+            model_name=self._index_model_name,
+            model_options=self._index_model_options,
+            addons=self._index_addons,
+        )
+        index_id = extract_index_id(index_response)
+        if not index_id:
+            raise AnalysisServiceError("Unable to determine managed index identifier")
 
         with open(recording_path, "rb") as handle:
-            embedding_response = self._client.create_video_embedding_task(
+            ingest_response = self._client.create_video_indexing_task(
+                index_id=index_id,
                 video_file=handle,
                 video_file_name=file_name,
-                **embedding_kwargs,
+                enable_video_stream=self._enable_video_stream,
             )
 
         task_id = (
-            embedding_response.get("task_id")
-            or embedding_response.get("id")
-            or embedding_response.get("_id")
+            ingest_response.get("task_id")
+            or ingest_response.get("id")
+            or ingest_response.get("_id")
         )
         if not task_id:
             raise AnalysisServiceError(
-                "Embedding response did not include a task identifier"
+                "Indexing response did not include a task identifier"
             )
-        status_url = embedding_response.get("status_url") or embedding_response.get("href")
-        if not isinstance(status_url, str) or not status_url:
-            status_url = f"{self._client.embedding_path.rstrip('/')}/{task_id}/status"
 
-        embedding_status = self._client.wait_for_embedding_task(
+        ingest_status = self._client.wait_for_indexing_task(
             task_id=task_id,
             poll_interval=self._poll_interval,
         )
 
-        video_id = extract_video_id(embedding_status)
+        video_id = extract_video_id(ingest_status) or ingest_response.get("video_id")
         if not video_id:
-            raise AnalysisServiceError("Unable to determine Twelve Labs video_id from embedding status")
+            raise AnalysisServiceError("Unable to determine Twelve Labs video_id from indexing status")
+
+        embedding_response = self._client.retrieve_index_video(
+            index_id=index_id,
+            video_id=video_id,
+            embedding_options=self._embedding_options,
+            transcription=self._retrieve_transcription,
+        )
 
         analysis_payload: Dict[str, Any] = {
             "video_id": video_id,
             "prompt": prompt_value,
             "stream": False,
         }
+        analysis_payload["index_id"] = index_id
+        analysis_payload["model_name"] = self._model_name
         if temperature_value is not None:
             analysis_payload["temperature"] = temperature_value
         if max_tokens_value is not None:
@@ -262,18 +300,27 @@ class TwelveLabsAnalysisService:
             "prompt": prompt_value,
             "temperature": temperature_value,
             "maxTokens": max_tokens_value,
-            "videoEmbeddingScope": list(self._scopes) if self._scopes else None,
+            "embeddingOptions": list(self._embedding_options) if self._embedding_options else None,
             "pollInterval": self._poll_interval,
             "videoId": video_id,
+            "index": {
+                "name": self._index_name,
+                "modelName": self._index_model_name,
+                "modelOptions": list(self._index_model_options),
+                "addons": self._index_addons or None,
+                "response": index_response,
+            },
+            "ingest": {
+                "taskId": task_id,
+                "response": ingest_response,
+                "status": ingest_status,
+                "enableVideoStream": self._enable_video_stream,
+            },
             "updatedAt": _utc_iso_now(),
             "embedding": {
-                "taskId": task_id,
-                "statusUrl": status_url,
+                "options": list(self._embedding_options) if self._embedding_options else None,
+                "transcriptionRequested": self._retrieve_transcription,
                 "response": embedding_response,
-                "status": embedding_status,
-                "request": {
-                    "modelName": self._model_name,
-                },
             },
             "analysis": {
                 "request": analysis_payload,
@@ -292,5 +339,9 @@ __all__ += [
     "DEFAULT_BASE_URL",
     "DEFAULT_EMBEDDING_TASK_PATH",
     "DEFAULT_ANALYSIS_PATH",
+    "DEFAULT_INDEX_NAME",
+    "DEFAULT_INDEX_MODEL_NAME",
+    "DEFAULT_INDEX_MODEL_OPTIONS",
+    "DEFAULT_EMBEDDING_OPTIONS",
     "TwelveLabsError",
 ]

@@ -30,12 +30,18 @@ try:  # Optional Twelve Labs integration
         TwelveLabsError,
         DEFAULT_ANALYSIS_PATH as TL_DEFAULT_ANALYSIS_PATH,
         DEFAULT_BASE_URL as TL_DEFAULT_BASE_URL,
+        DEFAULT_EMBEDDING_OPTIONS as TL_DEFAULT_EMBEDDING_OPTIONS,
         DEFAULT_EMBEDDING_TASK_PATH as TL_DEFAULT_EMBEDDING_PATH,
+        DEFAULT_INDEX_MODEL_NAME as TL_DEFAULT_INDEX_MODEL_NAME,
+        DEFAULT_INDEX_MODEL_OPTIONS as TL_DEFAULT_INDEX_MODEL_OPTIONS,
+        DEFAULT_INDEX_NAME as TL_DEFAULT_INDEX_NAME,
     )
 except Exception:  # pragma: no cover - integration is optional at runtime
     TwelveLabsAnalysisService = None  # type: ignore[assignment]
     AnalysisServiceError = RecordingNotFoundError = TwelveLabsError = None  # type: ignore[assignment]
     TL_DEFAULT_BASE_URL = TL_DEFAULT_EMBEDDING_PATH = TL_DEFAULT_ANALYSIS_PATH = None  # type: ignore[assignment]
+    TL_DEFAULT_INDEX_NAME = TL_DEFAULT_INDEX_MODEL_NAME = TL_DEFAULT_EMBEDDING_OPTIONS = None  # type: ignore[assignment]
+    TL_DEFAULT_INDEX_MODEL_OPTIONS = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:  # pragma: no cover - import only for static type checking
     from websockets.server import WebSocketServerProtocol
@@ -90,6 +96,12 @@ def _parse_bool(value: Optional[str]) -> bool:
     if value is None:
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_list_env(value: Optional[str]) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item and item.strip()]
 
 
 def _parse_float_param(params: Mapping[str, list[str]], name: str) -> Optional[float]:
@@ -531,12 +543,28 @@ class DetectionBroadcaster:
                 max_tokens = int(max_tokens_env)
             except ValueError:
                 max_tokens = None
-        scope_env = os.environ.get("TWELVE_LABS_EMBED_SCOPE", "")
-        scopes = [
-            scope.strip()
-            for scope in scope_env.split(",")
-            if scope and scope.strip()
-        ]
+        embed_options = _parse_list_env(os.environ.get("TWELVE_LABS_EMBED_OPTIONS"))
+        if not embed_options:
+            embed_options = _parse_list_env(os.environ.get("TWELVE_LABS_EMBED_SCOPE"))
+        index_name_env = os.environ.get("TWELVE_LABS_INDEX_NAME")
+        index_name = (index_name_env.strip() if index_name_env else "") or (TL_DEFAULT_INDEX_NAME or "")
+        index_model_name_env = os.environ.get("TWELVE_LABS_INDEX_MODEL_NAME")
+        if index_model_name_env and index_model_name_env.strip():
+            index_model_name = index_model_name_env.strip()
+        else:
+            inferred = model_name.lower()
+            if inferred.startswith("pegasus"):
+                index_model_name = "pegasus1.2"
+            else:
+                index_model_name = TL_DEFAULT_INDEX_MODEL_NAME or "marengo2.7"
+        index_model_options_env = _parse_list_env(os.environ.get("TWELVE_LABS_INDEX_MODEL_OPTIONS"))
+        if index_model_options_env:
+            index_model_options = index_model_options_env
+        else:
+            index_model_options = list(TL_DEFAULT_INDEX_MODEL_OPTIONS or ("visual", "audio"))
+        index_addons = _parse_list_env(os.environ.get("TWELVE_LABS_INDEX_ADDONS"))
+        enable_video_stream = _parse_bool(os.environ.get("TWELVE_LABS_ENABLE_VIDEO_STREAM"))
+        retrieve_transcription = _parse_bool(os.environ.get("TWELVE_LABS_RETRIEVE_TRANSCRIPTION"))
         disable_gzip = _parse_bool(os.environ.get("TWELVE_LABS_DISABLE_UPLOAD_GZIP"))
         storage_override = os.environ.get("TWELVE_LABS_CACHE_PATH")
         if storage_override:
@@ -564,8 +592,14 @@ class DetectionBroadcaster:
                 poll_interval=poll_interval,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                video_embedding_scope=scopes or None,
+                embedding_options=embed_options or list(TL_DEFAULT_EMBEDDING_OPTIONS or []),
                 gzip_upload=not disable_gzip,
+                index_name=index_name or TL_DEFAULT_INDEX_NAME or "test-webrtc",
+                index_model_name=index_model_name,
+                index_model_options=index_model_options,
+                index_addons=index_addons or None,
+                enable_video_stream=enable_video_stream,
+                retrieve_transcription=retrieve_transcription,
             )
         except Exception:  # pragma: no cover - best effort logging
             logging.exception("Failed to initialise Twelve Labs analysis integration")
