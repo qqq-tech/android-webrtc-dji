@@ -37,6 +37,7 @@ USAGE
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="$ROOT_DIR/.run"
 STATE_FILE="$STATE_DIR/webrtc_stack.pids"
+SHUTDOWN_SIGNAL="TERM"
 
 GO_BIN=${GO_BIN:-go}
 PYTHON_BIN=${PYTHON_BIN:-python3}
@@ -69,6 +70,83 @@ COMMAND=${1:-}
 ensure_state_dir() {
   mkdir -p "$STATE_DIR"
 }
+
+resolve_optional_path() {
+  local value="${1:-}"
+  if [[ -z "$value" ]]; then
+    echo ""
+  elif [[ "$value" == /* ]]; then
+    echo "$value"
+  else
+    if [[ "$value" == ~* ]]; then
+      value="${value/#\~/$HOME}"
+      echo "$value"
+    else
+      echo "$ROOT_DIR/$value"
+    fi
+  fi
+}
+
+graceful_stop() {
+  local name="$1"
+  local pid="$2"
+  local first_signal="${3:-TERM}"
+  local second_signal="${4:-}"
+  local wait_for_exit="${5:-0}"
+
+  if [[ -z "$pid" ]]; then
+    return
+  fi
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "  $name (PID $pid) is already stopped."
+    return
+  fi
+
+  local signals=()
+  signals+=("$first_signal")
+  if [[ -n "$second_signal" ]]; then
+    signals+=("$second_signal")
+  fi
+  signals+=("KILL")
+
+  for idx in "${!signals[@]}"; do
+    local signal="${signals[$idx]}"
+    if [[ $idx -eq 0 ]]; then
+      echo "  Sending SIG$signal to $name (PID $pid)"
+    else
+      echo "  $name did not exit gracefully. Sending SIG$signal."
+    fi
+
+    kill "-$signal" "$pid" 2>/dev/null || true
+
+    for _ in {1..20}; do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        if (( wait_for_exit )); then
+          wait "$pid" 2>/dev/null || true
+        fi
+        echo "  $name stopped."
+        return
+      fi
+      sleep 0.5
+    done
+  done
+
+  if (( wait_for_exit )); then
+    wait "$pid" 2>/dev/null || true
+  fi
+
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "  Unable to terminate $name (PID $pid) cleanly." >&2
+  fi
+}
+
+PION_TLS_CERT="$(resolve_optional_path "$PION_TLS_CERT")"
+PION_TLS_KEY="$(resolve_optional_path "$PION_TLS_KEY")"
+WS_CERTFILE="$(resolve_optional_path "$WS_CERTFILE")"
+WS_KEYFILE="$(resolve_optional_path "$WS_KEYFILE")"
+WS_STATIC_DIR="$(resolve_optional_path "$WS_STATIC_DIR")"
+WS_RECORDINGS_DIR="$(resolve_optional_path "$WS_RECORDINGS_DIR")"
 
 is_running() {
   if [[ -f "$STATE_FILE" ]]; then
@@ -114,9 +192,9 @@ start_processes() {
   fi
 
   RUNNING=1
-  trap 'cleanup' EXIT
-  trap 'cleanup; exit 130' INT
-  trap 'cleanup; exit 143' TERM
+  trap 'SHUTDOWN_SIGNAL=TERM; cleanup' EXIT
+  trap 'SHUTDOWN_SIGNAL=INT; cleanup; exit 130' INT
+  trap 'SHUTDOWN_SIGNAL=TERM; cleanup; exit 143' TERM
 
   echo "Starting Pion relay..."
   local pion_cmd=($GO_BIN run main.go --addr "$PION_ADDR")
@@ -216,17 +294,11 @@ cleanup() {
     for entry in "${entries[@]}"; do
       local name="${entry%%:*}"
       local pid="${entry##*:}"
-      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-        echo "  Stopping $name (PID $pid)"
-        kill "$pid" 2>/dev/null || true
+      local fallback=""
+      if [[ "$SHUTDOWN_SIGNAL" == INT ]]; then
+        fallback="TERM"
       fi
-    done
-
-    for entry in "${entries[@]}"; do
-      local pid="${entry##*:}"
-      if [[ -n "$pid" ]]; then
-        wait "$pid" 2>/dev/null || true
-      fi
+      graceful_stop "$name" "$pid" "$SHUTDOWN_SIGNAL" "$fallback" 1
     done
 
     rm -f "$STATE_FILE"
@@ -243,23 +315,7 @@ stop_processes() {
     if [[ -z "$pid" ]]; then
       continue
     fi
-    if ! kill -0 "$pid" 2>/dev/null; then
-      echo "  $name (PID $pid) is already stopped."
-      continue
-    fi
-    echo "  Sending SIGTERM to $name (PID $pid)"
-    kill "$pid" 2>/dev/null || true
-    for _ in {1..20}; do
-      if ! kill -0 "$pid" 2>/dev/null; then
-        echo "  $name stopped."
-        break
-      fi
-      sleep 0.5
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "  $name did not exit gracefully. Sending SIGKILL."
-      kill -9 "$pid" 2>/dev/null || true
-    fi
+    graceful_stop "$name" "$pid" TERM "" 0
   done < "$STATE_FILE"
   rm -f "$STATE_FILE"
 }
