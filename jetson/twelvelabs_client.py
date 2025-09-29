@@ -81,6 +81,21 @@ def _build_response_format(spec: Optional[Dict[str, Any]]) -> Optional[ResponseF
         raise TwelveLabsError(f"Invalid response_format payload: {exc}") from exc
 
 
+def _normalise_index_collection(payload: Any) -> list[Any]:
+    """Return a list of managed index payloads from ``payload``."""
+
+    data = _serialise_sdk_payload(payload)
+    if isinstance(data, dict):
+        for key in ("data", "items", "indexes", "results"):
+            items = data.get(key)
+            if isinstance(items, list):
+                return items
+        return [data]
+    if isinstance(data, list):
+        return data
+    return []
+
+
 def extract_index_id(payload: Any) -> Optional[str]:
     """Locate the Twelve Labs ``index_id`` within ``payload``."""
 
@@ -156,18 +171,66 @@ class TwelveLabsClient:
         parsed_addons = _parse_scopes(addons)
 
         list_error: Optional[Exception] = None
+        existing: Optional[list[Any]] = None
         try:
-            existing = self._sdk.indexes.list(index_name=index_name)
+            response = self._sdk.indexes.list(index_name=index_name)
         except (ApiError, HTTPError) as exc:
             # The Twelve Labs API may respond with an error (e.g. 404) when the
             # managed index does not exist yet. In that case proceed with index
             # creation instead of surfacing the error immediately.
             list_error = exc
-            existing = []
+        else:
+            try:
+                normalised = _normalise_index_collection(response)
+            except Exception as exc:
+                list_error = exc
+                existing = []
+            else:
+                if isinstance(normalised, list):
+                    existing = normalised
+                elif normalised is None:
+                    existing = []
+                else:
+                    list_error = list_error or TypeError(
+                        "Expected list of index payloads from Twelve Labs response"
+                    )
+                    existing = []
 
-        for index in existing:
-            payload = _serialise_sdk_payload(index)
+        def _create_index() -> Dict[str, Any]:
+            model = IndexesCreateRequestModelsItem(
+                model_name=model_name,
+                model_options=parsed_options,
+            )
+            try:
+                created = self._sdk.indexes.create(
+                    index_name=index_name,
+                    models=[model],
+                    addons=parsed_addons,
+                )
+            except (ApiError, HTTPError) as exc:
+                if list_error is not None:
+                    raise TwelveLabsError(
+                        "Failed to list managed indexes named "
+                        f"'{index_name}': {list_error}. Subsequent create request "
+                        f"also failed: {exc}"
+                    ) from exc
+                raise TwelveLabsError(
+                    f"Failed to create managed index '{index_name}': {exc}"
+                ) from exc
+
+            payload = _serialise_sdk_payload(created)
             if isinstance(payload, dict):
+                index_id = extract_index_id(payload)
+                if index_id:
+                    payload.setdefault("index_id", index_id)
+                payload.setdefault("index_name", index_name)
+            return payload
+
+        if existing:
+            for index in existing:
+                payload = _serialise_sdk_payload(index)
+                if not isinstance(payload, dict):
+                    continue
                 payload_name = (
                     payload.get("index_name")
                     or payload.get("indexName")
@@ -180,34 +243,7 @@ class TwelveLabsClient:
                     payload.setdefault("index_name", payload_name)
                     return payload
 
-        model = IndexesCreateRequestModelsItem(
-            model_name=model_name,
-            model_options=parsed_options,
-        )
-        try:
-            created = self._sdk.indexes.create(
-                index_name=index_name,
-                models=[model],
-                addons=parsed_addons,
-            )
-        except (ApiError, HTTPError) as exc:
-            if list_error is not None:
-                raise TwelveLabsError(
-                    "Failed to list managed indexes named "
-                    f"'{index_name}': {list_error}. Subsequent create request "
-                    f"also failed: {exc}"
-                ) from exc
-            raise TwelveLabsError(
-                f"Failed to create managed index '{index_name}': {exc}"
-            ) from exc
-
-        payload = _serialise_sdk_payload(created)
-        if isinstance(payload, dict):
-            index_id = extract_index_id(payload)
-            if index_id:
-                payload.setdefault("index_id", index_id)
-            payload.setdefault("index_name", index_name)
-        return payload
+        return _create_index()
 
     def create_video_indexing_task(
         self,
