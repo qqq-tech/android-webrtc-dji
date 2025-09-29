@@ -17,8 +17,13 @@ from dataclasses import dataclass
 from typing import Any, BinaryIO, Dict, Iterable, Optional
 
 from twelvelabs import TwelveLabs
-from twelvelabs.errors import ApiError
+from twelvelabs.core.api_error import ApiError
 from twelvelabs.types.response_format import ResponseFormat
+
+try:  # pragma: no cover - optional dependency is provided by the SDK
+    from httpx import HTTPError
+except ImportError:  # pragma: no cover - httpx shipped alongside SDK
+    HTTPError = Exception  # type: ignore[assignment]
 
 DEFAULT_BASE_URL = "https://api.twelvelabs.io"
 DEFAULT_EMBEDDING_TASK_PATH = "/v1.3/embed/tasks"
@@ -107,7 +112,7 @@ class TwelveLabsClient:
             client_kwargs["timeout"] = self.timeout
         try:
             self._sdk = TwelveLabs(**client_kwargs)
-        except ApiError as exc:  # pragma: no cover - configuration errors propagate to caller
+        except (ApiError, HTTPError) as exc:  # pragma: no cover - configuration errors propagate to caller
             raise TwelveLabsError(str(exc)) from exc
 
     def create_video_embedding_task(
@@ -142,7 +147,7 @@ class TwelveLabsClient:
 
         try:
             response = self._sdk.embed.tasks.create(**request)
-        except ApiError as exc:
+        except (ApiError, HTTPError) as exc:
             raise TwelveLabsError(str(exc)) from exc
 
         payload = _serialise_sdk_payload(response)
@@ -178,7 +183,7 @@ class TwelveLabsClient:
                 task_id=task_id,
                 sleep_interval=float(poll_interval),
             )
-        except ApiError as exc:
+        except (ApiError, HTTPError) as exc:
             raise TwelveLabsError(str(exc)) from exc
 
         payload = _serialise_sdk_payload(status)
@@ -220,7 +225,7 @@ class TwelveLabsClient:
                 max_tokens=max_tokens,
                 response_format=response_format_obj,
             )
-        except ApiError as exc:
+        except (ApiError, HTTPError) as exc:
             raise TwelveLabsError(str(exc)) from exc
 
         return _serialise_sdk_payload(response)
