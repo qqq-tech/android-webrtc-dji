@@ -1,14 +1,10 @@
-"""Utilities for interacting with the Twelve Labs API via the official SDK.
+"""High-level helpers built on top of the official Twelve Labs SDK.
 
-This module mirrors the previous command-line flow but now delegates all
-network operations to the ``twelvelabs`` Python package provided by
-``twelvelabs-io/twelvelabs-python``. The SDK offers higher level helpers for
-creating embedding tasks, polling their status and running open-ended video
-analysis. The wrapper defined here keeps a similar API surface so the rest of
-this project can continue to orchestrate embeddings and analyses without being
-aware of the underlying SDK. Compared to the prior implementation that
-manually issued HTTP requests, this version closely follows the vendor
-examples so behaviour stays aligned with the public SDK contract.
+The upstream project exposes a ``TwelveLabs`` client class under ``src/twelvelabs``
+and provides concrete end-to-end samples under ``examples``.  This module wraps
+those primitives so the rest of the Jetson tooling can follow the same flow as
+the official ``video`` and ``embedding`` examples while keeping backwards
+compatibility with the previous script interface.
 """
 
 from __future__ import annotations
@@ -19,10 +15,9 @@ import os
 import sys
 from dataclasses import dataclass
 from typing import Any, BinaryIO, Dict, Iterable, Optional
-from urllib.parse import urlparse
 
 from twelvelabs import TwelveLabs
-from twelvelabs.core import ApiError
+from twelvelabs.errors import ApiError
 from twelvelabs.types.response_format import ResponseFormat
 
 DEFAULT_BASE_URL = "https://api.twelvelabs.io"
@@ -31,55 +26,207 @@ DEFAULT_ANALYSIS_PATH = "/v1.3/analyze"
 
 
 class TwelveLabsError(RuntimeError):
-    """Raised when an SDK operation fails."""
+    """Raised when an SDK interaction fails."""
 
 
-def _model_to_dict(payload: Any) -> Any:
-    """Recursively convert SDK models into plain Python structures."""
+def _serialise_sdk_payload(payload: Any) -> Any:
+    """Convert SDK models into plain Python containers."""
 
+    if hasattr(payload, "model_dump_json"):
+        return json.loads(payload.model_dump_json())
     if hasattr(payload, "model_dump"):
         return payload.model_dump(mode="json")
     if isinstance(payload, dict):
-        return {key: _model_to_dict(value) for key, value in payload.items()}
-    if isinstance(payload, (list, tuple)):
-        return [_model_to_dict(item) for item in payload]
+        return {key: _serialise_sdk_payload(value) for key, value in payload.items()}
+    if isinstance(payload, list):
+        return [_serialise_sdk_payload(item) for item in payload]
     return payload
 
 
-def _normalise_task_id(identifier: str) -> str:
-    """Extract the Twelve Labs task identifier from a status URL or raw id."""
-
-    candidate = (identifier or "").strip()
-    if not candidate:
-        raise ValueError("status_url is required to poll task status")
-
-    parsed = urlparse(candidate)
-    path = parsed.path or candidate
-    fragments = [fragment for fragment in path.split("/") if fragment]
-    if fragments and fragments[-1] == "status":
-        fragments = fragments[:-1]
-    if fragments:
-        return fragments[-1]
-    return candidate
-
-
-def _prepare_file_tuple(handle: BinaryIO, filename: Optional[str]) -> tuple[str, BinaryIO, str]:
-    """Create an SDK compatible file tuple for uploads."""
+def _prepare_upload(handle: BinaryIO, file_name: Optional[str]) -> tuple[str, BinaryIO, str]:
+    """Return a ``core.File`` compatible tuple for SDK uploads."""
 
     if hasattr(handle, "seek"):
         handle.seek(0)
-    resolved_name = os.path.basename(filename or getattr(handle, "name", "video.mp4") or "video.mp4")
-    return resolved_name, handle, "application/octet-stream"
+    resolved_name = file_name or getattr(handle, "name", "") or "video.mp4"
+    return os.path.basename(resolved_name), handle, "application/octet-stream"
 
 
-def _coerce_scopes(raw: Optional[Iterable[str]]) -> Optional[list[str]]:
-    if raw is None:
+def _parse_scopes(scopes: Optional[Iterable[str]]) -> Optional[list[str]]:
+    if scopes is None:
         return None
-    scopes = [scope for scope in raw if scope]
-    return scopes or None
+    parsed = [scope.strip() for scope in scopes if scope and scope.strip()]
+    return parsed or None
 
 
-def _load_response_format(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+def _build_response_format(spec: Optional[Dict[str, Any]]) -> Optional[ResponseFormat]:
+    if spec is None:
+        return None
+    try:
+        return ResponseFormat.model_validate(spec)
+    except Exception as exc:
+        raise TwelveLabsError(f"Invalid response_format payload: {exc}") from exc
+
+
+def extract_video_id(payload: Any) -> Optional[str]:
+    """Traverse ``payload`` to locate a Twelve Labs ``video_id`` field."""
+
+    data = _serialise_sdk_payload(payload)
+    if not isinstance(data, dict):
+        return None
+
+    stack: list[Any] = [data]
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, dict):
+            continue
+        candidate = current.get("video_id") or current.get("videoId")
+        if isinstance(candidate, str) and candidate:
+            return candidate
+        for value in current.values():
+            if isinstance(value, dict):
+                stack.append(value)
+            elif isinstance(value, list):
+                stack.extend(item for item in value if isinstance(item, (dict, list)))
+    return None
+
+
+@dataclass
+class TwelveLabsClient:
+    api_key: str
+    base_url: Optional[str] = DEFAULT_BASE_URL
+    timeout: Optional[int] = 60
+    embedding_path: Optional[str] = DEFAULT_EMBEDDING_TASK_PATH
+    analysis_path: Optional[str] = DEFAULT_ANALYSIS_PATH
+
+    def __post_init__(self) -> None:
+        client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
+        if self.base_url:
+            client_kwargs["base_url"] = self.base_url
+        if self.timeout is not None:
+            client_kwargs["timeout"] = self.timeout
+        try:
+            self._sdk = TwelveLabs(**client_kwargs)
+        except ApiError as exc:  # pragma: no cover - configuration errors propagate to caller
+            raise TwelveLabsError(str(exc)) from exc
+
+    def create_video_embedding_task(
+        self,
+        *,
+        model_name: str,
+        video_file: Optional[BinaryIO] = None,
+        video_file_name: Optional[str] = None,
+        video_url: Optional[str] = None,
+        video_start_offset_sec: Optional[float] = None,
+        video_end_offset_sec: Optional[float] = None,
+        video_clip_length: Optional[float] = None,
+        video_embedding_scope: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        if not video_file and not video_url:
+            raise ValueError("Provide either video_file or video_url for embeddings")
+
+        request: Dict[str, Any] = {"model_name": model_name}
+        if video_url:
+            request["video_url"] = video_url
+        if video_file:
+            request["video_file"] = _prepare_upload(video_file, video_file_name)
+        if video_start_offset_sec is not None:
+            request["video_start_offset_sec"] = video_start_offset_sec
+        if video_end_offset_sec is not None:
+            request["video_end_offset_sec"] = video_end_offset_sec
+        if video_clip_length is not None:
+            request["video_clip_length"] = video_clip_length
+        scopes = _parse_scopes(video_embedding_scope)
+        if scopes is not None:
+            request["video_embedding_scope"] = scopes
+
+        try:
+            response = self._sdk.embed.tasks.create(**request)
+        except ApiError as exc:
+            raise TwelveLabsError(str(exc)) from exc
+
+        payload = _serialise_sdk_payload(response)
+        if isinstance(payload, dict):
+            task_id = (
+                getattr(response, "id", None)
+                or payload.get("id")
+                or payload.get("task_id")
+                or payload.get("_id")
+            )
+            if isinstance(task_id, str) and task_id:
+                payload.setdefault("task_id", task_id)
+                if self.embedding_path:
+                    payload.setdefault(
+                        "status_url",
+                        f"{self.embedding_path.rstrip('/')}/{task_id}/status",
+                    )
+        return payload
+
+    def wait_for_embedding_task(
+        self,
+        *,
+        task_id: str,
+        poll_interval: float = 5.0,
+    ) -> Dict[str, Any]:
+        if not task_id:
+            raise ValueError("task_id is required to poll task status")
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be positive")
+
+        try:
+            status = self._sdk.embed.tasks.wait_for_done(
+                task_id=task_id,
+                sleep_interval=float(poll_interval),
+            )
+        except ApiError as exc:
+            raise TwelveLabsError(str(exc)) from exc
+
+        payload = _serialise_sdk_payload(status)
+        if isinstance(payload, dict):
+            payload.setdefault("task_id", task_id)
+        return payload
+
+    def analyze_video(
+        self,
+        *,
+        video_id: str,
+        prompt: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        stream: bool = False,
+        response_format: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if not video_id:
+            raise ValueError("video_id is required for analysis requests")
+
+        response_format_obj = _build_response_format(response_format)
+        try:
+            if stream:
+                chunks = [
+                    _serialise_sdk_payload(chunk)
+                    for chunk in self._sdk.analyze_stream(
+                        video_id=video_id,
+                        prompt=prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format=response_format_obj,
+                    )
+                ]
+                return {"stream": chunks}
+            response = self._sdk.analyze(
+                video_id=video_id,
+                prompt=prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format_obj,
+            )
+        except ApiError as exc:
+            raise TwelveLabsError(str(exc)) from exc
+
+        return _serialise_sdk_payload(response)
+
+
+def _load_response_format_arg(raw: Optional[str]) -> Optional[Dict[str, Any]]:
     if raw is None:
         return None
     candidate = raw.strip()
@@ -95,169 +242,6 @@ def _load_response_format(raw: Optional[str]) -> Optional[Dict[str, Any]]:
     return data
 
 
-def _as_response_format(payload: Optional[Dict[str, Any]]) -> Optional[ResponseFormat]:
-    if payload is None:
-        return None
-    try:
-        return ResponseFormat.model_validate(payload)
-    except Exception as exc:  # pragma: no cover - invalid schemas should be surfaced to the caller
-        raise TwelveLabsError(f"Invalid response_format payload: {exc}") from exc
-
-
-def _extract_video_id(payload: Any) -> Optional[str]:
-    """Locate the Twelve Labs ``video_id`` within nested dictionaries."""
-
-    data = _model_to_dict(payload)
-    if not isinstance(data, dict):
-        return None
-
-    stack = [data]
-    while stack:
-        current = stack.pop()
-        if not isinstance(current, dict):
-            continue
-        for key, value in current.items():
-            if key in {"video_id", "videoId"} and isinstance(value, str) and value:
-                return value
-            if isinstance(value, dict):
-                stack.append(value)
-            elif isinstance(value, list):
-                stack.extend(item for item in value if isinstance(item, (dict, list)))
-    return None
-
-
-@dataclass
-class TwelveLabsClient:
-    """Thin wrapper around :class:`twelvelabs.TwelveLabs`."""
-
-    api_key: str
-    base_url: Optional[str] = DEFAULT_BASE_URL
-    timeout: Optional[int] = 60
-    embedding_path: str = DEFAULT_EMBEDDING_TASK_PATH
-    analysis_path: str = DEFAULT_ANALYSIS_PATH
-
-    def __post_init__(self) -> None:
-        client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
-        if self.base_url:
-            client_kwargs["base_url"] = self.base_url
-        if self.timeout:
-            client_kwargs["timeout"] = self.timeout
-        try:
-            self._client = TwelveLabs(**client_kwargs)
-        except ApiError as exc:  # pragma: no cover - configuration errors are propagated
-            raise TwelveLabsError(str(exc)) from exc
-
-    def create_embedding(
-        self,
-        *,
-        model_name: str,
-        video_file: Optional[BinaryIO] = None,
-        video_file_name: Optional[str] = None,
-        video_url: Optional[str] = None,
-        video_start_offset_sec: Optional[float] = None,
-        video_end_offset_sec: Optional[float] = None,
-        video_clip_length: Optional[float] = None,
-        video_embedding_scope: Optional[Iterable[str]] = None,
-        gzip_upload: bool = True,  # retained for backwards compatibility
-    ) -> Dict[str, Any]:
-        """Create an embedding task for a local file or a remote URL."""
-
-        if not video_file and not video_url:
-            raise ValueError("Either video_file or video_url must be supplied for embeddings")
-
-        kwargs: Dict[str, Any] = {"model_name": model_name}
-        if video_url:
-            kwargs["video_url"] = video_url
-        elif video_file:
-            kwargs["video_file"] = _prepare_file_tuple(video_file, video_file_name)
-        if video_start_offset_sec is not None:
-            kwargs["video_start_offset_sec"] = video_start_offset_sec
-        if video_end_offset_sec is not None:
-            kwargs["video_end_offset_sec"] = video_end_offset_sec
-        if video_clip_length is not None:
-            kwargs["video_clip_length"] = video_clip_length
-        scopes = _coerce_scopes(video_embedding_scope)
-        if scopes is not None:
-            kwargs["video_embedding_scope"] = scopes
-
-        try:
-            task = self._client.embed.tasks.create(**kwargs)
-        except ApiError as exc:
-            raise TwelveLabsError(str(exc)) from exc
-
-        payload = _model_to_dict(task)
-        if isinstance(payload, dict):
-            task_id = payload.get("id")
-            if isinstance(task_id, str):
-                payload.setdefault("task_id", task_id)
-                payload.setdefault("_id", task_id)
-                status_path = f"{self.embedding_path.rstrip('/')}/{task_id}/status"
-                payload.setdefault("status_url", status_path)
-                payload.setdefault("href", status_path)
-        return payload
-
-    def wait_for_task(
-        self,
-        *,
-        status_url: str,
-        poll_interval: int = 10,
-    ) -> Dict[str, Any]:
-        """Poll a Twelve Labs task until completion using the SDK helper."""
-
-        task_id = _normalise_task_id(status_url)
-        if poll_interval <= 0:
-            raise ValueError("poll_interval must be positive")
-        try:
-            status = self._client.embed.tasks.wait_for_done(
-                task_id=task_id,
-                sleep_interval=float(poll_interval),
-            )
-        except ApiError as exc:
-            raise TwelveLabsError(str(exc)) from exc
-        payload = _model_to_dict(status)
-        if isinstance(payload, dict):
-            payload.setdefault("task_id", task_id)
-            payload.setdefault("id", task_id)
-        return payload
-
-    def request_analysis(
-        self,
-        *,
-        video_id: str,
-        prompt: str,
-        temperature: Optional[float] = None,
-        stream: bool = False,
-        response_format: Optional[Dict[str, Any]] = None,
-        max_tokens: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Execute an open-ended analysis request via the SDK."""
-
-        response_format_obj = _as_response_format(response_format)
-        try:
-            if stream:
-                chunks = [
-                    _model_to_dict(chunk)
-                    for chunk in self._client.analyze_stream(
-                        video_id=video_id,
-                        prompt=prompt,
-                        temperature=temperature,
-                        response_format=response_format_obj,
-                        max_tokens=max_tokens,
-                    )
-                ]
-                return {"stream": chunks}
-            response = self._client.analyze(
-                video_id=video_id,
-                prompt=prompt,
-                temperature=temperature,
-                response_format=response_format_obj,
-                max_tokens=max_tokens,
-            )
-        except ApiError as exc:
-            raise TwelveLabsError(str(exc)) from exc
-        return _model_to_dict(response)
-
-
 def run_pipeline(args: argparse.Namespace) -> None:
     client = TwelveLabsClient(
         api_key=args.api_key,
@@ -270,133 +254,136 @@ def run_pipeline(args: argparse.Namespace) -> None:
     if not args.video_file and not args.video_url:
         raise SystemExit("Provide either --video-file or --video-url to create embeddings")
 
-    print("[1/3] Creating embeddings task...", file=sys.stderr)
     embedding_kwargs = {
         "model_name": args.model_name,
         "video_url": args.video_url,
         "video_start_offset_sec": args.video_start_offset,
         "video_end_offset_sec": args.video_end_offset,
         "video_clip_length": args.video_clip_length,
-        "video_embedding_scope": _coerce_scopes(args.video_embedding_scope),
-        "gzip_upload": not args.disable_upload_gzip,
+        "video_embedding_scope": args.video_embedding_scope,
     }
 
-    video_file_handle: Optional[BinaryIO] = None
+    video_handle: Optional[BinaryIO] = None
     if args.video_file and not args.video_url:
-        video_file_handle = open(args.video_file, "rb")
+        video_handle = open(args.video_file, "rb")
         embedding_kwargs.update(
             {
-                "video_file": video_file_handle,
+                "video_file": video_handle,
                 "video_file_name": args.video_file,
             }
         )
 
     try:
-        embedding_response = client.create_embedding(**embedding_kwargs)
+        embedding_response = client.create_video_embedding_task(**embedding_kwargs)
     finally:
-        if video_file_handle is not None:
-            video_file_handle.close()
+        if video_handle is not None:
+            video_handle.close()
 
-    embedding_task_id = (
+    task_id = (
         embedding_response.get("task_id")
         or embedding_response.get("id")
         or embedding_response.get("_id")
     )
-    if not embedding_task_id:
-        raise SystemExit("Embedding response does not contain a task identifier.")
+    if not isinstance(task_id, str) or not task_id:
+        raise SystemExit("Embedding response did not return a task identifier")
 
-    embedding_status_path = embedding_response.get("status_url") or embedding_response.get("href")
-    if not isinstance(embedding_status_path, str) or not embedding_status_path:
-        embedding_status_path = f"{client.embedding_path.rstrip('/')}/{embedding_task_id}/status"
-
-    print("[2/3] Waiting for embeddings to complete...", file=sys.stderr)
-    embedding_status = client.wait_for_task(
-        status_url=embedding_status_path,
+    embedding_status = client.wait_for_embedding_task(
+        task_id=task_id,
         poll_interval=args.poll_interval,
     )
 
-    analysis_video_id = args.analysis_video_id or _extract_video_id(embedding_status)
-    if not analysis_video_id:
+    video_id = args.analysis_video_id or extract_video_id(embedding_status)
+    if not video_id:
         raise SystemExit(
-            "Could not determine the Twelve Labs video_id from the embedding status. "
-            "Pass --analysis-video-id explicitly to continue."
+            "Could not determine Twelve Labs video_id from embedding status. "
+            "Pass --analysis-video-id to override."
         )
 
     try:
-        response_format = _load_response_format(args.response_format)
+        response_format = _load_response_format_arg(args.response_format)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise SystemExit(f"Failed to parse --response-format: {exc}") from exc
 
-    print("[3/3] Requesting analysis...", file=sys.stderr)
-    analysis_result = client.request_analysis(
-        video_id=analysis_video_id,
+    analysis_response = client.analyze_video(
+        video_id=video_id,
         prompt=args.prompt,
         temperature=args.temperature,
+        max_tokens=args.max_tokens,
         stream=args.analysis_stream,
         response_format=response_format,
-        max_tokens=args.max_tokens,
     )
 
-    print(json.dumps(
-        {
-            "embedding": embedding_status,
-            "analysis": analysis_result,
-        },
-        indent=2,
-        ensure_ascii=False,
-    ))
+    print(
+        json.dumps(
+            {
+                "embedding": embedding_status,
+                "analysis": analysis_response,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Embed uploaded videos and analyze them with Twelve Labs")
+    parser = argparse.ArgumentParser(
+        description="Create Twelve Labs embeddings for a video and run an analysis prompt",
+    )
     parser.add_argument("--api-key", required=True, help="Twelve Labs API key")
-    parser.add_argument("--model-name", required=True, help="Embedding model to use (e.g. Marengo-retrieval-2.7)")
-    parser.add_argument("--video-file", help="Path to a local video file for embedding")
-    parser.add_argument("--video-url", help="Public URL pointing directly to the video file")
-    parser.add_argument("--video-start-offset", type=float, help="Start offset in seconds from the beginning of the video")
-    parser.add_argument("--video-end-offset", type=float, help="End offset in seconds from the beginning of the video")
-    parser.add_argument("--video-clip-length", type=float, help="Clip length in seconds for segment embeddings")
+    parser.add_argument("--model-name", required=True, help="Embedding model (e.g. Marengo-retrieval-2.7)")
+    parser.add_argument("--video-file", help="Path to a local video file")
+    parser.add_argument("--video-url", help="Public URL pointing to a video file")
+    parser.add_argument("--video-start-offset", type=float, dest="video_start_offset", help="Start offset in seconds")
+    parser.add_argument("--video-end-offset", type=float, dest="video_end_offset", help="End offset in seconds")
+    parser.add_argument("--video-clip-length", type=float, dest="video_clip_length", help="Clip length in seconds")
     parser.add_argument(
         "--video-embedding-scope",
         action="append",
-        help="Embedding scope values (clip, video). Repeat the flag to request multiple scopes",
+        default=None,
+        help="Repeat to set clip/video scopes (matches SDK examples)",
     )
-    parser.add_argument("--prompt", required=True, help="Natural language prompt for the analysis")
-    parser.add_argument(
-        "--analysis-video-id",
-        help="Override the video_id used for analysis if it cannot be derived automatically",
-    )
-    parser.add_argument("--temperature", type=float, help="Sampling temperature for text generation (0-1)")
-    parser.add_argument(
-        "--analysis-stream",
-        action="store_true",
-        help="Enable streaming responses from the analysis endpoint",
-    )
-    parser.add_argument("--max-tokens", type=int, help="Maximum number of tokens to generate")
+    parser.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between task status polls")
+    parser.add_argument("--prompt", required=True, help="Analysis prompt to send to Twelve Labs")
+    parser.add_argument("--temperature", type=float, help="Sampling temperature for analysis")
+    parser.add_argument("--max-tokens", type=int, dest="max_tokens", help="Maximum tokens to generate")
+    parser.add_argument("--analysis-video-id", help="Override the video_id returned by the embedding task")
+    parser.add_argument("--analysis-stream", action="store_true", help="Use the streaming analysis endpoint")
     parser.add_argument(
         "--response-format",
-        help="JSON object or path to JSON file describing the desired response_format",
+        help="Path or JSON string describing the structured response format",
     )
-    parser.add_argument(
-        "--disable-upload-gzip",
-        action="store_true",
-        help="Retained for backwards compatibility; uploads are handled by the SDK",
-    )
-    parser.add_argument("--poll-interval", type=int, default=10, help="Seconds between task status polls")
-    parser.add_argument("--timeout", type=int, default=60, help="HTTP request timeout in seconds")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Override the Twelve Labs API base URL")
-    parser.add_argument(
-        "--embedding-path",
-        default=DEFAULT_EMBEDDING_TASK_PATH,
-        help="API path used to create and poll embedding tasks (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--analysis-path",
-        default=DEFAULT_ANALYSIS_PATH,
-        help="API path used to create and poll analysis tasks (default: %(default)s)",
-    )
+    parser.add_argument("--embedding-path", default=DEFAULT_EMBEDDING_TASK_PATH, help="Stored for compatibility")
+    parser.add_argument("--analysis-path", default=DEFAULT_ANALYSIS_PATH, help="Stored for compatibility")
+    parser.add_argument("--timeout", type=float, default=60, help="HTTP timeout in seconds")
     return parser
 
 
-if __name__ == "__main__":
-    run_pipeline(build_parser().parse_args())
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        run_pipeline(args)
+    except TwelveLabsError as exc:
+        print(f"Twelve Labs API error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - manual invocation entry point
+    raise SystemExit(main())
+
+
+__all__ = [
+    "DEFAULT_ANALYSIS_PATH",
+    "DEFAULT_BASE_URL",
+    "DEFAULT_EMBEDDING_TASK_PATH",
+    "TwelveLabsClient",
+    "TwelveLabsError",
+    "build_parser",
+    "extract_video_id",
+    "main",
+    "run_pipeline",
+]

@@ -17,7 +17,7 @@ from .twelvelabs_client import (
     DEFAULT_EMBEDDING_TASK_PATH,
     TwelveLabsClient,
     TwelveLabsError,
-    _extract_video_id,
+    extract_video_id,
 )
 
 __all__ = [
@@ -203,11 +203,10 @@ class TwelveLabsAnalysisService:
         embedding_kwargs: Dict[str, Any] = {
             "model_name": self._model_name,
             "video_embedding_scope": self._scopes or None,
-            "gzip_upload": self._gzip_upload,
         }
 
         with open(recording_path, "rb") as handle:
-            embedding_response = self._client.create_embedding(
+            embedding_response = self._client.create_video_embedding_task(
                 video_file=handle,
                 video_file_name=file_name,
                 **embedding_kwargs,
@@ -226,12 +225,12 @@ class TwelveLabsAnalysisService:
         if not isinstance(status_url, str) or not status_url:
             status_url = f"{self._client.embedding_path.rstrip('/')}/{task_id}/status"
 
-        embedding_status = self._client.wait_for_task(
-            status_url=status_url,
+        embedding_status = self._client.wait_for_embedding_task(
+            task_id=task_id,
             poll_interval=self._poll_interval,
         )
 
-        video_id = _extract_video_id(embedding_status)
+        video_id = extract_video_id(embedding_status)
         if not video_id:
             raise AnalysisServiceError("Unable to determine Twelve Labs video_id from embedding status")
 
@@ -245,7 +244,7 @@ class TwelveLabsAnalysisService:
         if max_tokens_value is not None:
             analysis_payload["max_tokens"] = max_tokens_value
 
-        analysis_response = self._client.request_analysis(
+        analysis_response = self._client.analyze_video(
             video_id=video_id,
             prompt=prompt_value,
             temperature=temperature_value,
@@ -274,7 +273,6 @@ class TwelveLabsAnalysisService:
                 "status": embedding_status,
                 "request": {
                     "modelName": self._model_name,
-                    "gzipUpload": self._gzip_upload,
                 },
             },
             "analysis": {
