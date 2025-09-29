@@ -136,7 +136,9 @@ class TwelveLabsClient:
         try:
             self._sdk = TwelveLabs(**client_kwargs)
         except (ApiError, HTTPError) as exc:  # pragma: no cover - configuration errors propagate to caller
-            raise TwelveLabsError(str(exc)) from exc
+            raise TwelveLabsError(
+                f"Failed to initialise Twelve Labs SDK client: {exc}"
+            ) from exc
 
     def ensure_index(
         self,
@@ -153,10 +155,15 @@ class TwelveLabsClient:
             parsed_options = list(DEFAULT_INDEX_MODEL_OPTIONS)
         parsed_addons = _parse_scopes(addons)
 
+        list_error: Optional[Exception] = None
         try:
             existing = self._sdk.indexes.list(index_name=index_name)
         except (ApiError, HTTPError) as exc:
-            raise TwelveLabsError(str(exc)) from exc
+            # The Twelve Labs API may respond with an error (e.g. 404) when the
+            # managed index does not exist yet. In that case proceed with index
+            # creation instead of surfacing the error immediately.
+            list_error = exc
+            existing = []
 
         for index in existing:
             payload = _serialise_sdk_payload(index)
@@ -184,7 +191,15 @@ class TwelveLabsClient:
                 addons=parsed_addons,
             )
         except (ApiError, HTTPError) as exc:
-            raise TwelveLabsError(str(exc)) from exc
+            if list_error is not None:
+                raise TwelveLabsError(
+                    "Failed to list managed indexes named "
+                    f"'{index_name}': {list_error}. Subsequent create request "
+                    f"also failed: {exc}"
+                ) from exc
+            raise TwelveLabsError(
+                f"Failed to create managed index '{index_name}': {exc}"
+            ) from exc
 
         payload = _serialise_sdk_payload(created)
         if isinstance(payload, dict):
@@ -219,7 +234,9 @@ class TwelveLabsClient:
         try:
             response = self._sdk.tasks.create(**request)
         except (ApiError, HTTPError) as exc:
-            raise TwelveLabsError(str(exc)) from exc
+            raise TwelveLabsError(
+                f"Failed to create indexing task for index '{index_id}': {exc}"
+            ) from exc
 
         payload = _serialise_sdk_payload(response)
         if isinstance(payload, dict):
@@ -251,7 +268,9 @@ class TwelveLabsClient:
                 sleep_interval=float(poll_interval),
             )
         except (ApiError, HTTPError) as exc:
-            raise TwelveLabsError(str(exc)) from exc
+            raise TwelveLabsError(
+                f"Failed to poll indexing task '{task_id}': {exc}"
+            ) from exc
 
         payload = _serialise_sdk_payload(status)
         if isinstance(payload, dict):
@@ -283,7 +302,10 @@ class TwelveLabsClient:
                 transcription=transcription,
             )
         except (ApiError, HTTPError) as exc:
-            raise TwelveLabsError(str(exc)) from exc
+            raise TwelveLabsError(
+                "Failed to retrieve indexed video "
+                f"'{video_id}' from index '{index_id}': {exc}"
+            ) from exc
 
         payload = _serialise_sdk_payload(response)
         if isinstance(payload, dict):
@@ -325,7 +347,15 @@ class TwelveLabsClient:
         try:
             response = self._sdk.embed.tasks.create(**request)
         except (ApiError, HTTPError) as exc:
-            raise TwelveLabsError(str(exc)) from exc
+            video_descriptor = (
+                video_file_name
+                or getattr(video_file, "name", None)
+                or video_url
+                or "<unspecified>"
+            )
+            raise TwelveLabsError(
+                f"Failed to create embedding task for video '{video_descriptor}': {exc}"
+            ) from exc
 
         payload = _serialise_sdk_payload(response)
         if isinstance(payload, dict):
@@ -361,7 +391,9 @@ class TwelveLabsClient:
                 sleep_interval=float(poll_interval),
             )
         except (ApiError, HTTPError) as exc:
-            raise TwelveLabsError(str(exc)) from exc
+            raise TwelveLabsError(
+                f"Failed to poll embedding task '{task_id}': {exc}"
+            ) from exc
 
         payload = _serialise_sdk_payload(status)
         if isinstance(payload, dict):
@@ -403,7 +435,9 @@ class TwelveLabsClient:
                 response_format=response_format_obj,
             )
         except (ApiError, HTTPError) as exc:
-            raise TwelveLabsError(str(exc)) from exc
+            raise TwelveLabsError(
+                f"Failed to analyse video '{video_id}': {exc}"
+            ) from exc
 
         return _serialise_sdk_payload(response)
 
