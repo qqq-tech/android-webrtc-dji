@@ -1,0 +1,2 @@
+# Ignore local copies of the TwelveLabs Python SDK
+third_party/twelvelabs-sdk/

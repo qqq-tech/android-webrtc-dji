@@ -292,6 +292,10 @@ The streamer now connects directly to the Go relay, so you no longer need to pro
 
 On the browser side you can either reuse [`browser/dashboard.js`](browser/dashboard.js) or follow the same pattern: send JSON envelopes through the relay WebSocket and listen for acknowledgements and telemetry updates.
 
+### TwelveLabs Index Integration
+
+To generate AI video indexes without relying on PyPI, follow the instructions in [`docs/TwelveLabsIndexSetup.md`](docs/TwelveLabsIndexSetup.md). The guide explains how to download the TwelveLabs Python SDK directly from GitHub, where to place the SDK files within this repository, and how to run the accompanying helper script.
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- LICENSE -->
