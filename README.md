@@ -110,10 +110,6 @@ ds.startDroneStream();
 ```
 We let the ```DroneStreamManager``` instantiate an instance of ```DroneStream``` for us and invoke the ```startDroneStream()``` afterwards. Please notice the arguments for creating a drone stream; the socket ID and the video tag ID. The socket ID will be the ID belonging to the android application that is assigned when connecting to our signaling server. This is to let our signaling server know where to pass the message when it receives it. We also provide the function with the ID of the HTML video tag, so the drone stream object knows which DOM element to render the video to once it has it.
 
-### TwelveLabs Index Integration
-
-To generate AI video indexes without relying on PyPI, follow the instructions in [`docs/TwelveLabsIndexSetup.md`](docs/TwelveLabsIndexSetup.md). The guide explains how to download the TwelveLabs Python SDK directly from GitHub, where to place the SDK files within this repository, and how to run the accompanying helper script.
-
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- LICENSE -->
