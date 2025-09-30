@@ -174,21 +174,29 @@ The helper keeps track of the spawned processes under `.run/webrtc_stack.pids`. 
 
 ### Twelve Labs video analysis client
 
-Use the helper in [`jetson/twelvelabs_client.py`](jetson/twelvelabs_client.py) to upload videos, create embeddings, and run Twelve Labs' analysis API from the command line. The tool first posts the video to the `/v1.3/embed/tasks` endpoint, waits until it is completed, and then sends the analysis prompt using the returned `video_id`. The implementation follows the official [Twelve Labs Python SDK](https://github.com/twelvelabs-io/twelvelabs-python), reusing the primitives shipped under `src/twelvelabs/` and the end-to-end workflows showcased in the `examples/` directory.
+Use the helper in [`jetson/twelvelabs_client.py`](jetson/twelvelabs_client.py) to mirror the workflows demonstrated in the official Twelve Labs notebooks. The script provisions an index (creating it if necessary), uploads a video, waits for the indexing task to complete, fetches gist/title/topic metadata, generates summaries/chapters/highlights, and finally issues an analysis prompt. Optional switches can trigger a follow-up semantic search and fetch the HLS playback URL, closely matching the flows in [`Olympics_Video_Content_Search.ipynb`](https://github.com/twelvelabs-io/twelvelabs-developer-experience/blob/main/examples/Olympics_Video_Content_Search.ipynb) and [`TwelveLabs_Quickstart_Analyze.ipynb`](https://github.com/twelvelabs-io/twelvelabs-developer-experience/blob/main/quickstarts/TwelveLabs_Quickstart_Analyze.ipynb).
 
 ```bash
 python -m jetson.twelvelabs_client \
     --api-key "$TWELVE_LABS_API_KEY" \
-    --model-name Marengo-retrieval-2.7 \
+    --model-name marengo2.7 \
     --video-file /path/to/video.mp4 \
     --prompt "주요 이벤트를 요약해줘" \
-    --temperature 0.2 \
-    --response-format '{"type":"json_schema","json_schema":{"type":"object","properties":{"summary":{"type":"string"}}}}'
+    --summary-type summary --summary-type highlight \
+    --gist-type title --gist-type hashtag \
+    --search-prompt "road cycling race" \
+    --include-hls-url
 ```
 
-You can replace `--video-file` with `--video-url` when the source is already hosted at a publicly accessible address. Flags such as `--video-embedding-scope video`, `--video-clip-length 10`, `--temperature 0.4`, `--analysis-stream`, `--max-tokens 1500`, and `--poll-interval 5` help tune the request. When uploading files the helper gzips the multipart body to match Twelve Labs' reference implementation; opt out with `--disable-upload-gzip` if you need to send raw bytes. The script prints the final embedding/analysis payload to stdout as JSON and falls back to `--analysis-video-id` when the video identifier cannot be derived automatically. To load complex response formats from disk, point `--response-format` to a JSON file instead of inlining the payload.
+You can replace `--video-file` with `--video-url` when the source is already hosted at a publicly accessible address. Combine `--gist-type`, `--summary-type`, and `--search-prompt` to tailor the metadata you want back from the API, and use `--analysis-stream`, `--temperature`, `--max-tokens`, and `--poll-interval` to fine-tune the workflow. The script prints a JSON payload describing the index, ingestion task, gist/summary responses, optional search results, and the analysis output. Structured response formats can be loaded from disk via `--response-format /path/to/schema.json`.
 
-By default the helper targets the v1.3 embedding task endpoint described at [Create video embedding task](https://docs.twelvelabs.io/v1.3/api-reference/video-embeddings/create-video-embedding-task). If your account is still pinned to a different API revision supply `--embedding-path` (and optionally `--analysis-path`) to override the paths while keeping the rest of the workflow intact. Install the SDK dependency with `pip install twelvelabs` (or follow the instructions in the [official repository](https://github.com/twelvelabs-io/twelvelabs-python)) before running the script.
+TLS validation is disabled on the embedded HTTP client so the helper can operate against Twelve Labs gateways that terminate with self-signed certificates. Run a quick smoke test against your configuration with:
+
+```bash
+python -m jetson.twelvelabs_client --help
+```
+
+The command prints the available options without issuing any API calls, making it safe to validate that the CLI loads correctly after updating dependencies or environment variables.
 
 ### Dashboard analysis workflow
 
@@ -199,12 +207,31 @@ Configure the integration with the following environment variables before launch
 | Variable | Description |
 | --- | --- |
 | `TWELVE_LABS_API_KEY` | **Required.** Twelve Labs API key used for all requests. |
-| `TWELVE_LABS_MODEL_NAME` | Embedding model name (defaults to `Marengo-retrieval-2.7`). |
+| `TWELVE_LABS_MODEL_NAME` | Video understanding model name (defaults to `marengo2.7`). |
 | `TWELVE_LABS_DEFAULT_PROMPT` | Prompt sent when the dashboard does not override it. |
 | `TWELVE_LABS_TEMPERATURE` | Optional temperature for the analysis request. |
 | `TWELVE_LABS_MAX_TOKENS` | Optional response token budget. |
-| `TWELVE_LABS_EMBED_SCOPE` | Comma-separated embedding scopes (for example `clip,video`). |
-| `TWELVE_LABS_DISABLE_UPLOAD_GZIP` | Set to `1` to upload raw bytes instead of gzipping the multipart body. |
+| `TWELVE_LABS_INDEX_NAME` | Managed index name (created automatically if missing). |
+| `TWELVE_LABS_INDEX_MODEL_NAME` | Model used when provisioning the managed index. |
+| `TWELVE_LABS_INDEX_MODEL_OPTIONS` | Comma-separated model options (for example `visual,audio`). |
+| `TWELVE_LABS_INDEX_ADDONS` | Optional index add-ons such as `thumbnail`. |
+| `TWELVE_LABS_ENABLE_VIDEO_STREAM` | Set to `1` to keep uploaded videos available for streaming. |
+| `TWELVE_LABS_USER_METADATA` | JSON string stored as user metadata during ingestion. |
+| `TWELVE_LABS_VERIFY_TLS` | Set to `1` to enable TLS certificate verification. |
+| `TWELVE_LABS_GIST_TYPES` | Comma-separated gist fields (defaults to `title,topic,hashtag`). |
+| `TWELVE_LABS_SUMMARY_TYPES` | Comma-separated summary variants (defaults to `summary,chapter,highlight`). |
+| `TWELVE_LABS_SUMMARY_PROMPT` | Optional prompt applied to summary generations. |
+| `TWELVE_LABS_SUMMARY_TEMPERATURE` | Optional temperature for summaries. |
+| `TWELVE_LABS_SUMMARY_MAX_TOKENS` | Optional token budget for summaries. |
+| `TWELVE_LABS_SEARCH_PROMPT` | Prompt used when running a follow-up semantic search. |
+| `TWELVE_LABS_SEARCH_OPTIONS` | Comma-separated modalities for search (defaults to `visual,audio`). |
+| `TWELVE_LABS_SEARCH_GROUP_BY` | Search grouping (`video` or `clip`). |
+| `TWELVE_LABS_SEARCH_THRESHOLD` | Search confidence threshold (`high`, `medium`, `low`, `none`). |
+| `TWELVE_LABS_SEARCH_OPERATOR` | Logical operator for multi-term search (`and` or `or`). |
+| `TWELVE_LABS_SEARCH_PAGE_LIMIT` | Maximum number of pages to retrieve during search. |
+| `TWELVE_LABS_SEARCH_SORT` | Search sorting (`score` or `clip_count`). |
+| `TWELVE_LABS_INCLUDE_HLS_URL` | Set to `1` to fetch the HLS playback URL for analysed videos. |
+| `TWELVE_LABS_IGNORE_HLS_ERRORS` | Set to `1` to suppress errors when retrieving HLS metadata. |
 | `TWELVE_LABS_CACHE_PATH` | Override the cache file location (defaults to `recordings/twelvelabs_analysis.json`). |
 
 When the environment is configured the “Analyze” button in `browser/dashboard.html` invokes `/analysis?action=start` with the selected recording identifiers. Existing results are surfaced without re-running the pipeline, and the UI reports the stored completion time alongside the generated summary.

@@ -28,20 +28,21 @@ try:  # Optional Twelve Labs integration
         RecordingNotFoundError,
         TwelveLabsAnalysisService,
         TwelveLabsError,
-        DEFAULT_ANALYSIS_PATH as TL_DEFAULT_ANALYSIS_PATH,
         DEFAULT_BASE_URL as TL_DEFAULT_BASE_URL,
-        DEFAULT_EMBEDDING_OPTIONS as TL_DEFAULT_EMBEDDING_OPTIONS,
-        DEFAULT_EMBEDDING_TASK_PATH as TL_DEFAULT_EMBEDDING_PATH,
+        DEFAULT_GIST_TYPES as TL_DEFAULT_GIST_TYPES,
         DEFAULT_INDEX_MODEL_NAME as TL_DEFAULT_INDEX_MODEL_NAME,
         DEFAULT_INDEX_MODEL_OPTIONS as TL_DEFAULT_INDEX_MODEL_OPTIONS,
         DEFAULT_INDEX_NAME as TL_DEFAULT_INDEX_NAME,
+        DEFAULT_SEARCH_OPTIONS as TL_DEFAULT_SEARCH_OPTIONS,
+        DEFAULT_SUMMARY_TYPES as TL_DEFAULT_SUMMARY_TYPES,
     )
 except Exception:  # pragma: no cover - integration is optional at runtime
     TwelveLabsAnalysisService = None  # type: ignore[assignment]
     AnalysisServiceError = RecordingNotFoundError = TwelveLabsError = None  # type: ignore[assignment]
-    TL_DEFAULT_BASE_URL = TL_DEFAULT_EMBEDDING_PATH = TL_DEFAULT_ANALYSIS_PATH = None  # type: ignore[assignment]
-    TL_DEFAULT_INDEX_NAME = TL_DEFAULT_INDEX_MODEL_NAME = TL_DEFAULT_EMBEDDING_OPTIONS = None  # type: ignore[assignment]
+    TL_DEFAULT_BASE_URL = None  # type: ignore[assignment]
+    TL_DEFAULT_INDEX_NAME = TL_DEFAULT_INDEX_MODEL_NAME = None  # type: ignore[assignment]
     TL_DEFAULT_INDEX_MODEL_OPTIONS = None  # type: ignore[assignment]
+    TL_DEFAULT_GIST_TYPES = TL_DEFAULT_SUMMARY_TYPES = TL_DEFAULT_SEARCH_OPTIONS = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:  # pragma: no cover - import only for static type checking
     from websockets.server import WebSocketServerProtocol
@@ -522,8 +523,6 @@ class DetectionBroadcaster:
 
         model_name = os.environ.get("TWELVE_LABS_MODEL_NAME", "Marengo-retrieval-2.7")
         base_url = os.environ.get("TWELVE_LABS_BASE_URL") or TL_DEFAULT_BASE_URL
-        embedding_path = os.environ.get("TWELVE_LABS_EMBEDDING_PATH") or TL_DEFAULT_EMBEDDING_PATH
-        analysis_path = os.environ.get("TWELVE_LABS_ANALYSIS_PATH") or TL_DEFAULT_ANALYSIS_PATH
         poll_env = os.environ.get("TWELVE_LABS_POLL_INTERVAL")
         try:
             poll_interval = int(poll_env) if poll_env and poll_env.strip() else 10
@@ -543,9 +542,6 @@ class DetectionBroadcaster:
                 max_tokens = int(max_tokens_env)
             except ValueError:
                 max_tokens = None
-        embed_options = _parse_list_env(os.environ.get("TWELVE_LABS_EMBED_OPTIONS"))
-        if not embed_options:
-            embed_options = _parse_list_env(os.environ.get("TWELVE_LABS_EMBED_SCOPE"))
         index_name_env = os.environ.get("TWELVE_LABS_INDEX_NAME")
         index_name = (index_name_env.strip() if index_name_env else "") or (TL_DEFAULT_INDEX_NAME or "")
         index_model_name_env = os.environ.get("TWELVE_LABS_INDEX_MODEL_NAME")
@@ -564,8 +560,44 @@ class DetectionBroadcaster:
             index_model_options = list(TL_DEFAULT_INDEX_MODEL_OPTIONS or ("visual", "audio"))
         index_addons = _parse_list_env(os.environ.get("TWELVE_LABS_INDEX_ADDONS"))
         enable_video_stream = _parse_bool(os.environ.get("TWELVE_LABS_ENABLE_VIDEO_STREAM"))
-        retrieve_transcription = _parse_bool(os.environ.get("TWELVE_LABS_RETRIEVE_TRANSCRIPTION"))
-        disable_gzip = _parse_bool(os.environ.get("TWELVE_LABS_DISABLE_UPLOAD_GZIP"))
+        user_metadata = os.environ.get("TWELVE_LABS_USER_METADATA")
+        verify_tls = _parse_bool(os.environ.get("TWELVE_LABS_VERIFY_TLS"))
+        gist_types = _parse_list_env(os.environ.get("TWELVE_LABS_GIST_TYPES"))
+        summary_types = _parse_list_env(os.environ.get("TWELVE_LABS_SUMMARY_TYPES"))
+        summary_prompt = os.environ.get("TWELVE_LABS_SUMMARY_PROMPT")
+        summary_temperature = None
+        summary_temp_env = os.environ.get("TWELVE_LABS_SUMMARY_TEMPERATURE")
+        if summary_temp_env and summary_temp_env.strip():
+            try:
+                summary_temperature = float(summary_temp_env)
+            except ValueError:
+                summary_temperature = None
+        summary_max_tokens = None
+        summary_max_tokens_env = os.environ.get("TWELVE_LABS_SUMMARY_MAX_TOKENS")
+        if summary_max_tokens_env and summary_max_tokens_env.strip():
+            try:
+                summary_max_tokens = int(summary_max_tokens_env)
+            except ValueError:
+                summary_max_tokens = None
+        search_prompt = os.environ.get("TWELVE_LABS_SEARCH_PROMPT")
+        search_options = _parse_list_env(os.environ.get("TWELVE_LABS_SEARCH_OPTIONS"))
+        if not search_options:
+            search_options = None
+        search_group_by = os.environ.get("TWELVE_LABS_SEARCH_GROUP_BY", "video")
+        search_threshold = os.environ.get("TWELVE_LABS_SEARCH_THRESHOLD", "medium")
+        search_operator = os.environ.get("TWELVE_LABS_SEARCH_OPERATOR", "or")
+        search_page_limit_env = os.environ.get("TWELVE_LABS_SEARCH_PAGE_LIMIT")
+        try:
+            search_page_limit = (
+                int(search_page_limit_env)
+                if search_page_limit_env and search_page_limit_env.strip()
+                else 5
+            )
+        except ValueError:
+            search_page_limit = 5
+        search_sort = os.environ.get("TWELVE_LABS_SEARCH_SORT", "score")
+        include_hls_url = _parse_bool(os.environ.get("TWELVE_LABS_INCLUDE_HLS_URL"))
+        ignore_hls_errors = _parse_bool(os.environ.get("TWELVE_LABS_IGNORE_HLS_ERRORS"))
         storage_override = os.environ.get("TWELVE_LABS_CACHE_PATH")
         if storage_override:
             storage_path = Path(storage_override).expanduser()
@@ -580,8 +612,7 @@ class DetectionBroadcaster:
             client = TwelveLabsClient(
                 api_key=api_key,
                 base_url=base_url or TL_DEFAULT_BASE_URL,
-                embedding_path=embedding_path or TL_DEFAULT_EMBEDDING_PATH,
-                analysis_path=analysis_path or TL_DEFAULT_ANALYSIS_PATH,
+                verify_tls=verify_tls,
             )
             self._analysis_service = TwelveLabsAnalysisService(
                 client=client,
@@ -592,14 +623,26 @@ class DetectionBroadcaster:
                 poll_interval=poll_interval,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                embedding_options=embed_options or list(TL_DEFAULT_EMBEDDING_OPTIONS or []),
-                gzip_upload=not disable_gzip,
-                index_name=index_name or TL_DEFAULT_INDEX_NAME or "test-webrtc",
+                index_name=index_name or TL_DEFAULT_INDEX_NAME or "olympics-demo",
                 index_model_name=index_model_name,
                 index_model_options=index_model_options,
                 index_addons=index_addons or None,
                 enable_video_stream=enable_video_stream,
-                retrieve_transcription=retrieve_transcription,
+                user_metadata=user_metadata,
+                gist_types=gist_types or TL_DEFAULT_GIST_TYPES,
+                summary_types=summary_types or TL_DEFAULT_SUMMARY_TYPES,
+                summary_prompt=summary_prompt,
+                summary_temperature=summary_temperature,
+                summary_max_tokens=summary_max_tokens,
+                search_prompt=search_prompt,
+                search_options=search_options or TL_DEFAULT_SEARCH_OPTIONS,
+                search_group_by=search_group_by,
+                search_threshold=search_threshold,
+                search_operator=search_operator,
+                search_page_limit=search_page_limit,
+                search_sort=search_sort,
+                include_hls_url=include_hls_url,
+                ignore_hls_errors=ignore_hls_errors,
             )
         except Exception:  # pragma: no cover - best effort logging
             logging.exception("Failed to initialise Twelve Labs analysis integration")

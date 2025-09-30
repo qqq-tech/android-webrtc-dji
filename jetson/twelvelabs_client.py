@@ -1,10 +1,11 @@
 """High-level helpers built on top of the official Twelve Labs SDK.
 
-The upstream project exposes a ``TwelveLabs`` client class under ``src/twelvelabs``
-and provides concrete end-to-end samples under ``examples``.  This module wraps
-those primitives so the rest of the Jetson tooling can follow the same flow as
-the official ``video`` and ``embedding`` examples while keeping backwards
-compatibility with the previous script interface.
+This module now mirrors the workflows demonstrated in the public notebooks
+`Olympics_Video_Content_Search.ipynb` and `TwelveLabs_Quickstart_Analyze.ipynb`.
+Those guides illustrate how to provision an index, upload content, monitor
+tasks, and run gist/summary/analysis requests directly from the SDK. The helper
+below keeps the same ergonomics for the Jetson tooling while implementing the
+updated flows showcased by Twelve Labs.
 """
 
 from __future__ import annotations
@@ -13,93 +14,63 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import dataclass
-from typing import Any, BinaryIO, Dict, Iterable, Optional
+from dataclasses import dataclass, field
+from typing import Any, BinaryIO, Dict, Iterable, List, Optional, Sequence
+
+try:  # pragma: no cover - optional dependency for HLS metadata retrieval
+    import requests
+except Exception:  # pragma: no cover - fallback when requests is absent
+    requests = None  # type: ignore[assignment]
 
 from twelvelabs import TwelveLabs
+
 try:  # pragma: no cover - import path differs between SDK versions
     from twelvelabs.core.api_error import ApiError
 except ImportError:  # pragma: no cover - fallback for older releases
     from twelvelabs.errors import ApiError  # type: ignore[no-redef]
-from twelvelabs.types.response_format import ResponseFormat
-from twelvelabs.indexes import IndexesCreateRequestModelsItem
 
 try:  # pragma: no cover - optional dependency is provided by the SDK
-    from httpx import HTTPError
+    from httpx import Client as HTTPXClient, HTTPError
 except ImportError:  # pragma: no cover - httpx shipped alongside SDK
+    HTTPXClient = None  # type: ignore[assignment]
     HTTPError = Exception  # type: ignore[assignment]
 
-DEFAULT_BASE_URL = "https://api.twelvelabs.io"
-DEFAULT_EMBEDDING_TASK_PATH = "/v1.3/embed/tasks"
-DEFAULT_ANALYSIS_PATH = "/v1.3/analyze"
-DEFAULT_INDEX_NAME = "test-webrtc"
+try:  # pragma: no cover - installed alongside newer SDK releases
+    from twelvelabs.indexes import IndexesCreateRequestModelsItem
+except ImportError:  # pragma: no cover - backwards compatibility shim
+    IndexesCreateRequestModelsItem = None  # type: ignore[assignment]
+
+DEFAULT_BASE_URL = "https://api.twelvelabs.io/v1.3"
+DEFAULT_INDEX_NAME = "olympics-demo"
 DEFAULT_INDEX_MODEL_NAME = "marengo2.7"
-DEFAULT_INDEX_MODEL_OPTIONS: tuple[str, ...] = ("visual", "audio")
-DEFAULT_EMBEDDING_OPTIONS: tuple[str, ...] = ("visual-text",)
+DEFAULT_INDEX_MODEL_OPTIONS: Sequence[str] = ("visual", "audio")
+DEFAULT_GIST_TYPES: Sequence[str] = ("title", "topic", "hashtag")
+DEFAULT_SUMMARY_TYPES: Sequence[str] = ("summary", "chapter", "highlight")
+DEFAULT_SEARCH_OPTIONS: Sequence[str] = ("visual", "audio")
 
 
 class TwelveLabsError(RuntimeError):
     """Raised when an SDK interaction fails."""
 
 
-def _serialise_sdk_payload(payload: Any) -> Any:
-    """Convert SDK models into plain Python containers."""
+def _serialise(payload: Any) -> Any:
+    """Best-effort conversion of SDK models into JSON serialisable objects."""
 
     if hasattr(payload, "model_dump_json"):
         return json.loads(payload.model_dump_json())
     if hasattr(payload, "model_dump"):
         return payload.model_dump(mode="json")
     if isinstance(payload, dict):
-        return {key: _serialise_sdk_payload(value) for key, value in payload.items()}
+        return {key: _serialise(value) for key, value in payload.items()}
     if isinstance(payload, list):
-        return [_serialise_sdk_payload(item) for item in payload]
+        return [_serialise(item) for item in payload]
     return payload
-
-
-def _prepare_upload(handle: BinaryIO, file_name: Optional[str]) -> tuple[str, BinaryIO, str]:
-    """Return a ``core.File`` compatible tuple for SDK uploads."""
-
-    if hasattr(handle, "seek"):
-        handle.seek(0)
-    resolved_name = file_name or getattr(handle, "name", "") or "video.mp4"
-    return os.path.basename(resolved_name), handle, "application/octet-stream"
-
-
-def _parse_scopes(scopes: Optional[Iterable[str]]) -> Optional[list[str]]:
-    if scopes is None:
-        return None
-    parsed = [scope.strip() for scope in scopes if scope and scope.strip()]
-    return parsed or None
-
-
-def _build_response_format(spec: Optional[Dict[str, Any]]) -> Optional[ResponseFormat]:
-    if spec is None:
-        return None
-    try:
-        return ResponseFormat.model_validate(spec)
-    except Exception as exc:
-        raise TwelveLabsError(f"Invalid response_format payload: {exc}") from exc
-
-
-def _normalise_index_collection(payload: Any) -> list[Any]:
-    """Return a list of managed index payloads from ``payload``."""
-
-    data = _serialise_sdk_payload(payload)
-    if isinstance(data, dict):
-        for key in ("data", "items", "indexes", "results"):
-            items = data.get(key)
-            if isinstance(items, list):
-                return items
-        return [data]
-    if isinstance(data, list):
-        return data
-    return []
 
 
 def extract_index_id(payload: Any) -> Optional[str]:
     """Locate the Twelve Labs ``index_id`` within ``payload``."""
 
-    data = _serialise_sdk_payload(payload)
+    data = _serialise(payload)
     if isinstance(data, dict):
         candidate = (
             data.get("index_id")
@@ -114,7 +85,7 @@ def extract_index_id(payload: Any) -> Optional[str]:
 def extract_video_id(payload: Any) -> Optional[str]:
     """Traverse ``payload`` to locate a Twelve Labs ``video_id`` field."""
 
-    data = _serialise_sdk_payload(payload)
+    data = _serialise(payload)
     if not isinstance(data, dict):
         return None
 
@@ -130,17 +101,35 @@ def extract_video_id(payload: Any) -> Optional[str]:
             if isinstance(value, dict):
                 stack.append(value)
             elif isinstance(value, list):
-                stack.extend(item for item in value if isinstance(item, (dict, list)))
+                stack.extend(
+                    item for item in value if isinstance(item, (dict, list))
+                )
     return None
+
+
+def _parse_scope(scopes: Optional[Iterable[str]], *, default: Sequence[str]) -> List[str]:
+    if scopes is None:
+        return list(default)
+    parsed = [scope.strip() for scope in scopes if scope and scope.strip()]
+    return parsed or list(default)
+
+
+def _load_response_format_arg(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+    if raw is None:
+        return None
+    if os.path.exists(raw):
+        with open(raw, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    return json.loads(raw)
 
 
 @dataclass
 class TwelveLabsClient:
     api_key: str
     base_url: Optional[str] = DEFAULT_BASE_URL
-    timeout: Optional[int] = 60
-    embedding_path: Optional[str] = DEFAULT_EMBEDDING_TASK_PATH
-    analysis_path: Optional[str] = DEFAULT_ANALYSIS_PATH
+    timeout: Optional[float] = 60.0
+    verify_tls: bool = False
+    _http_client: Optional[Any] = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
         client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
@@ -148,316 +137,185 @@ class TwelveLabsClient:
             client_kwargs["base_url"] = self.base_url
         if self.timeout is not None:
             client_kwargs["timeout"] = self.timeout
+        if HTTPXClient is not None:
+            try:
+                timeout = self.timeout if self.timeout is not None else None
+                self._http_client = HTTPXClient(verify=self.verify_tls, timeout=timeout)
+            except Exception as exc:  # pragma: no cover - httpx configuration errors propagate to caller
+                raise TwelveLabsError(
+                    f"Failed to configure Twelve Labs HTTP client: {exc}"
+                ) from exc
+            client_kwargs["httpx_client"] = self._http_client
         try:
             self._sdk = TwelveLabs(**client_kwargs)
         except (ApiError, HTTPError) as exc:  # pragma: no cover - configuration errors propagate to caller
+            if self._http_client is not None:
+                try:
+                    self._http_client.close()
+                except Exception:
+                    pass
             raise TwelveLabsError(
                 f"Failed to initialise Twelve Labs SDK client: {exc}"
             ) from exc
 
+        # Normalise attribute names across SDK releases (client.index vs client.indexes)
+        self._indexes_api = getattr(self._sdk, "index", None) or getattr(
+            self._sdk, "indexes"
+        )
+        self._tasks_api = getattr(self._sdk, "task", None) or getattr(
+            self._sdk, "tasks"
+        )
+
+    # ------------------------------------------------------------------
+    # Index helpers inspired by the Olympics content search notebook
+    # ------------------------------------------------------------------
     def ensure_index(
         self,
         *,
-        index_name: str = DEFAULT_INDEX_NAME,
+        index_name: str,
         model_name: str = DEFAULT_INDEX_MODEL_NAME,
         model_options: Optional[Iterable[str]] = None,
         addons: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
         if not index_name:
             raise ValueError("index_name is required")
-        parsed_options = _parse_scopes(model_options)
-        if not parsed_options:
-            parsed_options = list(DEFAULT_INDEX_MODEL_OPTIONS)
-        parsed_addons = _parse_scopes(addons)
 
-        list_error: Optional[Exception] = None
-        existing: list[Dict[str, Any]] = []
         try:
-            response = self._sdk.indexes.list(index_name=index_name)
-        except (ApiError, HTTPError) as exc:
-            # The Twelve Labs API may respond with an error (e.g. 404) when the
-            # managed index does not exist yet. In that case proceed with index
-            # creation instead of surfacing the error immediately.
-            list_error = exc
-        else:
-            try:
-                serialised = _serialise_sdk_payload(response)
-                collection = _normalise_index_collection(serialised)
-            except Exception as exc:
-                existing.clear()
-                list_error = exc
-            else:
-                for item in collection:
-                    payload = _serialise_sdk_payload(item)
-                    if not isinstance(payload, dict):
-                        continue
-                    payload_name = (
-                        payload.get("index_name")
-                        or payload.get("indexName")
-                        or payload.get("name")
-                    )
-                    if payload_name:
-                        payload.setdefault("index_name", payload_name)
-                    index_id = extract_index_id(payload)
-                    if index_id:
-                        payload.setdefault("index_id", index_id)
-                    existing.append(payload)
-
-        def _retrieve_index(index_payload: Dict[str, Any]) -> Dict[str, Any]:
-            index_id = extract_index_id(index_payload)
-            if not index_id:
-                index_payload.setdefault("index_name", index_name)
-                return index_payload
-            try:
-                retrieved = self._sdk.indexes.retrieve(index_id=index_id)
-            except (ApiError, HTTPError):
-                index_payload.setdefault("index_id", index_id)
-                index_payload.setdefault("index_name", index_name)
-                return index_payload
-            payload = _serialise_sdk_payload(retrieved)
-            if not isinstance(payload, dict):
-                index_payload.setdefault("index_id", index_id)
-                index_payload.setdefault("index_name", index_name)
-                return index_payload
-            payload.setdefault("index_id", index_id)
-            payload.setdefault(
-                "index_name",
-                payload.get("index_name")
-                or payload.get("indexName")
-                or payload.get("name")
-                or index_name,
-            )
-            return payload
-
-        def _create_index() -> Dict[str, Any]:
-            model = IndexesCreateRequestModelsItem(
-                model_name=model_name,
-                model_options=parsed_options,
-            )
-            try:
-                created = self._sdk.indexes.create(
-                    index_name=index_name,
-                    models=[model],
-                    addons=parsed_addons,
-                )
-            except (ApiError, HTTPError) as exc:
-                if list_error is not None:
-                    raise TwelveLabsError(
-                        "Failed to list managed indexes named "
-                        f"'{index_name}': {list_error}. Subsequent create request "
-                        f"also failed: {exc}"
-                    ) from exc
-                raise TwelveLabsError(
-                    f"Failed to create managed index '{index_name}': {exc}"
-                ) from exc
-
-            payload = _serialise_sdk_payload(created)
-            if isinstance(payload, dict):
-                payload.setdefault("index_name", index_name)
-                return _retrieve_index(payload)
-            return {
-                "index_name": index_name,
-                "raw": payload,
-            }
-
-        if existing:
-            for payload in existing:
+            pager = self._indexes_api.list(index_name=index_name)
+            for item in pager:
+                payload = _serialise(item)
                 payload_name = payload.get("index_name") or payload.get("name")
                 if payload_name == index_name:
-                    return _retrieve_index(payload)
+                    return payload
+        except (ApiError, HTTPError) as exc:
+            raise TwelveLabsError(
+                f"Failed to list Twelve Labs indexes: {exc}"
+            ) from exc
 
-        return _create_index()
+        if IndexesCreateRequestModelsItem is not None:
+            model = IndexesCreateRequestModelsItem(
+                model_name=model_name,
+                model_options=_parse_scope(model_options, default=DEFAULT_INDEX_MODEL_OPTIONS),
+            )
+        else:  # pragma: no cover - fallback for legacy SDKs lacking pydantic models
+            model = {
+                "model_name": model_name,
+                "model_options": _parse_scope(
+                    model_options, default=DEFAULT_INDEX_MODEL_OPTIONS
+                ),
+            }
 
-    def create_video_indexing_task(
+        try:
+            created = self._indexes_api.create(
+                index_name=index_name,
+                models=[model],
+                addons=list(addons) if addons else None,
+            )
+        except (ApiError, HTTPError) as exc:
+            raise TwelveLabsError(
+                f"Failed to create Twelve Labs index '{index_name}': {exc}"
+            ) from exc
+        return _serialise(created)
+
+    # ------------------------------------------------------------------
+    # Task helpers inspired by the public ingestion notebook
+    # ------------------------------------------------------------------
+    def create_indexing_task(
         self,
         *,
         index_id: str,
         video_file: Optional[BinaryIO] = None,
-        video_file_name: Optional[str] = None,
         video_url: Optional[str] = None,
         enable_video_stream: Optional[bool] = None,
+        user_metadata: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not index_id:
-            raise ValueError("index_id is required for indexing tasks")
+            raise ValueError("index_id is required")
         if not video_file and not video_url:
-            raise ValueError("Provide either video_file or video_url for indexing")
+            raise ValueError("Provide either video_file or video_url")
 
-        request: Dict[str, Any] = {"index_id": index_id}
-        if video_url:
-            request["video_url"] = video_url
-        if video_file:
-            request["video_file"] = _prepare_upload(video_file, video_file_name)
+        kwargs: Dict[str, Any] = {"index_id": index_id}
+        if video_file is not None:
+            kwargs["video_file"] = video_file
+        if video_url is not None:
+            kwargs["video_url"] = video_url
         if enable_video_stream is not None:
-            request["enable_video_stream"] = bool(enable_video_stream)
+            kwargs["enable_video_stream"] = enable_video_stream
+        if user_metadata is not None:
+            kwargs["user_metadata"] = user_metadata
 
         try:
-            response = self._sdk.tasks.create(**request)
+            task = self._tasks_api.create(**kwargs)
         except (ApiError, HTTPError) as exc:
             raise TwelveLabsError(
                 f"Failed to create indexing task for index '{index_id}': {exc}"
             ) from exc
+        return _serialise(task)
 
-        payload = _serialise_sdk_payload(response)
-        if isinstance(payload, dict):
-            task_id = (
-                getattr(response, "id", None)
-                or payload.get("id")
-                or payload.get("task_id")
-                or payload.get("_id")
-            )
-            if isinstance(task_id, str) and task_id:
-                payload.setdefault("task_id", task_id)
-            payload.setdefault("index_id", index_id)
-        return payload
-
-    def wait_for_indexing_task(
+    def wait_for_task(
         self,
         *,
         task_id: str,
         poll_interval: float = 5.0,
     ) -> Dict[str, Any]:
         if not task_id:
-            raise ValueError("task_id is required to poll indexing task status")
+            raise ValueError("task_id is required")
         if poll_interval <= 0:
             raise ValueError("poll_interval must be positive")
 
         try:
-            status = self._sdk.tasks.wait_for_done(
-                task_id=task_id,
-                sleep_interval=float(poll_interval),
+            status = self._tasks_api.wait_for_done(
+                task_id=task_id, sleep_interval=float(poll_interval)
             )
         except (ApiError, HTTPError) as exc:
             raise TwelveLabsError(
                 f"Failed to poll indexing task '{task_id}': {exc}"
             ) from exc
+        return _serialise(status)
 
-        payload = _serialise_sdk_payload(status)
-        if isinstance(payload, dict):
-            payload.setdefault("task_id", task_id)
-        return payload
-
-    def retrieve_index_video(
+    # ------------------------------------------------------------------
+    # High-level operations inspired by the quickstart analysis notebook
+    # ------------------------------------------------------------------
+    def fetch_gist(
         self,
         *,
-        index_id: str,
         video_id: str,
-        embedding_options: Optional[Iterable[str]] = None,
-        transcription: Optional[bool] = None,
+        gist_types: Sequence[str] = DEFAULT_GIST_TYPES,
     ) -> Dict[str, Any]:
-        if not index_id:
-            raise ValueError("index_id is required to retrieve videos")
         if not video_id:
-            raise ValueError("video_id is required to retrieve videos")
-
-        parsed_options = _parse_scopes(embedding_options)
-        if parsed_options is None:
-            parsed_options = list(DEFAULT_EMBEDDING_OPTIONS)
-
+            raise ValueError("video_id is required")
         try:
-            response = self._sdk.indexes.videos.retrieve(
-                index_id=index_id,
+            gist = self._sdk.gist(video_id=video_id, types=list(gist_types))
+        except (ApiError, HTTPError) as exc:
+            raise TwelveLabsError(
+                f"Failed to retrieve gist for video '{video_id}': {exc}"
+            ) from exc
+        return _serialise(gist)
+
+    def summarize(
+        self,
+        *,
+        video_id: str,
+        summary_type: str,
+        prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not video_id:
+            raise ValueError("video_id is required")
+        try:
+            summary = self._sdk.summarize(
                 video_id=video_id,
-                embedding_option=parsed_options,
-                transcription=transcription,
+                type=summary_type,
+                prompt=prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
         except (ApiError, HTTPError) as exc:
             raise TwelveLabsError(
-                "Failed to retrieve indexed video "
-                f"'{video_id}' from index '{index_id}': {exc}"
+                f"Failed to summarise video '{video_id}' ({summary_type}): {exc}"
             ) from exc
-
-        payload = _serialise_sdk_payload(response)
-        if isinstance(payload, dict):
-            payload.setdefault("video_id", video_id)
-            payload.setdefault("index_id", index_id)
-            payload.setdefault("embedding_options", parsed_options)
-        return payload
-
-    def create_video_embedding_task(
-        self,
-        *,
-        model_name: str,
-        video_file: Optional[BinaryIO] = None,
-        video_file_name: Optional[str] = None,
-        video_url: Optional[str] = None,
-        video_start_offset_sec: Optional[float] = None,
-        video_end_offset_sec: Optional[float] = None,
-        video_clip_length: Optional[float] = None,
-        video_embedding_scope: Optional[Iterable[str]] = None,
-    ) -> Dict[str, Any]:
-        if not video_file and not video_url:
-            raise ValueError("Provide either video_file or video_url for embeddings")
-
-        request: Dict[str, Any] = {"model_name": model_name}
-        if video_url:
-            request["video_url"] = video_url
-        if video_file:
-            request["video_file"] = _prepare_upload(video_file, video_file_name)
-        if video_start_offset_sec is not None:
-            request["video_start_offset_sec"] = video_start_offset_sec
-        if video_end_offset_sec is not None:
-            request["video_end_offset_sec"] = video_end_offset_sec
-        if video_clip_length is not None:
-            request["video_clip_length"] = video_clip_length
-        scopes = _parse_scopes(video_embedding_scope)
-        if scopes is not None:
-            request["video_embedding_scope"] = scopes
-
-        try:
-            response = self._sdk.embed.tasks.create(**request)
-        except (ApiError, HTTPError) as exc:
-            video_descriptor = (
-                video_file_name
-                or getattr(video_file, "name", None)
-                or video_url
-                or "<unspecified>"
-            )
-            raise TwelveLabsError(
-                f"Failed to create embedding task for video '{video_descriptor}': {exc}"
-            ) from exc
-
-        payload = _serialise_sdk_payload(response)
-        if isinstance(payload, dict):
-            task_id = (
-                getattr(response, "id", None)
-                or payload.get("id")
-                or payload.get("task_id")
-                or payload.get("_id")
-            )
-            if isinstance(task_id, str) and task_id:
-                payload.setdefault("task_id", task_id)
-                if self.embedding_path:
-                    payload.setdefault(
-                        "status_url",
-                        f"{self.embedding_path.rstrip('/')}/{task_id}/status",
-                    )
-        return payload
-
-    def wait_for_embedding_task(
-        self,
-        *,
-        task_id: str,
-        poll_interval: float = 5.0,
-    ) -> Dict[str, Any]:
-        if not task_id:
-            raise ValueError("task_id is required to poll task status")
-        if poll_interval <= 0:
-            raise ValueError("poll_interval must be positive")
-
-        try:
-            status = self._sdk.embed.tasks.wait_for_done(
-                task_id=task_id,
-                sleep_interval=float(poll_interval),
-            )
-        except (ApiError, HTTPError) as exc:
-            raise TwelveLabsError(
-                f"Failed to poll embedding task '{task_id}': {exc}"
-            ) from exc
-
-        payload = _serialise_sdk_payload(status)
-        if isinstance(payload, dict):
-            payload.setdefault("task_id", task_id)
-        return payload
+        return _serialise(summary)
 
     def analyze_video(
         self,
@@ -470,51 +328,101 @@ class TwelveLabsClient:
         response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not video_id:
-            raise ValueError("video_id is required for analysis requests")
+            raise ValueError("video_id is required")
+        if not prompt:
+            raise ValueError("prompt is required for analysis")
 
-        response_format_obj = _build_response_format(response_format)
         try:
             if stream:
-                chunks = [
-                    _serialise_sdk_payload(chunk)
-                    for chunk in self._sdk.analyze_stream(
-                        video_id=video_id,
-                        prompt=prompt,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        response_format=response_format_obj,
-                    )
-                ]
-                return {"stream": chunks}
-            response = self._sdk.analyze(
+                return {
+                    "stream": [
+                        _serialise(chunk)
+                        for chunk in self._sdk.analyze_stream(
+                            video_id=video_id,
+                            prompt=prompt,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            response_format=response_format,
+                        )
+                    ]
+                }
+            analysis = self._sdk.analyze(
                 video_id=video_id,
                 prompt=prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                response_format=response_format_obj,
+                response_format=response_format,
             )
         except (ApiError, HTTPError) as exc:
             raise TwelveLabsError(
                 f"Failed to analyse video '{video_id}': {exc}"
             ) from exc
+        return _serialise(analysis)
 
-        return _serialise_sdk_payload(response)
+    def search_videos(
+        self,
+        *,
+        index_id: str,
+        query_text: str,
+        search_options: Optional[Iterable[str]] = None,
+        group_by: str = "video",
+        threshold: str = "medium",
+        operator: str = "or",
+        page_limit: int = 5,
+        sort_option: str = "score",
+    ) -> List[Dict[str, Any]]:
+        if not index_id:
+            raise ValueError("index_id is required for search")
+        if not query_text:
+            raise ValueError("query_text is required for search")
+        options = _parse_scope(
+            search_options, default=DEFAULT_SEARCH_OPTIONS
+        )
+        try:
+            pager = self._sdk.search.query(
+                index_id=index_id,
+                search_options=options,
+                query_text=query_text,
+                group_by=group_by,
+                threshold=threshold,
+                operator=operator,
+                page_limit=page_limit,
+                sort_option=sort_option,
+            )
+        except (ApiError, HTTPError) as exc:
+            raise TwelveLabsError(
+                f"Failed to search index '{index_id}': {exc}"
+            ) from exc
+        return [_serialise(item) for item in pager]
 
-
-def _load_response_format_arg(raw: Optional[str]) -> Optional[Dict[str, Any]]:
-    if raw is None:
+    def get_video_hls_url(self, *, index_id: str, video_id: str) -> Optional[str]:
+        if not self.base_url:
+            return None
+        if requests is None:
+            raise TwelveLabsError(
+                "The 'requests' package is required to fetch HLS metadata. Install it or disable --include-hls-url."
+            )
+        endpoint = f"{self.base_url.rstrip('/')}/indexes/{index_id}/videos/{video_id}"
+        headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
+        try:
+            response = requests.get(
+                endpoint,
+                headers=headers,
+                timeout=self.timeout,
+                verify=self.verify_tls,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise TwelveLabsError(
+                f"Failed to retrieve video metadata from '{endpoint}': {exc}"
+            ) from exc
+        payload = response.json()
+        hls = payload.get("hls") if isinstance(payload, dict) else None
+        if isinstance(hls, dict):
+            url = hls.get("video_url")
+            if isinstance(url, str) and url:
+                return url
         return None
-    candidate = raw.strip()
-    if not candidate:
-        return None
-    if os.path.exists(candidate):
-        with open(candidate, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    else:
-        data = json.loads(candidate)
-    if not isinstance(data, dict):
-        raise ValueError("response_format must be a JSON object")
-    return data
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
@@ -522,81 +430,90 @@ def run_pipeline(args: argparse.Namespace) -> None:
         api_key=args.api_key,
         base_url=args.base_url,
         timeout=args.timeout,
-        embedding_path=args.embedding_path,
-        analysis_path=args.analysis_path,
+        verify_tls=args.verify_tls,
     )
 
     if not args.video_file and not args.video_url:
-        raise SystemExit("Provide either --video-file or --video-url to create embeddings")
+        raise SystemExit("Provide either --video-file or --video-url to upload a video")
 
-    index_model_name = args.index_model_name or DEFAULT_INDEX_MODEL_NAME
-    if args.index_model_name is None:
-        model_hint = (args.model_name or "").lower()
-        if model_hint.startswith("pegasus"):
-            index_model_name = "pegasus1.2"
-    index_model_options = _parse_scopes(args.index_model_options)
-    index_addons = _parse_scopes(args.index_addons)
+    model_options = _parse_scope(
+        args.index_model_options, default=DEFAULT_INDEX_MODEL_OPTIONS
+    )
+    index_addons = (
+        [addon.strip() for addon in args.index_addons if addon and addon.strip()]
+        if args.index_addons
+        else None
+    )
 
     index_response = client.ensure_index(
         index_name=args.index_name,
-        model_name=index_model_name,
-        model_options=index_model_options,
+        model_name=args.model_name,
+        model_options=model_options,
         addons=index_addons,
     )
-    index_id = extract_index_id(index_response)
+    index_id = index_response.get("index_id") or index_response.get("id")
     if not isinstance(index_id, str) or not index_id:
         raise SystemExit("Failed to determine index identifier from Twelve Labs response")
 
-    indexing_kwargs: Dict[str, Any] = {
-        "index_id": index_id,
-        "video_url": args.video_url,
-        "enable_video_stream": args.enable_video_stream,
-    }
-
     video_handle: Optional[BinaryIO] = None
-    if args.video_file and not args.video_url:
-        video_handle = open(args.video_file, "rb")
-        indexing_kwargs.update(
-            {
-                "video_file": video_handle,
-                "video_file_name": args.video_file,
-            }
-        )
-
+    task_payload: Dict[str, Any]
     try:
-        indexing_response = client.create_video_indexing_task(**indexing_kwargs)
+        if args.video_file and not args.video_url:
+            video_handle = open(args.video_file, "rb")
+            task_payload = client.create_indexing_task(
+                index_id=index_id,
+                video_file=video_handle,
+                enable_video_stream=args.enable_video_stream,
+                user_metadata=args.user_metadata,
+            )
+        else:
+            task_payload = client.create_indexing_task(
+                index_id=index_id,
+                video_url=args.video_url,
+                enable_video_stream=args.enable_video_stream,
+                user_metadata=args.user_metadata,
+            )
     finally:
         if video_handle is not None:
             video_handle.close()
 
     task_id = (
-        indexing_response.get("task_id")
-        or indexing_response.get("id")
-        or indexing_response.get("_id")
+        task_payload.get("id")
+        or task_payload.get("task_id")
+        or task_payload.get("_id")
     )
     if not isinstance(task_id, str) or not task_id:
         raise SystemExit("Indexing response did not return a task identifier")
 
-    indexing_status = client.wait_for_indexing_task(
-        task_id=task_id,
-        poll_interval=args.poll_interval,
+    task_status = client.wait_for_task(
+        task_id=task_id, poll_interval=args.poll_interval
     )
-
-    video_id = args.analysis_video_id or extract_video_id(indexing_status)
-    if not video_id:
+    video_id = (
+        args.analysis_video_id
+        or task_status.get("video_id")
+        or task_payload.get("video_id")
+    )
+    if not isinstance(video_id, str) or not video_id:
         raise SystemExit(
-            "Could not determine Twelve Labs video_id from embedding status. "
+            "Could not determine Twelve Labs video_id from the indexing task. "
             "Pass --analysis-video-id to override."
         )
 
-    embedding_options = _parse_scopes(args.embedding_options)
+    gist_types = _parse_scope(args.gist_types, default=DEFAULT_GIST_TYPES)
+    gist_response = client.fetch_gist(video_id=video_id, gist_types=gist_types)
 
-    embedding_response = client.retrieve_index_video(
-        index_id=index_id,
-        video_id=video_id,
-        embedding_options=embedding_options,
-        transcription=args.retrieve_transcription,
+    summary_payloads: Dict[str, Any] = {}
+    summary_types = _parse_scope(
+        args.summary_types, default=DEFAULT_SUMMARY_TYPES
     )
+    for summary_type in summary_types:
+        summary_payloads[summary_type] = client.summarize(
+            video_id=video_id,
+            summary_type=summary_type,
+            prompt=args.summary_prompt,
+            temperature=args.summary_temperature,
+            max_tokens=args.summary_max_tokens,
+        )
 
     try:
         response_format = _load_response_format_arg(args.response_format)
@@ -612,57 +529,62 @@ def run_pipeline(args: argparse.Namespace) -> None:
         response_format=response_format,
     )
 
-    print(
-        json.dumps(
-            {
-                "index": index_response,
-                "ingest": {
-                    "task": indexing_response,
-                    "status": indexing_status,
-                },
-                "embedding": embedding_response,
-                "analysis": analysis_response,
-            },
-            indent=2,
-            ensure_ascii=False,
+    search_results: Optional[List[Dict[str, Any]]] = None
+    if args.search_prompt:
+        search_results = client.search_videos(
+            index_id=index_id,
+            query_text=args.search_prompt,
+            search_options=args.search_options,
+            group_by=args.search_group_by,
+            threshold=args.search_threshold,
+            operator=args.search_operator,
+            page_limit=args.search_page_limit,
+            sort_option=args.search_sort,
         )
-    )
+
+    hls_url = None
+    if args.include_hls_url:
+        try:
+            hls_url = client.get_video_hls_url(index_id=index_id, video_id=video_id)
+        except TwelveLabsError as exc:
+            if not args.ignore_hls_errors:
+                raise
+            hls_url = {"error": str(exc)}
+
+    output: Dict[str, Any] = {
+        "index": index_response,
+        "task": {
+            "request": task_payload,
+            "status": task_status,
+        },
+        "video": {
+            "video_id": video_id,
+            "hls_url": hls_url,
+        },
+        "gist": gist_response,
+        "summary": summary_payloads,
+        "analysis": analysis_response,
+    }
+    if search_results is not None:
+        output["search"] = search_results
+
+    print(json.dumps(output, indent=2, ensure_ascii=False))
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create Twelve Labs embeddings for a video and run an analysis prompt",
+        description="Upload a video to Twelve Labs, wait for indexing, and run gist/summary/analysis workflows",
     )
     parser.add_argument("--api-key", required=True, help="Twelve Labs API key")
-    parser.add_argument("--model-name", required=True, help="Embedding model (e.g. Marengo-retrieval-2.7)")
-    parser.add_argument("--video-file", help="Path to a local video file")
-    parser.add_argument("--video-url", help="Public URL pointing to a video file")
-    parser.add_argument("--video-start-offset", type=float, dest="video_start_offset", help="Start offset in seconds")
-    parser.add_argument("--video-end-offset", type=float, dest="video_end_offset", help="End offset in seconds")
-    parser.add_argument("--video-clip-length", type=float, dest="video_clip_length", help="Clip length in seconds")
     parser.add_argument(
-        "--embedding-option",
-        "--video-embedding-scope",
-        action="append",
-        dest="embedding_options",
-        default=None,
-        help="Repeat to request specific embedding options (visual-text, audio)",
+        "--index-name",
+        default=DEFAULT_INDEX_NAME,
+        help="Name of the Twelve Labs managed index (created if missing)",
     )
-    parser.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between task status polls")
-    parser.add_argument("--prompt", required=True, help="Analysis prompt to send to Twelve Labs")
-    parser.add_argument("--temperature", type=float, help="Sampling temperature for analysis")
-    parser.add_argument("--max-tokens", type=int, dest="max_tokens", help="Maximum tokens to generate")
-    parser.add_argument("--analysis-video-id", help="Override the video_id returned by the embedding task")
-    parser.add_argument("--analysis-stream", action="store_true", help="Use the streaming analysis endpoint")
     parser.add_argument(
-        "--response-format",
-        help="Path or JSON string describing the structured response format",
-    )
-    parser.add_argument("--index-name", default=DEFAULT_INDEX_NAME, help="Name of the Twelve Labs managed index")
-    parser.add_argument(
-        "--index-model-name",
-        default=None,
-        help="Video understanding model to enable for the managed index (defaults to Marengo if omitted)",
+        "--model-name",
+        default=DEFAULT_INDEX_MODEL_NAME,
+        help="Video understanding model to enable for the index",
     )
     parser.add_argument(
         "--index-model-option",
@@ -670,7 +592,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="index_model_options",
         default=None,
-        help="Repeat to enable model options (visual, audio) for the managed index",
+        help="Repeat to include specific model options (visual, audio)",
     )
     parser.add_argument(
         "--index-addon",
@@ -679,24 +601,140 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Repeat to enable optional index add-ons (e.g. thumbnail)",
     )
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Override the Twelve Labs API base URL")
-    parser.add_argument("--embedding-path", default=DEFAULT_EMBEDDING_TASK_PATH, help="Stored for compatibility")
-    parser.add_argument("--analysis-path", default=DEFAULT_ANALYSIS_PATH, help="Stored for compatibility")
+    parser.add_argument("--video-file", help="Path to a local video file")
+    parser.add_argument("--video-url", help="Public URL pointing to a video file")
     parser.add_argument(
         "--enable-video-stream",
         action="store_true",
         help="Store uploaded videos for streaming playback",
     )
     parser.add_argument(
-        "--retrieve-transcription",
-        action="store_true",
-        help="Request transcriptions when retrieving indexed video metadata",
+        "--user-metadata",
+        help="Optional JSON string to attach as user metadata during ingestion",
     )
-    parser.add_argument("--timeout", type=float, default=60, help="HTTP timeout in seconds")
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=5.0,
+        help="Seconds between task status polls",
+    )
+    parser.add_argument(
+        "--prompt",
+        required=True,
+        help="Analysis prompt to send to the Twelve Labs analyze endpoint",
+    )
+    parser.add_argument("--temperature", type=float, help="Sampling temperature for analysis")
+    parser.add_argument("--max-tokens", type=int, dest="max_tokens", help="Maximum tokens to generate")
+    parser.add_argument(
+        "--analysis-video-id",
+        help="Override the video_id returned by the indexing task",
+    )
+    parser.add_argument(
+        "--analysis-stream",
+        action="store_true",
+        help="Use the streaming analysis endpoint",
+    )
+    parser.add_argument(
+        "--response-format",
+        help="Path or JSON string describing the structured response format",
+    )
+    parser.add_argument(
+        "--gist-type",
+        action="append",
+        dest="gist_types",
+        default=None,
+        help="Repeat to customise gist fields (title, topic, hashtag)",
+    )
+    parser.add_argument(
+        "--summary-type",
+        action="append",
+        dest="summary_types",
+        default=None,
+        help="Repeat to customise summary variants (summary, chapter, highlight)",
+    )
+    parser.add_argument(
+        "--summary-prompt",
+        help="Optional prompt shared across the summary endpoints",
+    )
+    parser.add_argument(
+        "--summary-temperature",
+        type=float,
+        help="Optional temperature applied to summary generations",
+    )
+    parser.add_argument(
+        "--summary-max-tokens",
+        type=int,
+        dest="summary_max_tokens",
+        help="Optional token limit applied to summary generations",
+    )
+    parser.add_argument(
+        "--search-prompt",
+        help="If supplied, run a follow-up semantic search using the prompt",
+    )
+    parser.add_argument(
+        "--search-option",
+        "--search-options",
+        action="append",
+        dest="search_options",
+        default=None,
+        help="Repeat to customise search modalities (visual, audio)",
+    )
+    parser.add_argument(
+        "--search-group-by",
+        default="video",
+        help="Group search results by 'video' or 'clip' (default: video)",
+    )
+    parser.add_argument(
+        "--search-threshold",
+        default="medium",
+        help="Confidence threshold for search results (high, medium, low, none)",
+    )
+    parser.add_argument(
+        "--search-operator",
+        default="or",
+        help="Logical operator applied to multi-term search queries",
+    )
+    parser.add_argument(
+        "--search-page-limit",
+        type=int,
+        default=5,
+        help="Number of pages to fetch when running semantic search",
+    )
+    parser.add_argument(
+        "--search-sort",
+        default="score",
+        help="Sort option applied to search results (score or clip_count)",
+    )
+    parser.add_argument(
+        "--include-hls-url",
+        action="store_true",
+        help="Fetch the HLS playback URL for the analysed video",
+    )
+    parser.add_argument(
+        "--ignore-hls-errors",
+        action="store_true",
+        help="Suppress errors when HLS metadata retrieval fails",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=DEFAULT_BASE_URL,
+        help="Override the Twelve Labs API base URL",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=60.0,
+        help="HTTP timeout in seconds",
+    )
+    parser.add_argument(
+        "--verify-tls",
+        action="store_true",
+        help="Enable TLS certificate verification (disabled by default for self-signed deployments)",
+    )
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
@@ -714,18 +752,18 @@ if __name__ == "__main__":  # pragma: no cover - manual invocation entry point
 
 
 __all__ = [
-    "DEFAULT_ANALYSIS_PATH",
     "DEFAULT_BASE_URL",
-    "DEFAULT_EMBEDDING_TASK_PATH",
-    "DEFAULT_EMBEDDING_OPTIONS",
     "DEFAULT_INDEX_MODEL_NAME",
     "DEFAULT_INDEX_MODEL_OPTIONS",
     "DEFAULT_INDEX_NAME",
+    "DEFAULT_GIST_TYPES",
+    "DEFAULT_SUMMARY_TYPES",
+    "DEFAULT_SEARCH_OPTIONS",
+    "extract_index_id",
+    "extract_video_id",
     "TwelveLabsClient",
     "TwelveLabsError",
     "build_parser",
-    "extract_index_id",
-    "extract_video_id",
     "main",
     "run_pipeline",
 ]
