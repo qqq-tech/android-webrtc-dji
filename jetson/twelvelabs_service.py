@@ -9,16 +9,16 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Sequence
 
 from .twelvelabs_client import (
-    DEFAULT_ANALYSIS_PATH,
     DEFAULT_BASE_URL,
-    DEFAULT_EMBEDDING_OPTIONS,
-    DEFAULT_EMBEDDING_TASK_PATH,
+    DEFAULT_GIST_TYPES,
     DEFAULT_INDEX_MODEL_NAME,
     DEFAULT_INDEX_MODEL_OPTIONS,
     DEFAULT_INDEX_NAME,
+    DEFAULT_SEARCH_OPTIONS,
+    DEFAULT_SUMMARY_TYPES,
     TwelveLabsClient,
     TwelveLabsError,
     extract_index_id,
@@ -58,6 +58,13 @@ def _serialise_signature(stat_result) -> Dict[str, Any]:
     }
 
 
+def _normalise_list(values: Optional[Iterable[str]], default: Sequence[str]) -> list[str]:
+    if values is None:
+        return list(default)
+    parsed = [value.strip() for value in values if value and value.strip()]
+    return parsed or list(default)
+
+
 def _ensure_directory(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -82,15 +89,26 @@ class TwelveLabsAnalysisService:
         poll_interval: int = 10,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        video_embedding_scope: Optional[Iterable[str]] = None,
-        gzip_upload: bool = True,
         index_name: str = DEFAULT_INDEX_NAME,
         index_model_name: str = DEFAULT_INDEX_MODEL_NAME,
         index_model_options: Optional[Iterable[str]] = None,
         index_addons: Optional[Iterable[str]] = None,
-        embedding_options: Optional[Iterable[str]] = None,
         enable_video_stream: bool = False,
-        retrieve_transcription: bool = False,
+        user_metadata: Optional[str] = None,
+        gist_types: Optional[Iterable[str]] = None,
+        summary_types: Optional[Iterable[str]] = None,
+        summary_prompt: Optional[str] = None,
+        summary_temperature: Optional[float] = None,
+        summary_max_tokens: Optional[int] = None,
+        search_prompt: Optional[str] = None,
+        search_options: Optional[Iterable[str]] = None,
+        search_group_by: str = "video",
+        search_threshold: str = "medium",
+        search_operator: str = "or",
+        search_page_limit: int = 5,
+        search_sort: str = "score",
+        include_hls_url: bool = False,
+        ignore_hls_errors: bool = False,
     ) -> None:
         self._client = client
         self._model_name = model_name
@@ -100,22 +118,40 @@ class TwelveLabsAnalysisService:
         self._poll_interval = max(1, int(poll_interval))
         self._temperature = temperature
         self._max_tokens = max_tokens
-        scope_values = (
-            [scope for scope in embedding_options or [] if scope]
-            if embedding_options is not None
-            else [scope for scope in video_embedding_scope or [] if scope]
-        )
-        if not scope_values:
-            scope_values = list(DEFAULT_EMBEDDING_OPTIONS)
-        self._embedding_options = scope_values
-        self._gzip_upload = gzip_upload
         self._index_name = index_name or DEFAULT_INDEX_NAME
         self._index_model_name = index_model_name or DEFAULT_INDEX_MODEL_NAME
-        model_opts = [option for option in (index_model_options or DEFAULT_INDEX_MODEL_OPTIONS) if option]
-        self._index_model_options = model_opts or list(DEFAULT_INDEX_MODEL_OPTIONS)
-        self._index_addons = [addon for addon in index_addons or [] if addon]
+        self._index_model_options = _normalise_list(
+            index_model_options, DEFAULT_INDEX_MODEL_OPTIONS
+        )
+        self._index_addons = [
+            addon.strip()
+            for addon in index_addons or []
+            if addon and addon.strip()
+        ]
         self._enable_video_stream = enable_video_stream
-        self._retrieve_transcription = retrieve_transcription
+        self._user_metadata = user_metadata
+        self._gist_types = _normalise_list(gist_types, DEFAULT_GIST_TYPES)
+        self._summary_types = _normalise_list(summary_types, DEFAULT_SUMMARY_TYPES)
+        self._summary_prompt = summary_prompt
+        self._summary_temperature = summary_temperature
+        self._summary_max_tokens = summary_max_tokens
+        self._search_prompt = (
+            search_prompt.strip()
+            if isinstance(search_prompt, str) and search_prompt.strip()
+            else None
+        )
+        self._search_options = (
+            _normalise_list(search_options, DEFAULT_SEARCH_OPTIONS)
+            if self._search_prompt
+            else []
+        )
+        self._search_group_by = search_group_by
+        self._search_threshold = search_threshold
+        self._search_operator = search_operator
+        self._search_page_limit = max(1, int(search_page_limit))
+        self._search_sort = search_sort
+        self._include_hls_url = include_hls_url
+        self._ignore_hls_errors = ignore_hls_errors
         self._lock = threading.Lock()
         self._records: Dict[str, Dict[str, Any]] = {}
         self._load_cache()
@@ -127,8 +163,6 @@ class TwelveLabsAnalysisService:
         return TwelveLabsClient(
             api_key=api_key,
             base_url=DEFAULT_BASE_URL,
-            embedding_path=DEFAULT_EMBEDDING_TASK_PATH,
-            analysis_path=DEFAULT_ANALYSIS_PATH,
         )
 
     def _build_key(self, stream_id: str, file_name: str) -> str:
@@ -237,11 +271,11 @@ class TwelveLabsAnalysisService:
             raise AnalysisServiceError("Unable to determine managed index identifier")
 
         with open(recording_path, "rb") as handle:
-            ingest_response = self._client.create_video_indexing_task(
+            ingest_response = self._client.create_indexing_task(
                 index_id=index_id,
                 video_file=handle,
-                video_file_name=file_name,
                 enable_video_stream=self._enable_video_stream,
+                user_metadata=self._user_metadata,
             )
 
         task_id = (
@@ -249,46 +283,72 @@ class TwelveLabsAnalysisService:
             or ingest_response.get("id")
             or ingest_response.get("_id")
         )
-        if not task_id:
+        if not isinstance(task_id, str) or not task_id:
             raise AnalysisServiceError(
                 "Indexing response did not include a task identifier"
             )
 
-        ingest_status = self._client.wait_for_indexing_task(
+        ingest_status = self._client.wait_for_task(
             task_id=task_id,
             poll_interval=self._poll_interval,
         )
 
-        video_id = extract_video_id(ingest_status) or ingest_response.get("video_id")
-        if not video_id:
-            raise AnalysisServiceError("Unable to determine Twelve Labs video_id from indexing status")
+        video_id = (
+            extract_video_id(ingest_status)
+            or ingest_response.get("video_id")
+            or ingest_response.get("videoId")
+        )
+        if not isinstance(video_id, str) or not video_id:
+            raise AnalysisServiceError(
+                "Unable to determine Twelve Labs video_id from indexing status"
+            )
 
-        embedding_response = self._client.retrieve_index_video(
-            index_id=index_id,
+        gist_response = self._client.fetch_gist(
             video_id=video_id,
-            embedding_options=self._embedding_options,
-            transcription=self._retrieve_transcription,
+            gist_types=self._gist_types,
         )
 
-        analysis_payload: Dict[str, Any] = {
-            "video_id": video_id,
-            "prompt": prompt_value,
-            "stream": False,
-        }
-        analysis_payload["index_id"] = index_id
-        analysis_payload["model_name"] = self._model_name
-        if temperature_value is not None:
-            analysis_payload["temperature"] = temperature_value
-        if max_tokens_value is not None:
-            analysis_payload["max_tokens"] = max_tokens_value
+        summary_payloads: Dict[str, Any] = {}
+        for summary_type in self._summary_types:
+            summary_payloads[summary_type] = self._client.summarize(
+                video_id=video_id,
+                summary_type=summary_type,
+                prompt=self._summary_prompt,
+                temperature=self._summary_temperature,
+                max_tokens=self._summary_max_tokens,
+            )
 
         analysis_response = self._client.analyze_video(
             video_id=video_id,
             prompt=prompt_value,
             temperature=temperature_value,
-            stream=False,
             max_tokens=max_tokens_value,
+            stream=False,
         )
+
+        search_results: Optional[list[Dict[str, Any]]] = None
+        if self._search_prompt:
+            search_results = self._client.search_videos(
+                index_id=index_id,
+                query_text=self._search_prompt,
+                search_options=self._search_options or None,
+                group_by=self._search_group_by,
+                threshold=self._search_threshold,
+                operator=self._search_operator,
+                page_limit=self._search_page_limit,
+                sort_option=self._search_sort,
+            )
+
+        hls_url: Optional[Any] = None
+        if self._include_hls_url:
+            try:
+                hls_url = self._client.get_video_hls_url(
+                    index_id=index_id, video_id=video_id
+                )
+            except TwelveLabsError as exc:
+                if not self._ignore_hls_errors:
+                    raise
+                hls_url = {"error": str(exc)}
 
         record = {
             "streamId": stream_id,
@@ -300,9 +360,9 @@ class TwelveLabsAnalysisService:
             "prompt": prompt_value,
             "temperature": temperature_value,
             "maxTokens": max_tokens_value,
-            "embeddingOptions": list(self._embedding_options) if self._embedding_options else None,
             "pollInterval": self._poll_interval,
             "videoId": video_id,
+            "updatedAt": _utc_iso_now(),
             "index": {
                 "name": self._index_name,
                 "modelName": self._index_model_name,
@@ -310,23 +370,48 @@ class TwelveLabsAnalysisService:
                 "addons": self._index_addons or None,
                 "response": index_response,
             },
-            "ingest": {
-                "taskId": task_id,
+            "task": {
+                "id": task_id,
                 "response": ingest_response,
                 "status": ingest_status,
                 "enableVideoStream": self._enable_video_stream,
+                "userMetadata": self._user_metadata,
             },
-            "updatedAt": _utc_iso_now(),
-            "embedding": {
-                "options": list(self._embedding_options) if self._embedding_options else None,
-                "transcriptionRequested": self._retrieve_transcription,
-                "response": embedding_response,
+            "video": {
+                "id": video_id,
+                "hlsUrl": hls_url,
+            },
+            "gist": {
+                "types": list(self._gist_types),
+                "response": gist_response,
+            },
+            "summary": {
+                "types": list(self._summary_types),
+                "prompt": self._summary_prompt,
+                "temperature": self._summary_temperature,
+                "maxTokens": self._summary_max_tokens,
+                "responses": summary_payloads,
             },
             "analysis": {
-                "request": analysis_payload,
+                "modelName": self._model_name,
+                "prompt": prompt_value,
+                "temperature": temperature_value,
+                "maxTokens": max_tokens_value,
+                "stream": False,
                 "response": analysis_response,
             },
         }
+        if search_results is not None:
+            record["search"] = {
+                "prompt": self._search_prompt,
+                "options": list(self._search_options),
+                "groupBy": self._search_group_by,
+                "threshold": self._search_threshold,
+                "operator": self._search_operator,
+                "pageLimit": self._search_page_limit,
+                "sort": self._search_sort,
+                "results": search_results,
+            }
 
         with self._lock:
             self._records[key] = record
@@ -337,11 +422,11 @@ class TwelveLabsAnalysisService:
 
 __all__ += [
     "DEFAULT_BASE_URL",
-    "DEFAULT_EMBEDDING_TASK_PATH",
-    "DEFAULT_ANALYSIS_PATH",
     "DEFAULT_INDEX_NAME",
     "DEFAULT_INDEX_MODEL_NAME",
     "DEFAULT_INDEX_MODEL_OPTIONS",
-    "DEFAULT_EMBEDDING_OPTIONS",
+    "DEFAULT_GIST_TYPES",
+    "DEFAULT_SUMMARY_TYPES",
+    "DEFAULT_SEARCH_OPTIONS",
     "TwelveLabsError",
 ]
