@@ -31,6 +31,8 @@ Environment variables:
   WS_INSECURE_PORT   Optional secondary HTTP port (e.g., 8081)
   WS_STATIC_DIR      Static directory served by websocket_server.py (default: <repo>/browser)
   WS_RECORDINGS_DIR  Optional directory exposed via --recordings-dir
+  TWELVE_LABS_API_KEY  Optional API key forwarded to websocket_server.py via --twelvelabs-api-key
+  TWELVE_LABS_BASE_URL Optional base URL forwarded via --twelvelabs-base-url
 USAGE
 }
 
@@ -59,6 +61,8 @@ WS_KEYFILE=${WS_KEYFILE:-}
 WS_INSECURE_PORT=${WS_INSECURE_PORT:-}
 WS_STATIC_DIR=${WS_STATIC_DIR:-$ROOT_DIR/browser}
 WS_RECORDINGS_DIR=${WS_RECORDINGS_DIR:-}
+TWELVE_LABS_API_KEY=${TWELVE_LABS_API_KEY:-}
+TWELVE_LABS_BASE_URL=${TWELVE_LABS_BASE_URL:-}
 
 SUPPORTS_WAIT_N=0
 if [[ ${BASH_VERSINFO[0]} -gt 4 || ( ${BASH_VERSINFO[0]} -eq 4 && ${BASH_VERSINFO[1]} -ge 3 ) ]]; then
@@ -227,6 +231,12 @@ start_processes() {
   fi
   if [[ -n "$WS_RECORDINGS_DIR" ]]; then
     ws_cmd+=(--recordings-dir "$WS_RECORDINGS_DIR")
+  fi
+  if [[ -n "$TWELVE_LABS_API_KEY" ]]; then
+    ws_cmd+=(--twelvelabs-api-key "$TWELVE_LABS_API_KEY")
+  fi
+  if [[ -n "$TWELVE_LABS_BASE_URL" ]]; then
+    ws_cmd+=(--twelvelabs-base-url "$TWELVE_LABS_BASE_URL")
   fi
   (
     cd "$ROOT_DIR/jetson"

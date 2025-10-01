@@ -172,6 +172,8 @@ WS_KEYFILE=./scripts/certs/server.key \
 
 The helper keeps track of the spawned processes under `.run/webrtc_stack.pids`. Stop them (from any shell) with `./scripts/manage_stack.sh stop`, or check their status via `./scripts/manage_stack.sh status`. The example above expects a shared certificate/key pair at `scripts/certs/server.crt` and `scripts/certs/server.key` so both the relay and broadcaster terminate TLS with the same assets. Supply `PION_HTTPS_ADDR`, `PION_TLS_CERT`, `PION_TLS_KEY`, `WS_CERTFILE`, and `WS_KEYFILE` when you need dual HTTP/HTTPS listeners, and override `GO_BIN`/`PYTHON_BIN` if your toolchains live in non-default paths.
 
+`manage_stack.sh` also respects the `TWELVE_LABS_API_KEY` and `TWELVE_LABS_BASE_URL` environment variables and forwards them to `websocket_server.py`, so you can configure the analysis integration once before launching the full stack.
+
 ### Twelve Labs video analysis client
 
 [`jetson/twelvelabs_client.py`](jetson/twelvelabs_client.py) mirrors the public Twelve Labs quick-start notebooks in plain Python. The helper ensures a managed `test-webrtc` index exists with both `marengo2.7` and `pegasus1.2` configured for visual and audio modalities, uploads a video, waits for ingestion to finish, retrieves gist metadata (title/topic/hashtags), and streams analysis text using the default prompt “이 영상을 분석해줘.”. The streamed output is normalised into paragraphs so the caller can persist the response directly.
@@ -243,7 +245,18 @@ Configure the integration with the following environment variables before launch
 | `TWELVE_LABS_GIST_TYPES` | Comma-separated gist fields (defaults to `title,topic,hashtag`). |
 | `TWELVE_LABS_CACHE_PATH` | Override the cache file location (defaults to `recordings/twelvelabs_analysis.json`). |
 
-You can also pass the Twelve Labs connection details directly to the WebSocket server via `--twelvelabs-api-key` and `--twelvelabs-base-url` when launching `jetson/websocket_server.py`, which is handy for local testing without exporting environment variables.
+You can also pass the Twelve Labs connection details directly to the WebSocket server via `--twelvelabs-api-key` and `--twelvelabs-base-url` when launching `jetson/websocket_server.py`, which is handy for local testing without exporting environment variables:
+
+```bash
+cd jetson
+python websocket_server.py \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --twelvelabs-api-key "$TWELVE_LABS_API_KEY" \
+  --twelvelabs-base-url "https://api.twelvelabs.io"
+```
+
+The flags override the environment variables for that invocation only, making it easy to test against alternative Twelve Labs deployments.
 
 When the environment is configured the “Analyze” button in `browser/dashboard.html` invokes `/analysis?action=start` with the selected recording identifiers. Existing results are surfaced without re-running the pipeline, and the UI reports the stored completion time alongside the generated gist summary and analysis paragraphs.
 
