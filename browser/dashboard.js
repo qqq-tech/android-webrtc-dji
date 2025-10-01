@@ -586,12 +586,32 @@ function storeAnalysisRecord(recording, record, cached) {
   rememberEmbeddingState(recording, record);
 }
 
-function buildAnalysisCompleteMessage(record, cached) {
+function hasStoredAnalysis(record) {
   if (!record || typeof record !== 'object') {
-    return cached
-      ? 'Showing stored Twelve Labs analysis.'
-      : 'Twelve Labs analysis completed.';
+    return false;
   }
+  const analysis = record.analysis;
+  if (!analysis || typeof analysis !== 'object') {
+    return false;
+  }
+  const text =
+    typeof analysis.text === 'string' && analysis.text ? analysis.text.trim() : '';
+  if (text) {
+    return true;
+  }
+  if (Array.isArray(analysis.chunks)) {
+    return analysis.chunks.some(
+      (chunk) => typeof chunk === 'string' && chunk.trim().length > 0
+    );
+  }
+  return false;
+}
+
+function buildAnalysisCompleteMessage(record, cached) {
+  if (!hasStoredAnalysis(record)) {
+    return '';
+  }
+
   const updatedAt =
     typeof record.updatedAt === 'string' && record.updatedAt ? new Date(record.updatedAt) : null;
   const formatted =
@@ -600,11 +620,13 @@ function buildAnalysisCompleteMessage(record, cached) {
       : typeof record.updatedAt === 'string'
       ? record.updatedAt
       : '';
+
   if (cached) {
     return formatted
       ? `Showing stored Twelve Labs analysis generated on ${formatted}.`
       : 'Showing stored Twelve Labs analysis.';
   }
+
   return formatted
     ? `Twelve Labs analysis completed on ${formatted}.`
     : 'Twelve Labs analysis completed.';
@@ -1214,6 +1236,13 @@ function createVideoPlaybackBlock(record) {
   return section;
 }
 
+const EMBEDDING_OPTION_SUMMARIES = {
+  'visual-text':
+    '화면과 화면 속 텍스트를 함께 분석한 임베딩으로, 비슷한 장면을 찾거나 검색할 때 활용할 수 있습니다.',
+  audio:
+    '사운드, 목소리, 음향 효과를 분석한 임베딩으로, 유사한 음향 구간을 찾거나 검색할 때 유용합니다.',
+};
+
 function getEmbeddingVector(segment) {
   if (!segment || typeof segment !== 'object') {
     return [];
@@ -1225,6 +1254,35 @@ function getEmbeddingVector(segment) {
     return segment.float_;
   }
   return [];
+}
+
+function buildEmbeddingSegmentSummary({ start, end, option, vectorLength }) {
+  const parts = [];
+
+  if (start !== null && end !== null) {
+    parts.push(`이 구간(${start.toFixed(1)}초–${end.toFixed(1)}초)는`);
+  } else if (start !== null) {
+    parts.push(`이 구간(${start.toFixed(1)}초 이후)는`);
+  } else if (end !== null) {
+    parts.push(`이 구간(${end.toFixed(1)}초 이전)는`);
+  } else {
+    parts.push('이 구간은');
+  }
+
+  if (option) {
+    const summary = EMBEDDING_OPTION_SUMMARIES[option] || '임베딩으로 요약되어 있습니다.';
+    parts.push(summary);
+  } else {
+    parts.push('임베딩으로 요약되어 있습니다.');
+  }
+
+  if (Number.isFinite(vectorLength) && vectorLength > 0) {
+    parts.push(`총 ${vectorLength}개의 숫자로 표현된 벡터입니다.`);
+  }
+
+  parts.push('이 값들은 Twelve Labs에서 비슷한 장면이나 음향을 검색할 때 사용됩니다.');
+
+  return parts.join(' ');
 }
 
 function createEmbeddingsBlock(record, cached) {
@@ -1331,6 +1389,20 @@ function createEmbeddingsBlock(record, cached) {
       segmentBlock.appendChild(header);
 
       const vector = getEmbeddingVector(segment);
+      const summary = buildEmbeddingSegmentSummary({
+        start,
+        end,
+        option: scope,
+        vectorLength: vector.length,
+      });
+
+      if (summary) {
+        const summaryParagraph = document.createElement('p');
+        summaryParagraph.className = 'embedding-segment-summary';
+        summaryParagraph.textContent = summary;
+        segmentBlock.appendChild(summaryParagraph);
+      }
+
       if (vector.length > 0) {
         const preview = document.createElement('pre');
         preview.className = 'embedding-preview';
@@ -1668,16 +1740,18 @@ async function requestRecordingAnalysis(recording) {
   }
 
   const cached = getCachedAnalysis(recording);
-  if (cached?.record) {
-    const message = buildAnalysisCompleteMessage(cached.record, true);
-    setAnalysisView(recording, 'cached', message, cached.record, true);
+  const cachedRecord = cached?.record;
+  const cachedHasAnalysis = hasStoredAnalysis(cachedRecord);
+  if (cachedHasAnalysis) {
+    const message = buildAnalysisCompleteMessage(cachedRecord, true);
+    setAnalysisView(recording, 'cached', message, cachedRecord, true);
     return;
   }
 
   const pendingMessage = analysisPromptValue
     ? `Requesting Twelve Labs analysis for “${recording.displayName}” with a custom prompt…`
     : `Requesting Twelve Labs analysis for “${recording.displayName}”…`;
-  setAnalysisView(recording, 'loading', pendingMessage);
+  setAnalysisView(recording, 'loading', pendingMessage, cachedRecord || null, Boolean(cachedRecord));
 
   try {
     activeAnalysisPromise = fetchAnalysis(recording, { start: true });

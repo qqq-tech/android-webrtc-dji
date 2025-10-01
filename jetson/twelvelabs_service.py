@@ -92,21 +92,27 @@ _MISSING_EMBEDDING_RE = re.compile(
 def _extract_missing_embedding_option(error: Exception) -> Optional[str]:
     """Return the embedding option that caused a retrieval failure."""
 
-    message: str = ""
+    candidates: list[str] = []
     body = getattr(error, "body", None)
+
     if isinstance(body, dict):  # SDK provides structured error bodies
-        code = str(body.get("code") or "").strip()
+        code = str(body.get("code") or "").strip().lower()
         message = str(body.get("message") or "")
         if code and code != "embed_no_embeddings_found":
             return None
-    else:
-        message = str(error)
+        if message:
+            candidates.append(message)
+    elif body:
+        candidates.append(str(body))
 
-    match = _MISSING_EMBEDDING_RE.search(message)
-    if match:
-        candidate = match.group("option").strip()
-        if candidate:
-            return candidate
+    candidates.append(str(error))
+
+    for message in candidates:
+        match = _MISSING_EMBEDDING_RE.search(message)
+        if match:
+            candidate = match.group("option").strip()
+            if candidate:
+                return candidate
     return None
 
 
@@ -142,21 +148,24 @@ def _retrieve_embeddings_with_fallback(
             )
             return metadata, tuple(remaining), tuple(failed)
         except Exception as exc:  # pragma: no cover - diagnostics only
-            if (
-                NotFoundError is not None
-                and isinstance(exc, NotFoundError)
-                and remaining
-            ):
-                missing = _extract_missing_embedding_option(exc)
-                if missing and missing in remaining:
-                    LOGGER.warning(
-                        "Embedding option '%s' unavailable for video %s; retrying without it",
-                        missing,
-                        video_id,
-                    )
-                    remaining = [opt for opt in remaining if opt != missing]
-                    failed.append(missing)
-                    continue
+            missing = _extract_missing_embedding_option(exc) if remaining else None
+            if missing and missing in remaining:
+                LOGGER.warning(
+                    "Embedding option '%s' unavailable for video %s; retrying without it",
+                    missing,
+                    video_id,
+                )
+                remaining = [opt for opt in remaining if opt != missing]
+                failed.append(missing)
+                # Retry without the missing option. When all options have been
+                # removed we still perform one final request so callers receive
+                # refreshed metadata such as transcripts or HLS URLs.
+                continue
+
+            if NotFoundError is not None and isinstance(exc, NotFoundError):
+                # NotFoundError for reasons other than a missing embedding
+                # option should bubble up to the caller.
+                raise
             raise
 
 
