@@ -357,6 +357,107 @@ const analysisViewState = {
 };
 
 const analysisCache = new Map();
+const embeddingSuccessCache = new Map();
+
+function extractEmbeddingIdentifier(candidate) {
+  if (!candidate || typeof candidate !== 'object') {
+    return '';
+  }
+  const keys = ['id', 'videoId', 'video_id', 'vectorId', 'vector_id'];
+  for (const key of keys) {
+    const value = candidate[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+}
+
+function resolveEmbeddingIdentifier(record) {
+  if (!record || typeof record !== 'object') {
+    return '';
+  }
+
+  const embeddings = record.embeddings && typeof record.embeddings === 'object'
+    ? record.embeddings
+    : null;
+  if (embeddings) {
+    const direct = extractEmbeddingIdentifier(embeddings);
+    if (direct) {
+      return direct;
+    }
+
+    const response = embeddings.response && typeof embeddings.response === 'object'
+      ? embeddings.response
+      : null;
+    if (response) {
+      const responseId = extractEmbeddingIdentifier(response);
+      if (responseId) {
+        return responseId;
+      }
+
+      const videoEmbedding = response.video_embedding && typeof response.video_embedding === 'object'
+        ? response.video_embedding
+        : null;
+      if (videoEmbedding) {
+        const videoEmbeddingId = extractEmbeddingIdentifier(videoEmbedding);
+        if (videoEmbeddingId) {
+          return videoEmbeddingId;
+        }
+      }
+    }
+  }
+
+  const metadataEmbedding =
+    record.video &&
+    typeof record.video === 'object' &&
+    record.video.metadata &&
+    typeof record.video.metadata === 'object' &&
+    record.video.metadata.embedding &&
+    typeof record.video.metadata.embedding === 'object'
+      ? record.video.metadata.embedding
+      : null;
+  if (metadataEmbedding) {
+    const metadataId = extractEmbeddingIdentifier(metadataEmbedding);
+    if (metadataId) {
+      return metadataId;
+    }
+  }
+
+  return '';
+}
+
+function rememberEmbeddingState(recording, record) {
+  const key = getAnalysisCacheKey(recording);
+  if (!key) {
+    return;
+  }
+  const identifier = resolveEmbeddingIdentifier(record);
+  if (identifier) {
+    embeddingSuccessCache.set(key, identifier);
+  } else {
+    embeddingSuccessCache.delete(key);
+  }
+}
+
+function hasEmbeddingSuccess(recording) {
+  const key = getAnalysisCacheKey(recording);
+  if (!key) {
+    return false;
+  }
+  if (embeddingSuccessCache.has(key)) {
+    return true;
+  }
+  const cached = analysisCache.get(key);
+  if (cached?.record) {
+    const identifier = resolveEmbeddingIdentifier(cached.record);
+    if (identifier) {
+      embeddingSuccessCache.set(key, identifier);
+      return true;
+    }
+  }
+  return false;
+}
 let activeAnalysisPromise = null;
 
 const ANALYSIS_INTEGRATION_DISABLED_CODES = new Set([
@@ -478,9 +579,11 @@ function getCachedAnalysis(recording) {
 function storeAnalysisRecord(recording, record, cached) {
   const key = getAnalysisCacheKey(recording);
   if (!key || !record) {
+    rememberEmbeddingState(recording, null);
     return;
   }
   analysisCache.set(key, { record, cached: Boolean(cached) });
+  rememberEmbeddingState(recording, record);
 }
 
 function buildAnalysisCompleteMessage(record, cached) {
@@ -948,21 +1051,32 @@ function renderRecordingsList() {
       embedButton.title = 'Configure the Twelve Labs integration to enable embeddings.';
     } else {
       const cached = getCachedAnalysis(recording);
-      if (cached?.record) {
+      const hasCachedRecord = Boolean(cached?.record);
+      const embeddingReady = hasEmbeddingSuccess(recording);
+
+      if (hasCachedRecord) {
         analyzeButton.textContent = 'View analysis';
-        if (cached.record.embeddings) {
-          embedButton.textContent = 'View embeddings';
-        }
-        embedButton.disabled = false;
-        embedButton.title = 'Retrieve Twelve Labs embeddings for this recording.';
-      } else {
-        embedButton.disabled = false;
-        embedButton.title = 'Upload to Twelve Labs and retrieve embeddings for this recording.';
       }
+
+      if (embeddingReady) {
+        embedButton.textContent = 'View embeddings';
+      }
+
+      embedButton.disabled = false;
+      embedButton.title = embeddingReady
+        ? 'Retrieve Twelve Labs embeddings for this recording.'
+        : 'Upload to Twelve Labs and retrieve embeddings for this recording.';
+
+      analyzeButton.disabled = !embeddingReady;
+      analyzeButton.title = embeddingReady
+        ? hasCachedRecord
+          ? 'View Twelve Labs analysis for this recording.'
+          : 'Request Twelve Labs analysis for this recording.'
+        : 'Run embeddings before requesting Twelve Labs analysis.';
     }
 
-    actionsContainer.appendChild(analyzeButton);
     actionsContainer.appendChild(embedButton);
+    actionsContainer.appendChild(analyzeButton);
     item.appendChild(actionsContainer);
 
     recordingsListElement.appendChild(item);
@@ -1482,6 +1596,7 @@ async function loadCachedAnalysis(recording) {
         const key = getAnalysisCacheKey(recording);
         if (key && !analysisCache.has(key)) {
           analysisCache.set(key, { record: null, cached: false });
+          rememberEmbeddingState(recording, null);
         }
       }
       return;
