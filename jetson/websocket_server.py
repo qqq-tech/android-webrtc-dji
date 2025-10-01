@@ -895,14 +895,13 @@ class DetectionBroadcaster:
 
         existing = self._analysis_service.get_cached_record(stream_id, file_name)
         if existing is None:
-            return self._json_response(
-                {
-                    "status": "not_found",
-                    "error": "analysis_missing",
-                    "message": "No stored Twelve Labs analysis for this recording.",
-                },
-                status=http.HTTPStatus.NOT_FOUND,
-            )
+            payload = {
+                "status": "not_found",
+                "cached": False,
+                "record": None,
+                "message": "No stored Twelve Labs analysis is available yet for this recording. Run an analysis to generate insights.",
+            }
+            return self._json_response(payload, status=http.HTTPStatus.OK)
 
         payload = {
             "status": "cached",

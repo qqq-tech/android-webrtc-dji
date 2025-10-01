@@ -503,6 +503,7 @@ const ANALYSIS_STATUS_CONFIG = {
   loading: { label: 'Analyzing…', tone: 'pending' },
   embedding: { label: 'Embedding…', tone: 'pending' },
   cached: { label: 'Completed', tone: 'ready' },
+  missing: { label: 'No analysis', tone: 'muted' },
   error: { label: 'Error', tone: 'warning' },
   disabled: { label: 'Unavailable', tone: 'warning' },
 };
@@ -1638,7 +1639,7 @@ async function loadCachedAnalysis(recording) {
   }
   try {
     const result = await fetchAnalysis(recording, { start: false });
-    if (!result.ok || !result.record) {
+    if (!result.ok) {
       if (isAnalysisIntegrationError(result)) {
         disableAnalysisIntegration(
           recording,
@@ -1647,11 +1648,25 @@ async function loadCachedAnalysis(recording) {
         );
         return;
       }
-      if (result.status === 'not_found') {
-        const key = getAnalysisCacheKey(recording);
-        if (key && !analysisCache.has(key)) {
-          analysisCache.set(key, { record: null, cached: false });
+      return;
+    }
+
+    if (!result.record) {
+      const statusKey = (result.status || '').toLowerCase();
+      if (['not_found', 'missing', 'empty'].includes(statusKey)) {
+        const cacheKey = getAnalysisCacheKey(recording);
+        if (cacheKey && !analysisCache.has(cacheKey)) {
+          analysisCache.set(cacheKey, { record: null, cached: false });
           rememberEmbeddingState(recording, null);
+        }
+        if (analysisViewState.recording?.id === recording.id) {
+          const displayName =
+            (recording && typeof recording.displayName === 'string' && recording.displayName) ||
+            'this recording';
+          const fallbackMessage =
+            result.message ||
+            `No stored Twelve Labs analysis found for “${displayName}” yet. Press “Analyze” to generate insights.`;
+          setAnalysisView(recording, 'missing', fallbackMessage, null, false, result.code || result.status);
         }
       }
       return;
