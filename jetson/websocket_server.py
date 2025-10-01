@@ -315,6 +315,8 @@ class DetectionBroadcaster:
                 raise ValueError(f"Duplicate listener binding requested for {host}:{port}")
             seen_bindings.add(binding)
 
+        self._ensure_analysis_service_configured()
+
         base_logger = logging.getLogger("websockets.server")
         try:
             websockets_server_module = importlib.import_module("websockets.server")
@@ -537,25 +539,41 @@ class DetectionBroadcaster:
 
         return fallback
 
-    def _init_analysis_service(self) -> None:
+    def _disable_analysis_service(self, reason: str, message: str) -> None:
+        """Record why the Twelve Labs integration is unavailable."""
+
+        self._analysis_service = None
+        if self._analysis_disabled_reason != reason:
+            logging.info(message)
+        self._analysis_disabled_reason = reason
+
+    def _init_analysis_service(self, *, force: bool = False) -> None:
+        if not force and self._analysis_service is not None:
+            return
+
+        was_enabled = self._analysis_service is not None
+        previous_reason = self._analysis_disabled_reason
+        self._analysis_service = None
+
         if TwelveLabsAnalysisService is None or TwelveLabsClient is None:
-            self._analysis_disabled_reason = "integration_unavailable"
-            logging.info("Twelve Labs analysis integration not available")
+            self._disable_analysis_service(
+                "integration_unavailable", "Twelve Labs analysis integration not available"
+            )
             return
 
         if self._recordings_dir is None or not self._recordings_dir.exists():
-            self._analysis_disabled_reason = "recordings_unavailable"
-            logging.info(
-                "Twelve Labs analysis integration disabled: recordings directory missing"
+            self._disable_analysis_service(
+                "recordings_unavailable",
+                "Twelve Labs analysis integration disabled: recordings directory missing",
             )
             return
 
         api_key_env = os.environ.get("TWELVE_LABS_API_KEY")
         api_key = self._twelvelabs_api_key or api_key_env
         if not api_key or not api_key.strip():
-            self._analysis_disabled_reason = "missing_api_key"
-            logging.info(
-                "Twelve Labs analysis integration disabled: TWELVE_LABS_API_KEY not set"
+            self._disable_analysis_service(
+                "missing_api_key",
+                "Twelve Labs analysis integration disabled: TWELVE_LABS_API_KEY not set",
             )
             return
 
@@ -587,12 +605,14 @@ class DetectionBroadcaster:
             )
         except Exception:  # pragma: no cover - best effort logging
             logging.exception("Failed to configure Twelve Labs client")
-            self._analysis_service = None
-            self._analysis_disabled_reason = "client_initialisation_failed"
+            self._disable_analysis_service(
+                "client_initialisation_failed",
+                "Twelve Labs analysis integration disabled: client initialisation failed",
+            )
             return
 
         try:
-            self._analysis_service = TwelveLabsAnalysisService(
+            service = TwelveLabsAnalysisService(
                 client=client,
                 recordings_dir=self._recordings_dir,
                 storage_path=storage_path,
@@ -602,14 +622,24 @@ class DetectionBroadcaster:
             )
         except Exception:  # pragma: no cover - best effort logging
             logging.exception("Failed to initialise Twelve Labs analysis integration")
-            self._analysis_service = None
-            self._analysis_disabled_reason = "initialisation_failed"
+            self._disable_analysis_service(
+                "initialisation_failed",
+                "Twelve Labs analysis integration disabled: initialisation failed",
+            )
             return
 
+        self._analysis_service = service
         self._analysis_disabled_reason = None
-        logging.info(
-            "Twelve Labs analysis integration enabled (cache: %s)", storage_path
-        )
+        if previous_reason is not None or not was_enabled:
+            logging.info(
+                "Twelve Labs analysis integration enabled (cache: %s)", storage_path
+            )
+
+    def _ensure_analysis_service_configured(self) -> bool:
+        if self._analysis_service is not None:
+            return True
+        self._init_analysis_service(force=True)
+        return self._analysis_service is not None
 
     def _handle_recordings_request(self, request_path: str, query_string: str):
         mount = self._recordings_mount_path
@@ -643,6 +673,8 @@ class DetectionBroadcaster:
     async def _handle_analysis_request(self, request_path: str, query_string: str):
         if request_path not in {"/analysis", "/analysis/"}:
             return None
+
+        self._ensure_analysis_service_configured()
 
         if self._analysis_service is None:
             reason = self._analysis_disabled_reason or "analysis_disabled"
