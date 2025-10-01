@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import httpx
 from twelvelabs import TwelveLabs
 from twelvelabs.indexes import IndexesCreateRequestModelsItem
 from twelvelabs.tasks import TasksRetrieveResponse
@@ -79,14 +80,21 @@ class TwelveLabsClient:
         api_key: str,
         base_url: Optional[str] = None,
         timeout: Optional[float] = None,
+        verify_ssl: bool = False,
     ) -> None:
         if not api_key:
             raise ValueError("A Twelve Labs API key is required")
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
-        if timeout is not None:
-            kwargs["timeout"] = timeout
+        if verify_ssl:
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+        else:
+            client_kwargs: Dict[str, Any] = {"verify": False}
+            if timeout is not None:
+                client_kwargs["timeout"] = timeout
+            kwargs["httpx_client"] = httpx.Client(**client_kwargs)
         self._sdk = TwelveLabs(**kwargs)
         self._index_cache: Dict[str, Dict[str, Any]] = {}
 
