@@ -469,6 +469,45 @@ const ANALYSIS_INTEGRATION_DISABLED_CODES = new Set([
   'analysis_disabled',
 ]);
 
+function resolveIntegrationErrorMessage(result, fallbackMessage) {
+  const fallback =
+    fallbackMessage || 'Failed to obtain a response from the Twelve Labs service.';
+  if (!result || typeof result !== 'object') {
+    return fallback;
+  }
+
+  const messageCandidates = [];
+  if (typeof result.message === 'string' && result.message.trim()) {
+    messageCandidates.push(result.message.trim());
+  }
+  if (typeof result.error === 'string' && result.error.trim()) {
+    messageCandidates.push(result.error.trim());
+  }
+  if (Array.isArray(result.warnings)) {
+    result.warnings
+      .filter((warning) => typeof warning === 'string' && warning.trim())
+      .forEach((warning) => {
+        messageCandidates.push(warning.trim());
+      });
+  }
+
+  if (messageCandidates.length > 0) {
+    return messageCandidates[0];
+  }
+
+  if (result.details && typeof result.details === 'object') {
+    const { message, error } = result.details;
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim();
+    }
+    if (typeof error === 'string' && error.trim()) {
+      return error.trim();
+    }
+  }
+
+  return fallback;
+}
+
 function isAnalysisIntegrationError(result) {
   if (!result || typeof result !== 'object') {
     return false;
@@ -758,6 +797,7 @@ async function fetchAnalysis(recording, options = {}) {
       ok: false,
       status,
       error: errorMessage,
+      message: errorMessage,
       code: payload && (payload.error || payload.code),
       details: payload,
     };
@@ -1648,6 +1688,13 @@ async function loadCachedAnalysis(recording) {
         );
         return;
       }
+      const errorMessage = resolveIntegrationErrorMessage(
+        result,
+        'Failed to check the Twelve Labs analysis status.'
+      );
+      if (analysisViewState.recording?.id === recording.id) {
+        setAnalysisView(recording, 'error', errorMessage, null, false, result.code || result.status);
+      }
       return;
     }
 
@@ -1764,8 +1811,10 @@ async function requestRecordingAnalysis(recording) {
         );
         return;
       }
-      const errorMessage =
-        result.error || 'Failed to obtain a Twelve Labs analysis response.';
+      const errorMessage = resolveIntegrationErrorMessage(
+        result,
+        'Failed to obtain a Twelve Labs analysis response.'
+      );
       setAnalysisView(recording, 'error', errorMessage, null, false, result.code || result.status);
       return;
     }
@@ -1837,8 +1886,10 @@ async function requestRecordingEmbeddings(recording) {
           );
           return;
         }
-        const errorMessage =
-          analysisResult.error || 'Failed to obtain a Twelve Labs analysis response.';
+        const errorMessage = resolveIntegrationErrorMessage(
+          analysisResult,
+          'Failed to obtain a Twelve Labs analysis response.'
+        );
         setAnalysisView(
           recording,
           'error',
@@ -1893,8 +1944,10 @@ async function requestRecordingEmbeddings(recording) {
         );
         return;
       }
-      const errorMessage =
-        result.error || 'Failed to obtain Twelve Labs embeddings for this recording.';
+      const errorMessage = resolveIntegrationErrorMessage(
+        result,
+        'Failed to obtain Twelve Labs embeddings for this recording.'
+      );
       setAnalysisView(
         recording,
         'error',
