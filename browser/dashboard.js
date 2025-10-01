@@ -275,9 +275,8 @@ const signalingUrl = signalingUrlObject.toString();
 const detectionUrl = resolveDetectionUrl(params, signalingUrlObject);
 const recordingsEndpoints = resolveRecordingsEndpoints(params, signalingUrlObject);
 const analysisEndpoint = resolveAnalysisEndpoint(params, recordingsEndpoints);
-const defaultAnalysisPrompt = '이 영상을 분석해줘.';
 const analysisPromptParam = (params.get('analysisPrompt') || '').trim();
-const analysisPromptValue = analysisPromptParam || defaultAnalysisPrompt;
+const analysisPromptValue = analysisPromptParam;
 const analysisTemperatureParam = (params.get('analysisTemperature') || '').trim();
 const analysisMaxTokensParam = (params.get('analysisMaxTokens') || '').trim();
 
@@ -344,7 +343,9 @@ const recordingsState = {
 let selectedRecordingId = null;
 
 const defaultAnalysisMessage =
-  'Select a recording to preview its metadata, request Twelve Labs analysis (default prompt: “이 영상을 분석해줘.”), or fetch embeddings for video playback and vector export.';
+  'Select a recording to preview its metadata, request Twelve Labs analysis, or fetch embeddings for video playback and vector export.';
+
+let analysisIntegrationAvailable = Boolean(analysisEndpoint);
 
 const analysisViewState = {
   recording: null,
@@ -358,6 +359,43 @@ const analysisViewState = {
 const analysisCache = new Map();
 let activeAnalysisPromise = null;
 
+const ANALYSIS_INTEGRATION_DISABLED_CODES = new Set([
+  'integration_unavailable',
+  'recordings_unavailable',
+  'missing_api_key',
+  'client_initialisation_failed',
+  'initialisation_failed',
+  'analysis_disabled',
+]);
+
+function isAnalysisIntegrationError(result) {
+  if (!result || typeof result !== 'object') {
+    return false;
+  }
+  const code = typeof result.code === 'string' ? result.code : null;
+  if (code && ANALYSIS_INTEGRATION_DISABLED_CODES.has(code)) {
+    return true;
+  }
+  const status = typeof result.status === 'string' ? result.status : null;
+  if (status && ANALYSIS_INTEGRATION_DISABLED_CODES.has(status)) {
+    return true;
+  }
+  const message =
+    (typeof result.error === 'string' && result.error) ||
+    (typeof result.message === 'string' && result.message) ||
+    '';
+  return message.toLowerCase().includes('not configured');
+}
+
+function disableAnalysisIntegration(recording, message, code) {
+  analysisIntegrationAvailable = false;
+  const fallbackMessage =
+    message ||
+    'Configure the Twelve Labs integration on the server to enable analysis and embeddings.';
+  setAnalysisView(recording, 'disabled', fallbackMessage, null, false, code || null);
+  renderRecordingsList();
+}
+
 const ANALYSIS_STATUS_CONFIG = {
   idle: { label: 'Idle', tone: 'muted' },
   ready: { label: 'Ready', tone: 'ready' },
@@ -368,7 +406,7 @@ const ANALYSIS_STATUS_CONFIG = {
   disabled: { label: 'Unavailable', tone: 'warning' },
 };
 
-if (!analysisEndpoint) {
+if (!analysisIntegrationAvailable) {
   analysisViewState.status = 'disabled';
   analysisViewState.message =
     'Configure the Twelve Labs API integration on the server to enable video analysis.';
@@ -556,7 +594,9 @@ async function fetchAnalysis(recording, options = {}) {
   url.searchParams.set('fileName', identifiers.fileName);
   if (start) {
     url.searchParams.set('action', 'start');
-    url.searchParams.set('prompt', analysisPromptValue);
+    if (analysisPromptValue) {
+      url.searchParams.set('prompt', analysisPromptValue);
+    }
     if (analysisTemperatureParam) {
       url.searchParams.set('temperature', analysisTemperatureParam);
     }
@@ -901,7 +941,7 @@ function renderRecordingsList() {
       }
     });
 
-    if (!analysisEndpoint) {
+    if (!analysisIntegrationAvailable) {
       analyzeButton.disabled = true;
       analyzeButton.title = 'Configure the Twelve Labs integration to enable analysis.';
       embedButton.disabled = true;
@@ -1420,7 +1460,7 @@ function setAnalysisView(recording, status, message, result = null, cached = fal
 }
 
 async function loadCachedAnalysis(recording) {
-  if (!analysisEndpoint) {
+  if (!analysisEndpoint || !analysisIntegrationAvailable) {
     return;
   }
   const key = getAnalysisCacheKey(recording);
@@ -1430,6 +1470,14 @@ async function loadCachedAnalysis(recording) {
   try {
     const result = await fetchAnalysis(recording, { start: false });
     if (!result.ok || !result.record) {
+      if (isAnalysisIntegrationError(result)) {
+        disableAnalysisIntegration(
+          recording,
+          result.error || 'Twelve Labs analysis is not configured on the server.',
+          result.code || result.status
+        );
+        return;
+      }
       if (result.status === 'not_found') {
         const key = getAnalysisCacheKey(recording);
         if (key && !analysisCache.has(key)) {
@@ -1465,7 +1513,7 @@ function setSelectedRecording(recording) {
   }
   selectedRecordingId = recording.id;
 
-  if (!analysisEndpoint) {
+  if (!analysisIntegrationAvailable) {
     setAnalysisView(
       recording,
       'disabled',
@@ -1495,7 +1543,7 @@ async function requestRecordingAnalysis(recording) {
   if (!recording) {
     return;
   }
-  if (!analysisEndpoint) {
+  if (!analysisIntegrationAvailable) {
     setAnalysisView(
       recording,
       'disabled',
@@ -1511,7 +1559,9 @@ async function requestRecordingAnalysis(recording) {
     return;
   }
 
-  const pendingMessage = `Requesting Twelve Labs analysis for “${recording.displayName}” (prompt: “${analysisPromptValue}”)…`;
+  const pendingMessage = analysisPromptValue
+    ? `Requesting Twelve Labs analysis for “${recording.displayName}” with a custom prompt…`
+    : `Requesting Twelve Labs analysis for “${recording.displayName}”…`;
   setAnalysisView(recording, 'loading', pendingMessage);
 
   try {
@@ -1521,6 +1571,14 @@ async function requestRecordingAnalysis(recording) {
       return;
     }
     if (!result.ok || !result.record) {
+      if (isAnalysisIntegrationError(result)) {
+        disableAnalysisIntegration(
+          recording,
+          result.error || 'Twelve Labs analysis is not configured on the server.',
+          result.code || result.status
+        );
+        return;
+      }
       const errorMessage =
         result.error || 'Failed to obtain a Twelve Labs analysis response.';
       setAnalysisView(recording, 'error', errorMessage, null, false, result.code || result.status);
@@ -1563,7 +1621,7 @@ async function requestRecordingEmbeddings(recording) {
   if (!recording) {
     return;
   }
-  if (!analysisEndpoint) {
+  if (!analysisIntegrationAvailable) {
     setAnalysisView(
       recording,
       'disabled',
@@ -1586,6 +1644,14 @@ async function requestRecordingEmbeddings(recording) {
         return;
       }
       if (!analysisResult.ok || !analysisResult.record) {
+        if (isAnalysisIntegrationError(analysisResult)) {
+          disableAnalysisIntegration(
+            recording,
+            analysisResult.error || 'Twelve Labs analysis is not configured on the server.',
+            analysisResult.code || analysisResult.status
+          );
+          return;
+        }
         const errorMessage =
           analysisResult.error || 'Failed to obtain a Twelve Labs analysis response.';
         setAnalysisView(
@@ -1634,6 +1700,14 @@ async function requestRecordingEmbeddings(recording) {
       return;
     }
     if (!result.ok || !result.record) {
+      if (isAnalysisIntegrationError(result)) {
+        disableAnalysisIntegration(
+          recording,
+          result.error || 'Twelve Labs analysis is not configured on the server.',
+          result.code || result.status
+        );
+        return;
+      }
       const errorMessage =
         result.error || 'Failed to obtain Twelve Labs embeddings for this recording.';
       setAnalysisView(
@@ -1798,7 +1872,7 @@ async function refreshRecordingsList() {
       const selected = normalized.find((item) => item.id === selectedRecordingId);
       if (selected) {
         const cached = getCachedAnalysis(selected);
-        if (!analysisEndpoint) {
+        if (!analysisIntegrationAvailable) {
           setAnalysisView(
             selected,
             'disabled',
@@ -1808,11 +1882,11 @@ async function refreshRecordingsList() {
           const message = buildAnalysisCompleteMessage(cached.record, true);
           setAnalysisView(selected, 'cached', message, cached.record, true);
         } else {
-        setAnalysisView(
-          selected,
-          'ready',
-          `Press “Analyze” to request AI insights for “${selected.displayName}” via Twelve Labs.`
-        );
+          setAnalysisView(
+            selected,
+            'ready',
+            `Press “Analyze” to request AI insights for “${selected.displayName}” via Twelve Labs.`
+          );
           void loadCachedAnalysis(selected);
         }
       } else {
