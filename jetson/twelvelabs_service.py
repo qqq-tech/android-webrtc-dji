@@ -166,7 +166,6 @@ def _retrieve_embeddings_with_fallback(
                 # NotFoundError for reasons other than a missing embedding
                 # option should bubble up to the caller.
                 raise
-
             raise
 
 
