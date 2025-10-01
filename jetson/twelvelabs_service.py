@@ -144,6 +144,68 @@ class TwelveLabsAnalysisService:
     def _build_key(self, stream_id: str, file_name: str) -> str:
         return f"{stream_id.strip()}/{file_name.strip()}"
 
+    def _upload_recording(
+        self,
+        *,
+        key: str,
+        stream_id: str,
+        file_name: str,
+        recording_path: Path,
+        signature: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Upload a recording to Twelve Labs and persist the cached metadata."""
+
+        index_id = self._ensure_index()
+        with open(recording_path, "rb") as handle:
+            task_payload = self._client.create_indexing_task(
+                index_id=index_id,
+                video_file=handle,
+            )
+
+        task_id = task_payload.get("id") or task_payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            raise AnalysisServiceError("Twelve Labs response did not include a task identifier")
+
+        status_payload = self._client.wait_for_task(
+            task_id=task_id,
+            poll_interval=self._poll_interval,
+        )
+        video_id = (
+            status_payload.get("video_id")
+            or status_payload.get("videoId")
+            or task_payload.get("video_id")
+            or task_payload.get("videoId")
+        )
+        if not isinstance(video_id, str) or not video_id:
+            raise AnalysisServiceError("Unable to determine the Twelve Labs video identifier")
+
+        timestamp = _utc_now()
+        record = {
+            "streamId": stream_id,
+            "fileName": file_name,
+            "videoId": video_id,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "source": {
+                "path": str(recording_path),
+                "signature": signature,
+            },
+            "index": {
+                "id": index_id,
+                "name": self._index_name,
+            },
+            "task": {
+                "id": task_id,
+                "status": status_payload,
+                "response": task_payload,
+            },
+        }
+
+        with self._lock:
+            self._records[key] = record
+            self._save_cache()
+            return _clone(record)
+
     # ------------------------------------------------------------------
     # Index helpers
     # ------------------------------------------------------------------
@@ -320,17 +382,36 @@ class TwelveLabsAnalysisService:
         if not stream_id or not file_name:
             raise AnalysisServiceError("Both stream_id and file_name are required")
 
+        recording_path = (self._recordings_dir / stream_id / file_name).resolve()
+        if not recording_path.exists():
+            raise RecordingNotFoundError(f"Recording not found: {recording_path}")
+
         key = self._build_key(stream_id, file_name)
+        signature = _file_signature(recording_path)
         with self._lock:
             existing = self._records.get(key)
-            if not existing:
-                raise AnalysisServiceError(
-                    "No stored Twelve Labs analysis exists for this recording"
+            if existing:
+                cached_signature = (
+                    existing.get("source", {}).get("signature")
+                    if isinstance(existing.get("source"), dict)
+                    else None
                 )
-            cached_embeddings = existing.get("embeddings")
-            index_info = existing.get("index", {})
-            video_id = existing.get("videoId")
-            index_id = index_info.get("id")
+                if cached_signature != signature:
+                    existing = None
+
+        if not existing:
+            existing = self._upload_recording(
+                key=key,
+                stream_id=stream_id,
+                file_name=file_name,
+                recording_path=recording_path,
+                signature=signature,
+            )
+
+        cached_embeddings = existing.get("embeddings")
+        index_info = existing.get("index", {})
+        video_id = existing.get("videoId")
+        index_id = index_info.get("id")
 
         if not isinstance(video_id, str) or not video_id:
             raise AnalysisServiceError("Recording is missing the Twelve Labs video identifier")
