@@ -895,12 +895,19 @@ class DetectionBroadcaster:
 
         existing = self._analysis_service.get_cached_record(stream_id, file_name)
         if existing is None:
+            payload = {
+                "status": "not_found",
+                "cached": False,
+                "record": None,
+                "message": "No stored Twelve Labs analysis for this recording.",
+            }
+
+            if action in {"status", "get", "cached"}:
+                return self._json_response(payload, status=http.HTTPStatus.OK)
+
+            payload["error"] = "analysis_missing"
             return self._json_response(
-                {
-                    "status": "not_found",
-                    "error": "analysis_missing",
-                    "message": "No stored Twelve Labs analysis for this recording.",
-                },
+                payload,
                 status=http.HTTPStatus.NOT_FOUND,
             )
 
@@ -914,6 +921,27 @@ class DetectionBroadcaster:
 
     @staticmethod
     def _format_analysis_message(record: Dict[str, Any], cached: bool) -> str:
+        def _has_analysis(data: Optional[Dict[str, Any]]) -> bool:
+            if not data or not isinstance(data, dict):
+                return False
+            analysis = data.get("analysis")
+            if not isinstance(analysis, dict):
+                return False
+            text = analysis.get("text")
+            if isinstance(text, str) and text.strip():
+                return True
+            chunks = analysis.get("chunks")
+            if isinstance(chunks, list):
+                return any(isinstance(chunk, str) and chunk.strip() for chunk in chunks)
+            return False
+
+        if not _has_analysis(record):
+            return (
+                "No stored Twelve Labs analysis is available yet."
+                if cached
+                else "No Twelve Labs analysis has been generated yet."
+            )
+
         timestamp = record.get("updatedAt") if isinstance(record, dict) else None
         human = ""
         if isinstance(timestamp, str) and timestamp:
