@@ -822,8 +822,18 @@ class DetectionBroadcaster:
                     status=http.HTTPStatus.NOT_FOUND,
                 )
             except AnalysisServiceError as exc:
+                error_message = str(exc).strip()
+                if error_message:
+                    message = (
+                        "Twelve Labs service reported an error while starting analysis: "
+                        f"{error_message}"
+                    )
+                else:
+                    message = (
+                        "Twelve Labs service reported an unknown error while starting analysis."
+                    )
                 return self._json_response(
-                    {"error": "analysis_failed", "message": str(exc)},
+                    {"error": "analysis_failed", "message": message},
                     status=http.HTTPStatus.BAD_GATEWAY,
                 )
             except Exception:  # pragma: no cover - defensive logging
