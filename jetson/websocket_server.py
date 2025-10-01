@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import importlib
-import inspect
 import asyncio
+import importlib
+import importlib.util
+import inspect
 import http
 import json
 import logging
@@ -18,19 +19,80 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from types import ModuleType
+import sys
 from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Union
 
 import websockets
 
+_MODULE_DIR = Path(__file__).resolve().parent
+if not __package__:
+    parent_dir = str(_MODULE_DIR.parent)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    _JETSON_PACKAGE = _MODULE_DIR.name
+else:
+    _JETSON_PACKAGE = __package__.split(".", 1)[0]
+
+
+def _load_twelvelabs_module(name: str) -> Optional[ModuleType]:
+    """Load a Twelve Labs helper module regardless of the execution context."""
+
+    candidates = []
+    if _JETSON_PACKAGE:
+        candidates.append(f"{_JETSON_PACKAGE}.{name}")
+    if __package__:
+        candidates.append(f"{__package__}.{name}")
+    candidates.append(name)
+
+    for module_name in candidates:
+        try:
+            return importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            if exc.name not in {module_name, name}:
+                # A dependency of the module is missing – propagate the error so we
+                # can gracefully disable the integration below.
+                raise
+        except Exception:
+            continue
+
+    module_path = _MODULE_DIR / f"{name}.py"
+    if not module_path.exists():
+        return None
+
+    spec = importlib.util.spec_from_file_location(f"{_JETSON_PACKAGE}.{name}", module_path)
+    if spec and spec.loader:
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except ModuleNotFoundError:
+            # One of the module dependencies is missing.
+            return None
+        return module
+
+    return None
+
+
 try:  # Optional Twelve Labs integration
-    from twelvelabs_client import TwelveLabsClient
-    from twelvelabs_service import (
-        AnalysisServiceError,
-        EmbeddingResult,
-        RecordingNotFoundError,
-        TwelveLabsAnalysisService,
-    )
-except Exception:  # pragma: no cover - integration is optional at runtime
+    _tw_client_module = _load_twelvelabs_module("twelvelabs_client")
+    _tw_service_module = _load_twelvelabs_module("twelvelabs_service")
+    if _tw_client_module and _tw_service_module:
+        TwelveLabsClient = getattr(_tw_client_module, "TwelveLabsClient", None)
+        TwelveLabsAnalysisService = getattr(
+            _tw_service_module, "TwelveLabsAnalysisService", None
+        )
+        AnalysisServiceError = getattr(
+            _tw_service_module, "AnalysisServiceError", None
+        )
+        RecordingNotFoundError = getattr(
+            _tw_service_module, "RecordingNotFoundError", None
+        )
+        EmbeddingResult = getattr(_tw_service_module, "EmbeddingResult", None)
+    else:  # pragma: no cover - integration is optional at runtime
+        TwelveLabsAnalysisService = None  # type: ignore[assignment]
+        AnalysisServiceError = RecordingNotFoundError = EmbeddingResult = None  # type: ignore[assignment]
+        TwelveLabsClient = None  # type: ignore[assignment]
+except ModuleNotFoundError:  # pragma: no cover - dependency missing
     TwelveLabsAnalysisService = None  # type: ignore[assignment]
     AnalysisServiceError = RecordingNotFoundError = EmbeddingResult = None  # type: ignore[assignment]
     TwelveLabsClient = None  # type: ignore[assignment]
