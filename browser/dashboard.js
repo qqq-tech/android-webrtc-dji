@@ -1751,58 +1751,6 @@ async function requestRecordingEmbeddings(recording) {
   if (!workingRecord) {
     const uploadMessage = `Uploading “${recording.displayName}” to Twelve Labs before retrieving embeddings…`;
     setAnalysisView(recording, 'embedding', uploadMessage);
-
-    try {
-      activeAnalysisPromise = fetchAnalysis(recording, { start: true });
-      const analysisResult = await activeAnalysisPromise;
-      if (analysisViewState.recording?.id !== recording.id) {
-        return;
-      }
-      if (!analysisResult.ok || !analysisResult.record) {
-        if (isAnalysisIntegrationError(analysisResult)) {
-          disableAnalysisIntegration(
-            recording,
-            analysisResult.error || 'Twelve Labs analysis is not configured on the server.',
-            analysisResult.code || analysisResult.status
-          );
-          return;
-        }
-        const errorMessage =
-          analysisResult.error || 'Failed to obtain a Twelve Labs analysis response.';
-        setAnalysisView(
-          recording,
-          'error',
-          errorMessage,
-          null,
-          false,
-          analysisResult.code || analysisResult.status
-        );
-        return;
-      }
-
-      storeAnalysisRecord(recording, analysisResult.record, analysisResult.cached);
-      workingRecord = analysisResult.record;
-      renderRecordingsList();
-    } catch (error) {
-      if (analysisViewState.recording?.id !== recording.id) {
-        return;
-      }
-      const fallback = error instanceof Error ? error.message : String(error);
-      setAnalysisView(
-        recording,
-        'error',
-        `Failed to upload recording to Twelve Labs: ${fallback}`
-      );
-      return;
-    } finally {
-      if (analysisViewState.recording?.id === recording.id) {
-        activeAnalysisPromise = null;
-      }
-    }
-  }
-
-  if (!workingRecord) {
-    return;
   }
 
   const pendingMessage = `Requesting Twelve Labs embeddings for “${recording.displayName}”…`;
