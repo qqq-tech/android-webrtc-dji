@@ -10,14 +10,14 @@ quality-of-life improvements for the WebRTC project:
   audio modalities.
 * Cache resolved index identifiers so subsequent uploads reuse the same index
   without hitting the API again.
-* Collect streamed analysis events into a single string for easy rendering while
-  preserving the underlying chunk boundaries for callers that need them.
+* Collect streamed analysis events into paragraphs so that callers can persist
+  or render the generated text easily.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import re
 
@@ -52,7 +52,6 @@ def _serialise(payload: Any) -> Any:
     if isinstance(payload, (list, tuple)):
         return [_serialise(item) for item in payload]
     return payload
-
 
 _ISOLATED_DOUBLE_NEWLINE_RE = re.compile(r"(?<!\n)\n\n(?!\n)")
 
@@ -183,18 +182,15 @@ class TwelveLabsClient:
         *,
         task_id: str,
         poll_interval: float = 5.0,
-        callback: Optional[Callable[[TasksRetrieveResponse], None]] = None,
     ) -> Dict[str, Any]:
         if not task_id:
             raise ValueError("task_id must be provided")
 
         def _callback(task: TasksRetrieveResponse) -> None:
-            # Propagate status updates to the caller when a callback is
-            # supplied so that long-running uploads can be monitored.  This
-            # mirrors the public Twelve Labs examples where ``status`` values
-            # are printed while the job runs.
-            if callback is not None:
-                callback(task)
+            # The SDK invokes this callback with live status updates.  The
+            # caller does not need them, so we simply ignore the payload while
+            # still complying with the API.
+            _ = task
 
         status = self._sdk.tasks.wait_for_done(
             task_id=task_id,
@@ -255,41 +251,10 @@ class TwelveLabsClient:
         video_id: str,
         gist_types: Sequence[str] = DEFAULT_GIST_TYPES,
     ) -> Dict[str, Any]:
-        return self.gist(video_id=video_id, types=gist_types)
-
-    def gist(
-        self,
-        *,
-        video_id: str,
-        types: Sequence[str] = DEFAULT_GIST_TYPES,
-    ) -> Dict[str, Any]:
         if not video_id:
             raise ValueError("video_id must be provided")
-        response = self._sdk.gist(video_id=video_id, types=list(types))
+        response = self._sdk.gist(video_id=video_id, types=list(gist_types))
         return _serialise(response)
-
-    def analyze_stream(
-        self,
-        *,
-        video_id: str,
-        prompt: str = DEFAULT_PROMPT,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-    ):
-        if not video_id:
-            raise ValueError("video_id must be provided")
-        prompt_value = prompt.strip() if isinstance(prompt, str) else ""
-        if not prompt_value:
-            prompt_value = DEFAULT_PROMPT
-        return self._sdk.analyze_stream(
-            video_id=video_id,
-            prompt=prompt_value,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-
-    def clean_generated_text(self, text: str) -> str:
-        return _remove_isolated_double_newlines(text)
 
     def collect_analysis(
         self,
@@ -301,9 +266,13 @@ class TwelveLabsClient:
     ) -> AnalysisText:
         if not video_id:
             raise ValueError("video_id must be provided")
-        stream = self.analyze_stream(
+        prompt_value = prompt.strip() if isinstance(prompt, str) else ""
+        if not prompt_value:
+            prompt_value = DEFAULT_PROMPT
+
+        stream = self._sdk.analyze_stream(
             video_id=video_id,
-            prompt=prompt,
+            prompt=prompt_value,
             temperature=temperature,
             max_tokens=max_tokens,
         )
@@ -316,12 +285,12 @@ class TwelveLabsClient:
             text = getattr(event, "text", None) or getattr(event, "data", None)
             if not isinstance(text, str):
                 continue
-            cleaned = _remove_isolated_double_newlines(text).strip()
+            cleaned = text.strip()
             if cleaned:
                 chunks.append(cleaned)
 
         normalised = _normalise_text_chunks(chunks)
-        combined = " ".join(normalised)
+        combined = "\n\n".join(normalised)
         return AnalysisText(text=combined, chunks=normalised)
 
 

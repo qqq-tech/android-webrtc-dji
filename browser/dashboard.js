@@ -1227,6 +1227,52 @@ function getEmbeddingVector(segment) {
   return [];
 }
 
+const EMBEDDING_OPTION_LABELS = new Map([
+  ['visual', 'Visual'],
+  ['text', 'Text'],
+  ['audio', 'Audio'],
+  ['visual-text', 'Visual + text'],
+]);
+
+function formatEmbeddingOptionLabel(option) {
+  if (typeof option !== 'string') {
+    return '';
+  }
+  const trimmed = option.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const lower = trimmed.toLowerCase();
+  if (EMBEDDING_OPTION_LABELS.has(lower)) {
+    return EMBEDDING_OPTION_LABELS.get(lower);
+  }
+  const segments = trimmed.split(/[-_]/).map((segment) => segment.trim()).filter(Boolean);
+  if (segments.length > 1) {
+    const mapped = segments.map((segment) => {
+      const segmentKey = segment.toLowerCase();
+      if (EMBEDDING_OPTION_LABELS.has(segmentKey)) {
+        return EMBEDDING_OPTION_LABELS.get(segmentKey);
+      }
+      return segment.charAt(0).toUpperCase() + segment.slice(1);
+    });
+    return mapped.join(' + ');
+  }
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function formatEmbeddingOptionsList(options) {
+  if (!Array.isArray(options) || options.length === 0) {
+    return '';
+  }
+  const formatted = options
+    .map((option) => formatEmbeddingOptionLabel(option))
+    .filter((label) => typeof label === 'string' && label);
+  if (formatted.length === 0) {
+    return '';
+  }
+  return formatted.join(', ');
+}
+
 function createEmbeddingsBlock(record, cached) {
   const embeddingsRoot =
     (record?.embeddings && typeof record.embeddings === 'object' && record.embeddings.response) ||
@@ -1250,11 +1296,9 @@ function createEmbeddingsBlock(record, cached) {
   const metaGrid = document.createElement('dl');
   metaGrid.className = 'analysis-meta-grid';
 
-  const optionsValue =
-    Array.isArray(record?.embeddings?.options) && record.embeddings.options.length > 0
-      ? record.embeddings.options.join(', ')
-      : 'default settings';
-  appendAnalysisMeta(metaGrid, 'Options', optionsValue);
+  const optionsValue = formatEmbeddingOptionsList(record?.embeddings?.options);
+  const optionsLabel = optionsValue || 'Default Twelve Labs settings';
+  appendAnalysisMeta(metaGrid, 'Options', optionsLabel);
 
   const modelName =
     typeof embeddingsRoot.model_name === 'string' && embeddingsRoot.model_name
@@ -1313,6 +1357,7 @@ function createEmbeddingsBlock(record, cached) {
         typeof segment.embedding_option === 'string' && segment.embedding_option
           ? segment.embedding_option
           : '';
+      const scopeLabel = formatEmbeddingOptionLabel(scope);
       const rangeParts = [];
       if (start !== null) {
         rangeParts.push(`${start.toFixed(1)}s`);
@@ -1325,13 +1370,23 @@ function createEmbeddingsBlock(record, cached) {
         labelParts.push(rangeParts.join(' – '));
       }
       if (scope) {
-        labelParts.push(scope);
+        labelParts.push(scopeLabel || scope);
       }
       header.textContent = labelParts.length > 0 ? labelParts.join(' · ') : `Segment ${index + 1}`;
       segmentBlock.appendChild(header);
 
       const vector = getEmbeddingVector(segment);
       if (vector.length > 0) {
+        const previewSummary = document.createElement('p');
+        previewSummary.className = 'analysis-embedding-note';
+        const shownCount = Math.min(vector.length, 12);
+        const descriptor =
+          vector.length > 12
+            ? `First ${shownCount} of ${vector.length} values`
+            : `${vector.length} value${vector.length === 1 ? '' : 's'}`;
+        previewSummary.textContent = `Embedding vector preview (${descriptor}).`;
+        segmentBlock.appendChild(previewSummary);
+
         const preview = document.createElement('pre');
         preview.className = 'embedding-preview';
         const previewValues = vector.slice(0, 12).map((value) => {
@@ -1751,6 +1806,58 @@ async function requestRecordingEmbeddings(recording) {
   if (!workingRecord) {
     const uploadMessage = `Uploading “${recording.displayName}” to Twelve Labs before retrieving embeddings…`;
     setAnalysisView(recording, 'embedding', uploadMessage);
+
+    try {
+      activeAnalysisPromise = fetchAnalysis(recording, { start: true });
+      const analysisResult = await activeAnalysisPromise;
+      if (analysisViewState.recording?.id !== recording.id) {
+        return;
+      }
+      if (!analysisResult.ok || !analysisResult.record) {
+        if (isAnalysisIntegrationError(analysisResult)) {
+          disableAnalysisIntegration(
+            recording,
+            analysisResult.error || 'Twelve Labs analysis is not configured on the server.',
+            analysisResult.code || analysisResult.status
+          );
+          return;
+        }
+        const errorMessage =
+          analysisResult.error || 'Failed to obtain a Twelve Labs analysis response.';
+        setAnalysisView(
+          recording,
+          'error',
+          errorMessage,
+          null,
+          false,
+          analysisResult.code || analysisResult.status
+        );
+        return;
+      }
+
+      storeAnalysisRecord(recording, analysisResult.record, analysisResult.cached);
+      workingRecord = analysisResult.record;
+      renderRecordingsList();
+    } catch (error) {
+      if (analysisViewState.recording?.id !== recording.id) {
+        return;
+      }
+      const fallback = error instanceof Error ? error.message : String(error);
+      setAnalysisView(
+        recording,
+        'error',
+        `Failed to upload recording to Twelve Labs: ${fallback}`
+      );
+      return;
+    } finally {
+      if (analysisViewState.recording?.id === recording.id) {
+        activeAnalysisPromise = null;
+      }
+    }
+  }
+
+  if (!workingRecord) {
+    return;
   }
 
   const pendingMessage = `Requesting Twelve Labs embeddings for “${recording.displayName}”…`;
