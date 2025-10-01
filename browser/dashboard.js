@@ -916,8 +916,8 @@ function renderRecordingsList() {
         embedButton.disabled = false;
         embedButton.title = 'Retrieve Twelve Labs embeddings for this recording.';
       } else {
-        embedButton.disabled = true;
-        embedButton.title = 'Run “Analyze” once to upload the recording before requesting embeddings.';
+        embedButton.disabled = false;
+        embedButton.title = 'Upload to Twelve Labs and retrieve embeddings for this recording.';
       }
     }
 
@@ -1484,7 +1484,7 @@ function setSelectedRecording(recording) {
     setAnalysisView(
       recording,
       'ready',
-      `Press “Analyze” to request AI insights for “${recording.displayName}” via Twelve Labs (prompt: “${analysisPromptValue}”), then use “Embeddings” to retrieve vectors and playback the hosted stream.`
+      `Press “Analyze” to request AI insights for “${recording.displayName}” via Twelve Labs, or choose “Embeddings” to upload and retrieve vectors in one step.`
     );
     void loadCachedAnalysis(recording);
   }
@@ -1573,17 +1573,59 @@ async function requestRecordingEmbeddings(recording) {
   }
 
   const cached = getCachedAnalysis(recording);
-  if (!cached?.record) {
-    setAnalysisView(
-      recording,
-      'ready',
-      'Run “Analyze” once to upload the recording before requesting embeddings.'
-    );
+  let workingRecord = cached?.record || null;
+
+  if (!workingRecord) {
+    const uploadMessage = `Uploading “${recording.displayName}” to Twelve Labs before retrieving embeddings…`;
+    setAnalysisView(recording, 'embedding', uploadMessage);
+
+    try {
+      activeAnalysisPromise = fetchAnalysis(recording, { start: true });
+      const analysisResult = await activeAnalysisPromise;
+      if (analysisViewState.recording?.id !== recording.id) {
+        return;
+      }
+      if (!analysisResult.ok || !analysisResult.record) {
+        const errorMessage =
+          analysisResult.error || 'Failed to obtain a Twelve Labs analysis response.';
+        setAnalysisView(
+          recording,
+          'error',
+          errorMessage,
+          null,
+          false,
+          analysisResult.code || analysisResult.status
+        );
+        return;
+      }
+
+      storeAnalysisRecord(recording, analysisResult.record, analysisResult.cached);
+      workingRecord = analysisResult.record;
+      renderRecordingsList();
+    } catch (error) {
+      if (analysisViewState.recording?.id !== recording.id) {
+        return;
+      }
+      const fallback = error instanceof Error ? error.message : String(error);
+      setAnalysisView(
+        recording,
+        'error',
+        `Failed to upload recording to Twelve Labs: ${fallback}`
+      );
+      return;
+    } finally {
+      if (analysisViewState.recording?.id === recording.id) {
+        activeAnalysisPromise = null;
+      }
+    }
+  }
+
+  if (!workingRecord) {
     return;
   }
 
   const pendingMessage = `Requesting Twelve Labs embeddings for “${recording.displayName}”…`;
-  setAnalysisView(recording, 'embedding', pendingMessage, cached.record, true);
+  setAnalysisView(recording, 'embedding', pendingMessage, workingRecord, true);
 
   try {
     activeAnalysisPromise = fetchAnalysis(recording, { embed: true });
@@ -1598,7 +1640,7 @@ async function requestRecordingEmbeddings(recording) {
         recording,
         'error',
         errorMessage,
-        cached.record,
+        workingRecord,
         true,
         result.code || result.status
       );
@@ -1619,7 +1661,7 @@ async function requestRecordingEmbeddings(recording) {
       recording,
       'error',
       `Failed to request Twelve Labs embeddings: ${fallback}`,
-      cached.record,
+      workingRecord,
       true
     );
   } finally {
@@ -1769,7 +1811,7 @@ async function refreshRecordingsList() {
         setAnalysisView(
           selected,
           'ready',
-          `Press “Analyze” to request AI insights for “${selected.displayName}” via Twelve Labs (prompt: “${analysisPromptValue}”).`
+          `Press “Analyze” to request AI insights for “${selected.displayName}” via Twelve Labs.`
         );
           void loadCachedAnalysis(selected);
         }
