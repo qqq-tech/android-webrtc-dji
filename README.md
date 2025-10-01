@@ -174,67 +174,80 @@ The helper keeps track of the spawned processes under `.run/webrtc_stack.pids`. 
 
 ### Twelve Labs video analysis client
 
-Use the helper in [`jetson/twelvelabs_client.py`](jetson/twelvelabs_client.py) to mirror the workflows demonstrated in the official Twelve Labs notebooks. The script provisions an index (creating it if necessary), uploads a video, waits for the indexing task to complete, fetches gist/title/topic metadata, generates summaries/chapters/highlights, and finally issues an analysis prompt. Optional switches can trigger a follow-up semantic search and fetch the HLS playback URL, closely matching the flows in [`Olympics_Video_Content_Search.ipynb`](https://github.com/twelvelabs-io/twelvelabs-developer-experience/blob/main/examples/Olympics_Video_Content_Search.ipynb) and [`TwelveLabs_Quickstart_Analyze.ipynb`](https://github.com/twelvelabs-io/twelvelabs-developer-experience/blob/main/quickstarts/TwelveLabs_Quickstart_Analyze.ipynb).
+[`jetson/twelvelabs_client.py`](jetson/twelvelabs_client.py) mirrors the public Twelve Labs quick-start notebooks in plain Python. The helper ensures a managed `test-webrtc` index exists with both `marengo2.7` and `pegasus1.2` configured for visual and audio modalities, uploads a video, waits for ingestion to finish, retrieves gist metadata (title/topic/hashtags), and streams analysis text using the default prompt “이 영상을 분석해줘.”. The streamed output is normalised into paragraphs so the caller can persist the response directly.
 
-```bash
-python -m jetson.twelvelabs_client \
-    --api-key "$TWELVE_LABS_API_KEY" \
-    --model-name marengo2.7 \
-    --video-file /path/to/video.mp4 \
-    --prompt "주요 이벤트를 요약해줘" \
-    --summary-type summary --summary-type highlight \
-    --gist-type title --gist-type hashtag \
-    --search-prompt "road cycling race" \
-    --include-hls-url
+```python
+import os
+
+from jetson.twelvelabs_client import DEFAULT_PROMPT, TwelveLabsClient
+
+client = TwelveLabsClient(api_key=os.environ["TWELVE_LABS_API_KEY"])
+index_payload = client.ensure_index()
+index_id = client.get_index_id()
+
+with open("recordings/sample/mission.mp4", "rb") as recording:
+    task = client.create_indexing_task(index_id=index_id, video_file=recording)
+
+status = client.wait_for_task(task_id=task["id"])
+video_id = status["video_id"]
+
+gist = client.fetch_gist(video_id=video_id)
+analysis = client.collect_analysis(video_id=video_id, prompt=DEFAULT_PROMPT)
+
+print(gist["title"], gist["topics"], gist["hashtags"])
+print(analysis.text)
 ```
 
-You can replace `--video-file` with `--video-url` when the source is already hosted at a publicly accessible address. Combine `--gist-type`, `--summary-type`, and `--search-prompt` to tailor the metadata you want back from the API, and use `--analysis-stream`, `--temperature`, `--max-tokens`, and `--poll-interval` to fine-tune the workflow. The script prints a JSON payload describing the index, ingestion task, gist/summary responses, optional search results, and the analysis output. Structured response formats can be loaded from disk via `--response-format /path/to/schema.json`.
+The `analysis.text` field contains the combined paragraphs returned by `analyze_stream`, while `analysis.chunks` keeps the individual snippets if you prefer to render them separately. Because the client caches the resolved index identifier, subsequent runs reuse the same `test-webrtc` index without hitting the management API again.
 
-TLS validation is disabled on the embedded HTTP client so the helper can operate against Twelve Labs gateways that terminate with self-signed certificates. Run a quick smoke test against your configuration with:
+When the broadcaster is running you can trigger a cached-analysis check (without uploading a new video) via:
 
 ```bash
-python -m jetson.twelvelabs_client --help
+curl -G "http://127.0.0.1:8765/analysis" --data-urlencode "action=list"
 ```
 
-The command prints the available options without issuing any API calls, making it safe to validate that the CLI loads correctly after updating dependencies or environment variables.
+and start a new analysis for a specific recording with:
+
+```bash
+curl -G "http://127.0.0.1:8765/analysis" \
+     --data-urlencode "action=run" \
+     --data-urlencode "streamId=<STREAM_ID>" \
+     --data-urlencode "fileName=<FILENAME.mp4>"
+```
+
+Both commands reuse the internally cached Twelve Labs index identifier and persist the API responses so follow-up calls reuse stored metadata when available.
+
+To retrieve the stored embeddings and Twelve Labs hosted stream URL for a processed recording run:
+
+```bash
+curl -G "http://127.0.0.1:8765/analysis" \
+     --data-urlencode "action=embed" \
+     --data-urlencode "streamId=<STREAM_ID>" \
+     --data-urlencode "fileName=<FILENAME.mp4>"
+```
+
+The response includes any cached embedding vectors, optional transcription snippets, and the HLS playback URL exposed by Twelve Labs for the uploaded video.
 
 ### Dashboard analysis workflow
 
-The detection broadcaster (`jetson/websocket_server.py`) now exposes a REST endpoint at `/analysis` that reuses the helper library to upload recordings, wait for embeddings, and persist Twelve Labs analysis responses. Results are cached in `recordings/twelvelabs_analysis.json` so a given recording is analysed only once; subsequent requests return the stored payload immediately.
+The detection broadcaster (`jetson/websocket_server.py`) exposes a REST endpoint at `/analysis` that reuses the helper library to upload recordings, wait for embeddings, and persist Twelve Labs analysis responses. Results are cached in `recordings/twelvelabs_analysis.json` so a given recording is analysed only once; subsequent requests return the stored payload immediately and the UI shows the cached timestamp.
 
 Configure the integration with the following environment variables before launching the Jetson server:
 
 | Variable | Description |
 | --- | --- |
 | `TWELVE_LABS_API_KEY` | **Required.** Twelve Labs API key used for all requests. |
-| `TWELVE_LABS_MODEL_NAME` | Video understanding model name (defaults to `marengo2.7`). |
-| `TWELVE_LABS_DEFAULT_PROMPT` | Prompt sent when the dashboard does not override it. |
-| `TWELVE_LABS_TEMPERATURE` | Optional temperature for the analysis request. |
-| `TWELVE_LABS_MAX_TOKENS` | Optional response token budget. |
-| `TWELVE_LABS_INDEX_NAME` | Managed index name (created automatically if missing). |
-| `TWELVE_LABS_INDEX_MODEL_NAME` | Model used when provisioning the managed index. |
-| `TWELVE_LABS_INDEX_MODEL_OPTIONS` | Comma-separated model options (for example `visual,audio`). |
-| `TWELVE_LABS_INDEX_ADDONS` | Optional index add-ons such as `thumbnail`. |
-| `TWELVE_LABS_ENABLE_VIDEO_STREAM` | Set to `1` to keep uploaded videos available for streaming. |
-| `TWELVE_LABS_USER_METADATA` | JSON string stored as user metadata during ingestion. |
-| `TWELVE_LABS_VERIFY_TLS` | Set to `1` to enable TLS certificate verification. |
+| `TWELVE_LABS_BASE_URL` | Optional API base URL override (defaults to the public Twelve Labs endpoint). |
+| `TWELVE_LABS_DEFAULT_PROMPT` | Prompt sent when the dashboard does not override it (defaults to `이 영상을 분석해줘.`). |
+| `TWELVE_LABS_POLL_INTERVAL` | Poll interval (in seconds) used while waiting for indexing to complete (defaults to `5`). |
 | `TWELVE_LABS_GIST_TYPES` | Comma-separated gist fields (defaults to `title,topic,hashtag`). |
-| `TWELVE_LABS_SUMMARY_TYPES` | Comma-separated summary variants (defaults to `summary,chapter,highlight`). |
-| `TWELVE_LABS_SUMMARY_PROMPT` | Optional prompt applied to summary generations. |
-| `TWELVE_LABS_SUMMARY_TEMPERATURE` | Optional temperature for summaries. |
-| `TWELVE_LABS_SUMMARY_MAX_TOKENS` | Optional token budget for summaries. |
-| `TWELVE_LABS_SEARCH_PROMPT` | Prompt used when running a follow-up semantic search. |
-| `TWELVE_LABS_SEARCH_OPTIONS` | Comma-separated modalities for search (defaults to `visual,audio`). |
-| `TWELVE_LABS_SEARCH_GROUP_BY` | Search grouping (`video` or `clip`). |
-| `TWELVE_LABS_SEARCH_THRESHOLD` | Search confidence threshold (`high`, `medium`, `low`, `none`). |
-| `TWELVE_LABS_SEARCH_OPERATOR` | Logical operator for multi-term search (`and` or `or`). |
-| `TWELVE_LABS_SEARCH_PAGE_LIMIT` | Maximum number of pages to retrieve during search. |
-| `TWELVE_LABS_SEARCH_SORT` | Search sorting (`score` or `clip_count`). |
-| `TWELVE_LABS_INCLUDE_HLS_URL` | Set to `1` to fetch the HLS playback URL for analysed videos. |
-| `TWELVE_LABS_IGNORE_HLS_ERRORS` | Set to `1` to suppress errors when retrieving HLS metadata. |
 | `TWELVE_LABS_CACHE_PATH` | Override the cache file location (defaults to `recordings/twelvelabs_analysis.json`). |
 
-When the environment is configured the “Analyze” button in `browser/dashboard.html` invokes `/analysis?action=start` with the selected recording identifiers. Existing results are surfaced without re-running the pipeline, and the UI reports the stored completion time alongside the generated summary.
+You can also pass the Twelve Labs connection details directly to the WebSocket server via `--twelvelabs-api-key` and `--twelvelabs-base-url` when launching `jetson/websocket_server.py`, which is handy for local testing without exporting environment variables.
+
+When the environment is configured the “Analyze” button in `browser/dashboard.html` invokes `/analysis?action=start` with the selected recording identifiers. Existing results are surfaced without re-running the pipeline, and the UI reports the stored completion time alongside the generated gist summary and analysis paragraphs.
+
+The dashboard also exposes an “Embeddings” button next to each recording once a Twelve Labs analysis has been stored. Selecting it fetches the cached embedding vectors, refreshes the remote video metadata, and enables inline playback of the HLS stream returned by Twelve Labs. The embeddings panel summarises the retrieved model, segment windows, and a truncated preview of the vector contents for quick inspection.
 
 ### Pion relay server
 
