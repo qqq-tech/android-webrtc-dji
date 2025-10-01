@@ -23,26 +23,17 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Union
 import websockets
 
 try:  # Optional Twelve Labs integration
+    from twelvelabs_client import TwelveLabsClient
     from twelvelabs_service import (
         AnalysisServiceError,
+        EmbeddingResult,
         RecordingNotFoundError,
         TwelveLabsAnalysisService,
-        TwelveLabsError,
-        DEFAULT_BASE_URL as TL_DEFAULT_BASE_URL,
-        DEFAULT_GIST_TYPES as TL_DEFAULT_GIST_TYPES,
-        DEFAULT_INDEX_MODEL_NAME as TL_DEFAULT_INDEX_MODEL_NAME,
-        DEFAULT_INDEX_MODEL_OPTIONS as TL_DEFAULT_INDEX_MODEL_OPTIONS,
-        DEFAULT_INDEX_NAME as TL_DEFAULT_INDEX_NAME,
-        DEFAULT_SEARCH_OPTIONS as TL_DEFAULT_SEARCH_OPTIONS,
-        DEFAULT_SUMMARY_TYPES as TL_DEFAULT_SUMMARY_TYPES,
     )
 except Exception:  # pragma: no cover - integration is optional at runtime
     TwelveLabsAnalysisService = None  # type: ignore[assignment]
-    AnalysisServiceError = RecordingNotFoundError = TwelveLabsError = None  # type: ignore[assignment]
-    TL_DEFAULT_BASE_URL = None  # type: ignore[assignment]
-    TL_DEFAULT_INDEX_NAME = TL_DEFAULT_INDEX_MODEL_NAME = None  # type: ignore[assignment]
-    TL_DEFAULT_INDEX_MODEL_OPTIONS = None  # type: ignore[assignment]
-    TL_DEFAULT_GIST_TYPES = TL_DEFAULT_SUMMARY_TYPES = TL_DEFAULT_SEARCH_OPTIONS = None  # type: ignore[assignment]
+    AnalysisServiceError = RecordingNotFoundError = EmbeddingResult = None  # type: ignore[assignment]
+    TwelveLabsClient = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:  # pragma: no cover - import only for static type checking
     from websockets.server import WebSocketServerProtocol
@@ -105,6 +96,7 @@ def _parse_list_env(value: Optional[str]) -> list[str]:
     return [item.strip() for item in value.split(",") if item and item.strip()]
 
 
+
 def _parse_float_param(params: Mapping[str, list[str]], name: str) -> Optional[float]:
     values = params.get(name) if isinstance(params, Mapping) else None
     if not values:
@@ -137,6 +129,39 @@ def _parse_int_param(params: Mapping[str, list[str]], name: str) -> Optional[int
         except ValueError:
             continue
     return None
+
+
+def _parse_bool_param(params: Mapping[str, list[str]], name: str) -> Optional[bool]:
+    values = params.get(name) if isinstance(params, Mapping) else None
+    if not values:
+        return None
+    for item in values:
+        if item is None:
+            continue
+        candidate = str(item).strip().lower()
+        if not candidate:
+            continue
+        if candidate in {"1", "true", "yes", "on"}:
+            return True
+        if candidate in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+def _parse_list_param(params: Mapping[str, list[str]], *names: str) -> list[str]:
+    collected: list[str] = []
+    for name in names:
+        values = params.get(name) if isinstance(params, Mapping) else None
+        if not values:
+            continue
+        for raw in values:
+            if raw is None:
+                continue
+            for chunk in str(raw).split(","):
+                candidate = chunk.strip()
+                if candidate and candidate not in collected:
+                    collected.append(candidate)
+    return collected
 
 
 class _StaticRequestSilencingLogger:
@@ -236,6 +261,8 @@ class DetectionBroadcaster:
         static_dir: Optional[Union[str, Path]] = None,
         recordings_dir: Optional[Union[str, Path]] = None,
         ssl_context: Optional[ssl.SSLContext] = None,
+        twelvelabs_api_key: Optional[str] = None,
+        twelvelabs_base_url: Optional[str] = None,
     ):
         self._host = host
         self._port = port
@@ -251,6 +278,16 @@ class DetectionBroadcaster:
         else:
             self._static_dir = Path(static_dir).resolve()
         self._recordings_dir = self._resolve_recordings_dir(recordings_dir)
+        self._twelvelabs_api_key = (
+            twelvelabs_api_key.strip()
+            if isinstance(twelvelabs_api_key, str) and twelvelabs_api_key.strip()
+            else None
+        )
+        self._twelvelabs_base_url = (
+            twelvelabs_base_url.strip()
+            if isinstance(twelvelabs_base_url, str) and twelvelabs_base_url.strip()
+            else None
+        )
         self._analysis_service: Optional[TwelveLabsAnalysisService]
         self._analysis_disabled_reason: Optional[str]
         self._analysis_service = None
@@ -501,7 +538,7 @@ class DetectionBroadcaster:
         return fallback
 
     def _init_analysis_service(self) -> None:
-        if TwelveLabsAnalysisService is None:
+        if TwelveLabsAnalysisService is None or TwelveLabsClient is None:
             self._analysis_disabled_reason = "integration_unavailable"
             logging.info("Twelve Labs analysis integration not available")
             return
@@ -513,136 +550,55 @@ class DetectionBroadcaster:
             )
             return
 
-        api_key = os.environ.get("TWELVE_LABS_API_KEY")
-        if not api_key:
+        api_key_env = os.environ.get("TWELVE_LABS_API_KEY")
+        api_key = self._twelvelabs_api_key or api_key_env
+        if not api_key or not api_key.strip():
             self._analysis_disabled_reason = "missing_api_key"
             logging.info(
                 "Twelve Labs analysis integration disabled: TWELVE_LABS_API_KEY not set"
             )
             return
 
-        model_name = os.environ.get("TWELVE_LABS_MODEL_NAME", "Marengo-retrieval-2.7")
-        base_url = os.environ.get("TWELVE_LABS_BASE_URL") or TL_DEFAULT_BASE_URL
+        base_url = self._twelvelabs_base_url or os.environ.get("TWELVE_LABS_BASE_URL")
         poll_env = os.environ.get("TWELVE_LABS_POLL_INTERVAL")
         try:
-            poll_interval = int(poll_env) if poll_env and poll_env.strip() else 10
+            poll_interval = int(poll_env) if poll_env and poll_env.strip() else 5
         except ValueError:
-            poll_interval = 10
-        temperature = None
-        temp_env = os.environ.get("TWELVE_LABS_TEMPERATURE")
-        if temp_env and temp_env.strip():
-            try:
-                temperature = float(temp_env)
-            except ValueError:
-                temperature = None
-        max_tokens = None
-        max_tokens_env = os.environ.get("TWELVE_LABS_MAX_TOKENS")
-        if max_tokens_env and max_tokens_env.strip():
-            try:
-                max_tokens = int(max_tokens_env)
-            except ValueError:
-                max_tokens = None
-        index_name_env = os.environ.get("TWELVE_LABS_INDEX_NAME")
-        index_name = (index_name_env.strip() if index_name_env else "") or (TL_DEFAULT_INDEX_NAME or "")
-        index_model_name_env = os.environ.get("TWELVE_LABS_INDEX_MODEL_NAME")
-        if index_model_name_env and index_model_name_env.strip():
-            index_model_name = index_model_name_env.strip()
-        else:
-            inferred = model_name.lower()
-            if inferred.startswith("pegasus"):
-                index_model_name = "pegasus1.2"
-            else:
-                index_model_name = TL_DEFAULT_INDEX_MODEL_NAME or "marengo2.7"
-        index_model_options_env = _parse_list_env(os.environ.get("TWELVE_LABS_INDEX_MODEL_OPTIONS"))
-        if index_model_options_env:
-            index_model_options = index_model_options_env
-        else:
-            index_model_options = list(TL_DEFAULT_INDEX_MODEL_OPTIONS or ("visual", "audio"))
-        index_addons = _parse_list_env(os.environ.get("TWELVE_LABS_INDEX_ADDONS"))
-        enable_video_stream = _parse_bool(os.environ.get("TWELVE_LABS_ENABLE_VIDEO_STREAM"))
-        user_metadata = os.environ.get("TWELVE_LABS_USER_METADATA")
-        verify_tls = _parse_bool(os.environ.get("TWELVE_LABS_VERIFY_TLS"))
-        gist_types = _parse_list_env(os.environ.get("TWELVE_LABS_GIST_TYPES"))
-        summary_types = _parse_list_env(os.environ.get("TWELVE_LABS_SUMMARY_TYPES"))
-        summary_prompt = os.environ.get("TWELVE_LABS_SUMMARY_PROMPT")
-        summary_temperature = None
-        summary_temp_env = os.environ.get("TWELVE_LABS_SUMMARY_TEMPERATURE")
-        if summary_temp_env and summary_temp_env.strip():
-            try:
-                summary_temperature = float(summary_temp_env)
-            except ValueError:
-                summary_temperature = None
-        summary_max_tokens = None
-        summary_max_tokens_env = os.environ.get("TWELVE_LABS_SUMMARY_MAX_TOKENS")
-        if summary_max_tokens_env and summary_max_tokens_env.strip():
-            try:
-                summary_max_tokens = int(summary_max_tokens_env)
-            except ValueError:
-                summary_max_tokens = None
-        search_prompt = os.environ.get("TWELVE_LABS_SEARCH_PROMPT")
-        search_options = _parse_list_env(os.environ.get("TWELVE_LABS_SEARCH_OPTIONS"))
-        if not search_options:
-            search_options = None
-        search_group_by = os.environ.get("TWELVE_LABS_SEARCH_GROUP_BY", "video")
-        search_threshold = os.environ.get("TWELVE_LABS_SEARCH_THRESHOLD", "medium")
-        search_operator = os.environ.get("TWELVE_LABS_SEARCH_OPERATOR", "or")
-        search_page_limit_env = os.environ.get("TWELVE_LABS_SEARCH_PAGE_LIMIT")
-        try:
-            search_page_limit = (
-                int(search_page_limit_env)
-                if search_page_limit_env and search_page_limit_env.strip()
-                else 5
-            )
-        except ValueError:
-            search_page_limit = 5
-        search_sort = os.environ.get("TWELVE_LABS_SEARCH_SORT", "score")
-        include_hls_url = _parse_bool(os.environ.get("TWELVE_LABS_INCLUDE_HLS_URL"))
-        ignore_hls_errors = _parse_bool(os.environ.get("TWELVE_LABS_IGNORE_HLS_ERRORS"))
+            poll_interval = 5
+
         storage_override = os.environ.get("TWELVE_LABS_CACHE_PATH")
         if storage_override:
             storage_path = Path(storage_override).expanduser()
         else:
             storage_path = self._recordings_dir / "twelvelabs_analysis.json"
+
         default_prompt = os.environ.get(
             "TWELVE_LABS_DEFAULT_PROMPT",
-            "Summarize the mission footage with notable events and safety notes.",
+            "이 영상을 분석해줘.",
         )
+
+        gist_types_env = os.environ.get("TWELVE_LABS_GIST_TYPES")
+        gist_types = _parse_list_env(gist_types_env) if gist_types_env else None
 
         try:
             client = TwelveLabsClient(
                 api_key=api_key,
-                base_url=base_url or TL_DEFAULT_BASE_URL,
-                verify_tls=verify_tls,
+                base_url=base_url,
             )
+        except Exception:  # pragma: no cover - best effort logging
+            logging.exception("Failed to configure Twelve Labs client")
+            self._analysis_service = None
+            self._analysis_disabled_reason = "client_initialisation_failed"
+            return
+
+        try:
             self._analysis_service = TwelveLabsAnalysisService(
                 client=client,
-                model_name=model_name,
                 recordings_dir=self._recordings_dir,
                 storage_path=storage_path,
                 default_prompt=default_prompt,
                 poll_interval=poll_interval,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                index_name=index_name or TL_DEFAULT_INDEX_NAME or "olympics-demo",
-                index_model_name=index_model_name,
-                index_model_options=index_model_options,
-                index_addons=index_addons or None,
-                enable_video_stream=enable_video_stream,
-                user_metadata=user_metadata,
-                gist_types=gist_types or TL_DEFAULT_GIST_TYPES,
-                summary_types=summary_types or TL_DEFAULT_SUMMARY_TYPES,
-                summary_prompt=summary_prompt,
-                summary_temperature=summary_temperature,
-                summary_max_tokens=summary_max_tokens,
-                search_prompt=search_prompt,
-                search_options=search_options or TL_DEFAULT_SEARCH_OPTIONS,
-                search_group_by=search_group_by,
-                search_threshold=search_threshold,
-                search_operator=search_operator,
-                search_page_limit=search_page_limit,
-                search_sort=search_sort,
-                include_hls_url=include_hls_url,
-                ignore_hls_errors=ignore_hls_errors,
+                gist_types=gist_types,
             )
         except Exception:  # pragma: no cover - best effort logging
             logging.exception("Failed to initialise Twelve Labs analysis integration")
@@ -742,11 +698,6 @@ class DetectionBroadcaster:
                     {"error": "recording_not_found", "message": str(exc)},
                     status=http.HTTPStatus.NOT_FOUND,
                 )
-            except TwelveLabsError as exc:
-                return self._json_response(
-                    {"error": "twelve_labs_error", "message": str(exc)},
-                    status=http.HTTPStatus.BAD_GATEWAY,
-                )
             except AnalysisServiceError as exc:
                 return self._json_response(
                     {"error": "analysis_failed", "message": str(exc)},
@@ -763,6 +714,54 @@ class DetectionBroadcaster:
                 )
 
             message = self._format_analysis_message(result.record, result.cached)
+            payload = {
+                "status": "cached" if result.cached else "ok",
+                "cached": result.cached,
+                "record": result.record,
+                "message": message,
+            }
+            return self._json_response(payload)
+
+        if action in {"embed", "embedding", "embeddings"}:
+            if not hasattr(self._analysis_service, "ensure_embeddings"):
+                return self._json_response(
+                    {
+                        "error": "unsupported",
+                        "message": "Twelve Labs embeddings are not available in this build.",
+                    },
+                    status=http.HTTPStatus.NOT_IMPLEMENTED,
+                )
+            include_transcription = _parse_bool_param(params, "transcription")
+            embedding_options = _parse_list_param(
+                params,
+                "embeddingOption",
+                "embeddingOptions",
+            )
+
+            try:
+                result = await asyncio.to_thread(
+                    self._analysis_service.ensure_embeddings,
+                    stream_id=stream_id,
+                    file_name=file_name,
+                    embedding_options=embedding_options or None,
+                    include_transcription=bool(include_transcription),
+                )
+            except AnalysisServiceError as exc:
+                return self._json_response(
+                    {"error": "embedding_failed", "message": str(exc)},
+                    status=http.HTTPStatus.BAD_GATEWAY,
+                )
+            except Exception:  # pragma: no cover - defensive logging
+                logging.exception("Unexpected Twelve Labs embedding failure")
+                return self._json_response(
+                    {
+                        "error": "embedding_failed",
+                        "message": "Unexpected error while retrieving Twelve Labs embeddings.",
+                    },
+                    status=http.HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+
+            message = self._format_embeddings_message(result.record, result.cached)
             payload = {
                 "status": "cached" if result.cached else "ok",
                 "cached": result.cached,
@@ -808,6 +807,33 @@ class DetectionBroadcaster:
         if human:
             return f"{base} (generated {human})."
         return f"{base}."
+
+    @staticmethod
+    def _format_embeddings_message(record: Dict[str, Any], cached: bool) -> str:
+        embeddings = record.get("embeddings") if isinstance(record, dict) else None
+        if isinstance(embeddings, dict):
+            retrieved_at = embeddings.get("retrievedAt")
+            human = ""
+            if isinstance(retrieved_at, str) and retrieved_at:
+                try:
+                    parsed = datetime.fromisoformat(retrieved_at.replace("Z", "+00:00"))
+                    human = parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+                except ValueError:
+                    human = retrieved_at
+            options = embeddings.get("options")
+            if isinstance(options, list) and options:
+                options_text = ", ".join(str(opt) for opt in options)
+            else:
+                options_text = "default settings"
+            prefix = (
+                "Returning stored Twelve Labs embeddings"
+                if cached
+                else "Twelve Labs embeddings retrieved"
+            )
+            if human:
+                return f"{prefix} ({options_text}) on {human}."
+            return f"{prefix} ({options_text})."
+        return "No stored Twelve Labs embeddings for this recording."
 
     def _list_recordings(self, stream_id: str) -> list[dict[str, Any]]:
         base = self._recordings_dir
@@ -1198,6 +1224,8 @@ async def _serve_forever(args) -> None:
         static_dir=args.static_dir,
         recordings_dir=args.recordings_dir,
         ssl_context=ssl_context,
+        twelvelabs_api_key=args.twelvelabs_api_key,
+        twelvelabs_base_url=args.twelvelabs_base_url,
     )
 
     listeners: list[tuple[str, int, Optional[ssl.SSLContext]]] = []
@@ -1253,6 +1281,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--insecure-port",
         type=int,
         help="Optional additional port that serves plain WS alongside TLS.",
+    )
+    parser.add_argument(
+        "--twelvelabs-api-key",
+        help="Twelve Labs API key used to enable analysis without environment variables.",
+    )
+    parser.add_argument(
+        "--twelvelabs-base-url",
+        help="Override the Twelve Labs API base URL when requesting analysis.",
     )
     return parser
 
