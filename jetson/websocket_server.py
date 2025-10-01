@@ -278,6 +278,7 @@ class DetectionBroadcaster:
         else:
             self._static_dir = Path(static_dir).resolve()
         self._recordings_dir = self._resolve_recordings_dir(recordings_dir)
+        self._recordings_ready = False
         self._twelvelabs_api_key = (
             twelvelabs_api_key.strip()
             if isinstance(twelvelabs_api_key, str) and twelvelabs_api_key.strip()
@@ -292,6 +293,7 @@ class DetectionBroadcaster:
         self._analysis_disabled_reason: Optional[str]
         self._analysis_service = None
         self._analysis_disabled_reason = None
+        self._recordings_ready = self._prepare_recordings_dir()
         self._init_analysis_service()
 
     async def start(
@@ -539,6 +541,33 @@ class DetectionBroadcaster:
 
         return fallback
 
+    def _prepare_recordings_dir(self) -> bool:
+        """Ensure the recordings directory exists before enabling analysis."""
+
+        base = self._recordings_dir
+        if base is None:
+            self._recordings_ready = False
+            return False
+
+        if self._recordings_ready and base.exists() and base.is_dir():
+            return True
+
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            logging.exception(
+                "Failed to create recordings directory at %s", base
+            )
+            self._recordings_ready = False
+            return False
+
+        if not base.exists() or not base.is_dir():
+            self._recordings_ready = False
+            return False
+
+        self._recordings_ready = True
+        return True
+
     def _disable_analysis_service(self, reason: str, message: str) -> None:
         """Record why the Twelve Labs integration is unavailable."""
 
@@ -561,7 +590,7 @@ class DetectionBroadcaster:
             )
             return
 
-        if self._recordings_dir is None or not self._recordings_dir.exists():
+        if not self._prepare_recordings_dir():
             self._disable_analysis_service(
                 "recordings_unavailable",
                 "Twelve Labs analysis integration disabled: recordings directory missing",

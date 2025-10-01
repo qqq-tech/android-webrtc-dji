@@ -321,6 +321,17 @@
       transform: translateY(-1px);
     }
 
+    @media (max-width: 720px) {
+      .recording-actions {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .recording-action-button {
+        width: 100%;
+      }
+    }
+
     .analysis-summary {
       display: flex;
       flex-direction: column;
@@ -1184,7 +1195,7 @@
               <p class="analysis-meta" id="analysisRecordingMeta">Choose a recording on the left to see its details.</p>
             </div>
             <div class="analysis-output" id="analysisDetails">
-              <p>Select a recording and choose “Analyze” to run the Twelve Labs analysis (default prompt: “이 영상을 분석해줘.”) or “Embeddings” to stream the indexed video and review stored vectors when the server integration is configured.</p>
+              <p>Select a recording and choose “Analyze” to run the Twelve Labs analysis or “Embeddings” to stream the indexed video and review stored vectors when the server integration is configured.</p>
             </div>
           </section>
         </div>
