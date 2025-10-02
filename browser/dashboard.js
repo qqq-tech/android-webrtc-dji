@@ -389,8 +389,13 @@ const lastRenderedAnalysisContent = {
 };
 
 const ANALYSIS_STATUS_REFRESH_INTERVAL_MS = 5000;
+const STATUS_RENDER_INTERVAL_MS = 1000;
+const STATUS_POLL_INTERVAL_MS = 3000;
 const ACTIVE_ANALYSIS_STATUSES = new Set(['loading', 'pending', 'embedding']);
 const analysisCache = new Map();
+const analysisStatusMonitors = new Map();
+let analysisStatusRenderTimerId = null;
+let analysisStatusRenderPending = false;
 
 function updateAnalysisCacheEntry(recording, updates = {}) {
   const key = getAnalysisCacheKey(recording);
@@ -412,6 +417,175 @@ function updateAnalysisCacheEntry(recording, updates = {}) {
 
   analysisCache.set(key, nextEntry);
   return nextEntry;
+}
+
+function ensureAnalysisStatusRenderTimer() {
+  if (analysisStatusRenderTimerId !== null) {
+    return;
+  }
+  analysisStatusRenderTimerId = window.setInterval(() => {
+    if (!analysisStatusRenderPending) {
+      if (analysisStatusMonitors.size === 0) {
+        window.clearInterval(analysisStatusRenderTimerId);
+        analysisStatusRenderTimerId = null;
+      }
+      return;
+    }
+    analysisStatusRenderPending = false;
+    performScheduledAnalysisStatusRender();
+  }, STATUS_RENDER_INTERVAL_MS);
+}
+
+function scheduleAnalysisStatusRender() {
+  analysisStatusRenderPending = true;
+  ensureAnalysisStatusRenderTimer();
+}
+
+function performScheduledAnalysisStatusRender() {
+  if (
+    document?.body?.dataset?.activeTab &&
+    document.body.dataset.activeTab !== 'recordingsTab'
+  ) {
+    if (analysisViewState.recording) {
+      updateAnalysisPanelForRecording(analysisViewState.recording, {
+        preserveExistingResult: true,
+        triggerLoad: false,
+      });
+    } else {
+      updateAnalysisStatusBadgeDisplay();
+    }
+    return;
+  }
+  renderRecordingsList();
+}
+
+function stopAnalysisStatusMonitorByKey(key) {
+  const entry = analysisStatusMonitors.get(key);
+  if (!entry) {
+    return;
+  }
+  if (typeof entry.timerId === 'number') {
+    window.clearInterval(entry.timerId);
+  }
+  entry.timerId = null;
+  analysisStatusMonitors.delete(key);
+}
+
+function stopAnalysisStatusMonitor(recording) {
+  const key = getAnalysisCacheKey(recording);
+  if (!key) {
+    return;
+  }
+  stopAnalysisStatusMonitorByKey(key);
+}
+
+function ensureAnalysisStatusMonitorTimer(entry) {
+  if (!entry || typeof entry.timerId === 'number') {
+    return;
+  }
+  entry.timerId = window.setInterval(() => {
+    void pollRecordingAnalysisStatus(entry);
+  }, STATUS_POLL_INTERVAL_MS);
+}
+
+function shouldContinueStatusPollingFromResult(recording, result) {
+  if (!recording || !result) {
+    return false;
+  }
+
+  if (!result.ok) {
+    const statusKey = typeof result.status === 'string' ? result.status.toLowerCase() : '';
+    if (result.requestType === 'status' && (statusKey === 'network_error' || result.code === 'network_error')) {
+      return true;
+    }
+    return false;
+  }
+
+  const embeddingStatus =
+    result.embeddingStatus || (result.record ? extractEmbeddingStatus(result.record) : null);
+  if (isEmbeddingPendingStatus(embeddingStatus)) {
+    return true;
+  }
+
+  const sharedEmbeddingStatus = getSharedEmbeddingStatus(recording);
+  if (isWorkflowPendingStatus(sharedEmbeddingStatus)) {
+    return true;
+  }
+
+  if (result.analysisStatus && isWorkflowPendingStatus(result.analysisStatus)) {
+    return true;
+  }
+
+  const statusKey = typeof result.status === 'string' ? result.status.trim().toLowerCase() : '';
+  if (statusKey && ['pending', 'loading', 'embedding'].includes(statusKey)) {
+    return true;
+  }
+
+  const stageKey = typeof result.embeddingStage === 'string' ? result.embeddingStage.trim().toLowerCase() : '';
+  if (stageKey === 'start') {
+    return true;
+  }
+
+  return false;
+}
+
+async function pollRecordingAnalysisStatus(entry) {
+  if (!entry || entry.running) {
+    return;
+  }
+  entry.running = true;
+  try {
+    const { recording } = entry;
+    const result = await fetchAnalysis(recording, { start: false });
+    const timestamp = Date.now();
+    if (result.ok && result.record) {
+      const metadataUpdates = extractAnalysisCacheMetadata(result);
+      storeAnalysisRecord(recording, result.record, result.cached, timestamp, metadataUpdates);
+    } else {
+      storeAnalysisStatusSnapshot(recording, result, timestamp);
+    }
+    scheduleAnalysisStatusRender();
+    if (!shouldContinueStatusPollingFromResult(recording, result)) {
+      stopAnalysisStatusMonitorByKey(entry.key);
+    } else {
+      ensureAnalysisStatusMonitorTimer(entry);
+    }
+  } catch (error) {
+    console.warn('Failed to refresh analysis status', error);
+  } finally {
+    entry.running = false;
+  }
+}
+
+function startAnalysisStatusMonitor(recording, options = {}) {
+  if (!recording) {
+    return;
+  }
+  const { immediate = false } = options;
+  const key = getAnalysisCacheKey(recording);
+  if (!key) {
+    return;
+  }
+
+  if (!immediate && !shouldPollAnalysisStatus(recording)) {
+    stopAnalysisStatusMonitorByKey(key);
+    return;
+  }
+
+  let entry = analysisStatusMonitors.get(key);
+  if (!entry) {
+    entry = { key, recording, timerId: null, running: false };
+    analysisStatusMonitors.set(key, entry);
+  } else {
+    entry.recording = recording;
+  }
+
+  if (immediate) {
+    void pollRecordingAnalysisStatus(entry);
+  } else {
+    ensureAnalysisStatusMonitorTimer(entry);
+  }
+  scheduleAnalysisStatusRender();
 }
 const analysisStatusRequests = new Map();
 const embeddingSuccessCache = new Map();
@@ -628,7 +802,7 @@ function applyWorkflowSyncState(nextMap) {
     workflowSyncState.set(key, value);
   }
   pruneWorkflowSyncEntries(workflowSyncState);
-  renderRecordingsList();
+  scheduleAnalysisStatusRender();
 }
 
 function applyWorkflowSyncPayload(payload) {
@@ -721,13 +895,18 @@ function updateWorkflowSyncStateByKey(key, updates) {
   }
 
   persistWorkflowSyncState();
-  renderRecordingsList();
+  scheduleAnalysisStatusRender();
 
   const activeRecording = analysisViewState.recording;
   if (activeRecording) {
     const activeKey = getAnalysisCacheKey(activeRecording);
     if (activeKey && activeKey === key) {
       updateAnalysisPanelForRecording(activeRecording, { preserveExistingResult: true });
+      if (shouldPollAnalysisStatus(activeRecording)) {
+        startAnalysisStatusMonitor(activeRecording, { immediate: true });
+      } else {
+        stopAnalysisStatusMonitorByKey(activeKey);
+      }
     }
   }
 }
@@ -1117,10 +1296,10 @@ async function pollEmbeddingStatus(entry) {
           }
         );
       }
-      renderRecordingsList();
+      scheduleAnalysisStatusRender();
     } else {
       storeAnalysisStatusSnapshot(entry.recording, result);
-      renderRecordingsList();
+      scheduleAnalysisStatusRender();
     }
     const statusInfo = result.embeddingStatus || extractEmbeddingStatus(result.record);
     if (!statusInfo || statusInfo.state !== 'pending') {
@@ -2304,6 +2483,7 @@ function renderRecordingsList() {
         preserveExistingResult: true,
         suppressInitialStatus: true,
       });
+      startAnalysisStatusMonitor(recording, { immediate: true });
       void requestRecordingAnalysis(recording);
     });
 
@@ -2314,6 +2494,7 @@ function renderRecordingsList() {
     embedButton.addEventListener('click', async (event) => {
       event.stopPropagation();
       setSelectedRecording(recording, { suppressInitialStatus: true });
+      startAnalysisStatusMonitor(recording, { immediate: true });
       const latestCached = getCachedAnalysis(recording);
       const latestStatus = getEffectiveEmbeddingStatus(
         recording,
@@ -3215,7 +3396,7 @@ function refreshAnalysisViewFromCache(recording, options = {}) {
   const { preserveExistingResult = true, refreshList = true } = options;
 
   if (refreshList) {
-    renderRecordingsList();
+    scheduleAnalysisStatusRender();
   }
 
   if (!recording) {
@@ -3655,25 +3836,17 @@ function refreshActiveAnalysisStatus(options = {}) {
   if (recordingsState.isLoading) {
     return;
   }
-  if (document?.body?.dataset?.activeTab && document.body.dataset.activeTab !== 'recordingsTab') {
-    return;
-  }
   const recording = analysisViewState.recording;
   if (!recording) {
     return;
   }
-  if (activeAnalysisPromise) {
-    return;
+  const key = getAnalysisCacheKey(recording);
+  const hasMonitor = key ? analysisStatusMonitors.has(key) : false;
+  if (force || shouldPollAnalysisStatus(recording)) {
+    startAnalysisStatusMonitor(recording, { immediate: force || !hasMonitor });
+  } else if (key) {
+    stopAnalysisStatusMonitorByKey(key);
   }
-
-  if (!force && !shouldPollAnalysisStatus(recording)) {
-    return;
-  }
-
-  updateAnalysisPanelForRecording(recording, { preserveExistingResult: true });
-  void loadCachedAnalysis(recording, { force }).then(() => {
-    refreshAnalysisViewFromCache(recording);
-  });
 }
 
 function setSelectedRecording(recording, options = {}) {
@@ -3683,6 +3856,7 @@ function setSelectedRecording(recording, options = {}) {
     selectedRecordingId = null;
     setAnalysisView(null, 'idle', defaultAnalysisMessage);
     renderRecordingsList();
+    refreshActiveAnalysisStatus();
     return;
   }
   selectedRecordingId = recording.id;
@@ -3692,6 +3866,7 @@ function setSelectedRecording(recording, options = {}) {
     ...restOptions,
   });
   renderRecordingsList();
+  refreshActiveAnalysisStatus();
 }
 
 async function requestRecordingAnalysis(recording) {
@@ -3706,6 +3881,8 @@ async function requestRecordingAnalysis(recording) {
     );
     return;
   }
+
+  startAnalysisStatusMonitor(recording, { immediate: true });
 
   const cached = getCachedAnalysis(recording);
   if (cached?.record && recordHasAnalysisContent(cached.record)) {
@@ -3783,7 +3960,7 @@ async function requestRecordingAnalysis(recording) {
         embeddingStatus: result.embeddingStatus,
       }
     );
-    renderRecordingsList();
+    scheduleAnalysisStatusRender();
   } catch (error) {
     if (analysisViewState.recording?.id !== recording.id) {
       return;
@@ -3843,12 +4020,12 @@ async function recoverEmbeddingStateFromNetworkError(recording) {
           embeddingStatus: statusResult.embeddingStatus,
         }
       );
-      renderRecordingsList();
+      scheduleAnalysisStatusRender();
       return true;
     }
     if (statusResult.ok) {
       storeAnalysisStatusSnapshot(recording, statusResult);
-      renderRecordingsList();
+      scheduleAnalysisStatusRender();
     }
   } catch (error) {
     console.warn('Failed to refresh embedding status after network error', error);
@@ -3868,6 +4045,8 @@ async function requestRecordingEmbeddings(recording) {
     );
     return;
   }
+
+  startAnalysisStatusMonitor(recording, { immediate: true });
 
   const cached = getCachedAnalysis(recording);
   const workingRecord = cached?.record || null;
@@ -3901,7 +4080,7 @@ async function requestRecordingEmbeddings(recording) {
   }
   pendingStatusPayload.embeddingStatus.includeTranscription = Boolean(includeTranscription);
   rememberEmbeddingState(recording, pendingStatusPayload);
-  renderRecordingsList();
+  scheduleAnalysisStatusRender();
 
   try {
     activeAnalysisPromise = fetchAnalysis(recording, {
@@ -3959,7 +4138,7 @@ async function requestRecordingEmbeddings(recording) {
         }
       }
       rememberEmbeddingState(recording, { embeddingStatus: errorStatus });
-      renderRecordingsList();
+      scheduleAnalysisStatusRender();
       return;
     }
 
@@ -3985,7 +4164,7 @@ async function requestRecordingEmbeddings(recording) {
         embeddingStatus: result.embeddingStatus,
       }
     );
-    renderRecordingsList();
+    scheduleAnalysisStatusRender();
   } catch (error) {
     if (analysisViewState.recording?.id !== recording.id) {
       return;
@@ -4017,7 +4196,7 @@ async function requestRecordingEmbeddings(recording) {
       }
     }
     rememberEmbeddingState(recording, { embeddingStatus: errorStatus });
-    renderRecordingsList();
+    scheduleAnalysisStatusRender();
   } finally {
     if (analysisViewState.recording?.id === recording.id) {
       activeAnalysisPromise = null;
@@ -4291,8 +4470,6 @@ let streamReconnectTimerId = null;
 let streamReconnectAttempts = 0;
 let pc = null;
 let signalingSocket = null;
-let analysisStatusRefreshTimerId = null;
-
 markTelemetryWaiting();
 
 function clearStreamReconnectTimer() {
@@ -5423,16 +5600,6 @@ renderAnalysisView();
 renderRecordingsList();
 
 refreshActiveAnalysisStatus({ force: true });
-if (analysisStatusRefreshTimerId !== null) {
-  window.clearInterval(analysisStatusRefreshTimerId);
-}
-analysisStatusRefreshTimerId = window.setInterval(() => {
-  try {
-    refreshActiveAnalysisStatus();
-  } catch (error) {
-    console.warn('Failed to refresh analysis status', error);
-  }
-}, ANALYSIS_STATUS_REFRESH_INTERVAL_MS);
 
 if (refreshRecordingsButton) {
   refreshRecordingsButton.addEventListener('click', () => {
