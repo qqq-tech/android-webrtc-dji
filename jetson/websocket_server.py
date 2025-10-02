@@ -15,6 +15,7 @@ import os
 import signal
 import ssl
 import re
+import threading
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from collections.abc import Iterable, Mapping
@@ -226,6 +227,138 @@ def _parse_list_param(params: Mapping[str, list[str]], *names: str) -> list[str]
     return collected
 
 
+def _normalise_workflow_stage(state_value: Any, stage_value: Any = None) -> str:
+    """Map workflow states to a coarse-grained lifecycle label."""
+
+    stage_candidate = str(stage_value or "").strip().lower()
+    if stage_candidate in {"start", "end", "error"}:
+        return stage_candidate
+
+    state_candidate = str(state_value or "").strip().lower()
+    if not state_candidate:
+        return ""
+
+    if state_candidate in {"pending", "starting", "processing", "running", "queued", "queue", "start"}:
+        return "start"
+    if state_candidate in {"ready", "completed", "done", "ok", "success", "cached", "end"}:
+        return "end"
+    if state_candidate in {"error", "failed", "failure"}:
+        return "error"
+    return ""
+
+
+class WorkflowStatusRegistry:
+    """In-memory tracker for analysis and embedding workflow stages."""
+
+    _VALID_WORKFLOWS = {"analysis", "embedding"}
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+    @staticmethod
+    def _build_key(stream_id: str, file_name: str) -> str:
+        stream_value = (stream_id or "").strip()
+        file_value = (file_name or "").strip()
+        if not file_value:
+            return ""
+        return f"{stream_value}/{file_value}" if stream_value else file_value
+
+    @staticmethod
+    def _clone(status: Mapping[str, Any]) -> Dict[str, Any]:
+        return {key: value for key, value in status.items()}
+
+    def _store(self, key: str, workflow: str, status: Mapping[str, Any]) -> Dict[str, Any]:
+        payload = self._clone(status)
+        with self._lock:
+            entry = self._entries.setdefault(key, {})
+            entry[workflow] = payload
+        return self._clone(payload)
+
+    def ingest(self, stream_id: str, file_name: str, workflow: str, status: Mapping[str, Any]) -> None:
+        if workflow not in self._VALID_WORKFLOWS or not isinstance(status, Mapping):
+            return
+        key = self._build_key(stream_id, file_name)
+        if not key:
+            return
+        payload: Dict[str, Any] = {}
+        for field, value in status.items():
+            if value is None:
+                continue
+            payload[field] = value
+        state_value = payload.get("state") or payload.get("status")
+        payload["state"] = str(state_value or "").strip().lower() or ""
+        stage_value = _normalise_workflow_stage(payload.get("state"), payload.get("stage"))
+        if stage_value:
+            payload["stage"] = stage_value
+        elif "stage" in payload and not payload["stage"]:
+            payload.pop("stage", None)
+        if "updatedAt" not in payload or not payload["updatedAt"]:
+            payload["updatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        self._store(key, workflow, payload)
+
+    def update(
+        self,
+        stream_id: str,
+        file_name: str,
+        workflow: str,
+        *,
+        state: str,
+        message: Optional[str] = None,
+        stage: Optional[str] = None,
+        **extras: Any,
+    ) -> None:
+        if workflow not in self._VALID_WORKFLOWS:
+            return
+        key = self._build_key(stream_id, file_name)
+        if not key:
+            return
+        state_value = str(state or "").strip().lower() or "start"
+        payload: Dict[str, Any] = {
+            "state": state_value,
+            "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        stage_value = _normalise_workflow_stage(state_value, stage)
+        if stage_value:
+            payload["stage"] = stage_value
+        if message:
+            payload["message"] = message
+        for key_name, value in extras.items():
+            if value is None:
+                continue
+            payload[key_name] = value
+        self._store(key, workflow, payload)
+
+    def get(self, stream_id: str, file_name: str, workflow: str) -> Optional[Dict[str, Any]]:
+        if workflow not in self._VALID_WORKFLOWS:
+            return None
+        key = self._build_key(stream_id, file_name)
+        if not key:
+            return None
+        with self._lock:
+            entry = self._entries.get(key)
+            if not entry:
+                return None
+            status = entry.get(workflow)
+            if not status:
+                return None
+            return self._clone(status)
+
+    def apply_summary(self, payload: Dict[str, Any], stream_id: str, file_name: str) -> None:
+        if not isinstance(payload, dict):
+            return
+        for workflow in self._VALID_WORKFLOWS:
+            status = self.get(stream_id, file_name, workflow)
+            if not status:
+                continue
+            key = f"{workflow}Status"
+            if key not in payload or not isinstance(payload.get(key), dict):
+                payload[key] = self._clone(status)
+            stage_value = _normalise_workflow_stage(status.get("state"), status.get("stage"))
+            if stage_value:
+                stage_key = "analysisStage" if workflow == "analysis" else "embeddingStage"
+                payload[stage_key] = stage_value
+
 class _StaticRequestSilencingLogger:
     """Filter websockets info logs for successful HTTP responses."""
 
@@ -363,6 +496,7 @@ class DetectionBroadcaster:
         self._analysis_disabled_reason: Optional[str]
         self._analysis_service = None
         self._analysis_disabled_reason = None
+        self._workflow_registry = WorkflowStatusRegistry()
         self._recordings_ready = self._prepare_recordings_dir()
         self._init_analysis_service()
 
@@ -796,7 +930,22 @@ class DetectionBroadcaster:
             not params and action in {"status", "get", "cached"}
         ):
             records = self._analysis_service.list_cached_records()
-            return self._json_response({"status": "ok", "records": records})
+            enriched: list[Dict[str, Any]] = []
+            for record in records:
+                if not isinstance(record, dict):
+                    enriched.append(record)
+                    continue
+                stream_value = str(record.get("streamId") or record.get("StreamID") or "").strip()
+                file_value = str(record.get("fileName") or record.get("FileName") or "").strip()
+                status_block = record.get("analysisStatus")
+                if isinstance(status_block, dict):
+                    self._workflow_registry.ingest(stream_value, file_value, "analysis", status_block)
+                status_block = record.get("embeddingStatus")
+                if isinstance(status_block, dict):
+                    self._workflow_registry.ingest(stream_value, file_value, "embedding", status_block)
+                self._workflow_registry.apply_summary(record, stream_value, file_value)
+                enriched.append(record)
+            return self._json_response({"status": "ok", "records": enriched})
 
         stream_id = (params.get("streamId") or [""])[0].strip()
         file_name = (params.get("fileName") or [""])[0].strip()
@@ -815,6 +964,16 @@ class DetectionBroadcaster:
         max_tokens = _parse_int_param(params, "maxTokens")
 
         if action in {"start", "run", "analyze", "analyse"}:
+            self._workflow_registry.update(
+                stream_id,
+                file_name,
+                "analysis",
+                state="start",
+                message="Requesting Twelve Labs analysis.",
+                prompt=prompt_value,
+                temperature=temperature,
+                maxTokens=max_tokens,
+            )
             try:
                 result = await asyncio.to_thread(
                     self._analysis_service.ensure_analysis,
@@ -825,6 +984,16 @@ class DetectionBroadcaster:
                     max_tokens=max_tokens,
                 )
             except RecordingNotFoundError as exc:
+                self._workflow_registry.update(
+                    stream_id,
+                    file_name,
+                    "analysis",
+                    state="error",
+                    message=str(exc),
+                    prompt=prompt_value,
+                    temperature=temperature,
+                    maxTokens=max_tokens,
+                )
                 return self._json_response(
                     {
                         "error": "recording_not_found",
@@ -835,6 +1004,16 @@ class DetectionBroadcaster:
                 )
             except AnalysisServiceError as exc:
                 error_message = str(exc).strip()
+                self._workflow_registry.update(
+                    stream_id,
+                    file_name,
+                    "analysis",
+                    state="error",
+                    message=error_message or "Failed to start Twelve Labs analysis.",
+                    prompt=prompt_value,
+                    temperature=temperature,
+                    maxTokens=max_tokens,
+                )
                 if error_message:
                     message = (
                         "Twelve Labs service reported an error while starting analysis: "
@@ -854,6 +1033,16 @@ class DetectionBroadcaster:
                 )
             except Exception:  # pragma: no cover - defensive logging
                 logging.exception("Unexpected Twelve Labs analysis failure")
+                self._workflow_registry.update(
+                    stream_id,
+                    file_name,
+                    "analysis",
+                    state="error",
+                    message="Unexpected error while running Twelve Labs analysis.",
+                    prompt=prompt_value,
+                    temperature=temperature,
+                    maxTokens=max_tokens,
+                )
                 return self._json_response(
                     {
                         "error": "analysis_failed",
@@ -864,18 +1053,42 @@ class DetectionBroadcaster:
                 )
 
             message = self._format_analysis_message(result.record, result.cached)
+            record_block = result.record if isinstance(result.record, dict) else {}
+            analysis_status = record_block.get("analysisStatus")
+            analysis_state = (
+                analysis_status.get("state")
+                if isinstance(analysis_status, dict)
+                else "end"
+            )
             payload = {
                 "status": "cached" if result.cached else "ok",
                 "cached": result.cached,
                 "record": result.record,
                 "message": message,
             }
-            self._merge_analysis_status(payload)
-            self._merge_embedding_status(payload)
+            self._merge_analysis_status(payload, stream_id, file_name)
+            self._workflow_registry.update(
+                stream_id,
+                file_name,
+                "analysis",
+                state=str(analysis_state or "end").strip().lower(),
+                message=message,
+                prompt=prompt_value,
+                temperature=temperature,
+                maxTokens=max_tokens,
+            )
+            self._merge_embedding_status(payload, stream_id, file_name)
             return self._json_response(payload)
 
         if action in {"embed", "embedding", "embeddings"}:
             if not hasattr(self._analysis_service, "ensure_embeddings"):
+                self._workflow_registry.update(
+                    stream_id,
+                    file_name,
+                    "embedding",
+                    state="error",
+                    message="Twelve Labs embeddings are not available in this build.",
+                )
                 return self._json_response(
                     {
                         "error": "unsupported",
@@ -890,6 +1103,20 @@ class DetectionBroadcaster:
                 "embeddingOptions",
             )
 
+            pending_message = "Retrieving Twelve Labs embeddings…"
+            extras: Dict[str, Any] = {}
+            if embedding_options:
+                extras["options"] = list(embedding_options)
+            if include_transcription is not None:
+                extras["includeTranscription"] = bool(include_transcription)
+            self._workflow_registry.update(
+                stream_id,
+                file_name,
+                "embedding",
+                state="start",
+                message=pending_message,
+                **extras,
+            )
             try:
                 result = await asyncio.to_thread(
                     self._analysis_service.ensure_embeddings,
@@ -899,6 +1126,14 @@ class DetectionBroadcaster:
                     include_transcription=bool(include_transcription),
                 )
             except RecordingNotFoundError as exc:
+                self._workflow_registry.update(
+                    stream_id,
+                    file_name,
+                    "embedding",
+                    state="error",
+                    message=str(exc),
+                    **extras,
+                )
                 return self._json_response(
                     {
                         "error": "recording_not_found",
@@ -908,6 +1143,14 @@ class DetectionBroadcaster:
                     status=http.HTTPStatus.NOT_FOUND,
                 )
             except AnalysisServiceError as exc:
+                self._workflow_registry.update(
+                    stream_id,
+                    file_name,
+                    "embedding",
+                    state="error",
+                    message=str(exc),
+                    **extras,
+                )
                 return self._json_response(
                     {
                         "error": "embedding_failed",
@@ -918,6 +1161,14 @@ class DetectionBroadcaster:
                 )
             except Exception:  # pragma: no cover - defensive logging
                 logging.exception("Unexpected Twelve Labs embedding failure")
+                self._workflow_registry.update(
+                    stream_id,
+                    file_name,
+                    "embedding",
+                    state="error",
+                    message="Unexpected error while retrieving Twelve Labs embeddings.",
+                    **extras,
+                )
                 return self._json_response(
                     {
                         "error": "embedding_failed",
@@ -928,14 +1179,29 @@ class DetectionBroadcaster:
                 )
 
             message = self._format_embeddings_message(result.record, result.cached)
+            record_block = result.record if isinstance(result.record, dict) else {}
+            embedding_status = record_block.get("embeddingStatus")
+            embedding_state = (
+                embedding_status.get("state")
+                if isinstance(embedding_status, dict)
+                else "end"
+            )
             payload = {
                 "status": "cached" if result.cached else "ok",
                 "cached": result.cached,
                 "record": result.record,
                 "message": message,
             }
-            self._merge_analysis_status(payload)
-            self._merge_embedding_status(payload)
+            self._merge_analysis_status(payload, stream_id, file_name)
+            self._workflow_registry.update(
+                stream_id,
+                file_name,
+                "embedding",
+                state=str(embedding_state or "end").strip().lower(),
+                message=message,
+                **extras,
+            )
+            self._merge_embedding_status(payload, stream_id, file_name)
             return self._json_response(payload)
 
         existing = self._analysis_service.get_cached_record(stream_id, file_name)
@@ -946,6 +1212,7 @@ class DetectionBroadcaster:
                 "record": None,
                 "message": "No stored Twelve Labs analysis is available yet for this recording. Run an analysis to generate insights.",
             }
+            self._workflow_registry.apply_summary(payload, stream_id, file_name)
             return self._json_response(payload, status=http.HTTPStatus.OK)
 
         payload = {
@@ -954,84 +1221,159 @@ class DetectionBroadcaster:
             "record": existing,
             "message": self._format_analysis_message(existing, True),
         }
-        self._merge_analysis_status(payload)
-        self._merge_embedding_status(payload)
+        self._merge_analysis_status(payload, stream_id, file_name)
+        self._merge_embedding_status(payload, stream_id, file_name)
         return self._json_response(payload)
 
-    @staticmethod
-    def _normalise_workflow_stage(state_value: str, stage_value: Any) -> str:
-        candidate = str(stage_value or "").strip().lower()
-        if candidate in {"start", "end", "error"}:
-            return candidate
-        state = str(state_value or "").strip().lower()
-        if not state:
-            return ""
-        mapping = {
-            "pending": "start",
-            "starting": "start",
-            "processing": "start",
-            "running": "start",
-            "ready": "end",
-            "completed": "end",
-            "done": "end",
-            "ok": "end",
-            "success": "end",
-            "error": "error",
-            "failed": "error",
-            "failure": "error",
-        }
-        return mapping.get(state, "")
+    def _merge_embedding_status(
+        self,
+        payload: Dict[str, Any],
+        stream_id: str = "",
+        file_name: str = "",
+    ) -> None:
+        if not isinstance(payload, dict):
+            return
+        record = payload.get("record") if isinstance(payload.get("record"), dict) else None
+        stream_value = (stream_id or "").strip()
+        file_value = (file_name or "").strip()
+        if isinstance(record, dict):
+            stream_candidate = record.get("streamId") or record.get("StreamID")
+            file_candidate = (
+                record.get("fileName")
+                or record.get("FileName")
+                or record.get("name")
+            )
+            if isinstance(stream_candidate, str) and stream_candidate.strip():
+                stream_value = stream_candidate.strip()
+            if isinstance(file_candidate, str) and file_candidate.strip():
+                file_value = file_candidate.strip()
 
-    @staticmethod
-    def _merge_embedding_status(payload: Dict[str, Any]) -> None:
-        record = payload.get("record") if isinstance(payload, dict) else None
+        status_block = record.get("embeddingStatus") if isinstance(record, dict) else None
+        if isinstance(status_block, dict):
+            if stream_value or file_value:
+                self._workflow_registry.ingest(stream_value, file_value, "embedding", status_block)
+            state_value = str(status_block.get("state") or "").strip().lower()
+            stage_value = _normalise_workflow_stage(state_value, status_block.get("stage"))
+            if stage_value:
+                payload["embeddingStage"] = stage_value
+            if state_value in {"pending", "running", "start", "starting", "processing", "queued", "queue"}:
+                payload["status"] = "pending"
+            message_value = status_block.get("message")
+            if isinstance(message_value, str) and message_value.strip():
+                combined = message_value.strip()
+                existing_message = payload.get("message")
+                if isinstance(existing_message, str) and existing_message.strip():
+                    if combined not in existing_message:
+                        combined = f"{existing_message.strip()} {combined}"
+                    else:
+                        combined = existing_message.strip()
+                payload["message"] = combined
+            return
+
+        fallback = (
+            self._workflow_registry.get(stream_value, file_value, "embedding")
+            if (stream_value or file_value)
+            else None
+        )
+        if not fallback:
+            return
+
         if not isinstance(record, dict):
-            return
-        status_block = record.get("embeddingStatus")
-        if not isinstance(status_block, dict):
-            return
-        state_value = str(status_block.get("state") or "").strip().lower()
-        if not state_value and not status_block.get("stage"):
-            return
-        stage_value = DetectionBroadcaster._normalise_workflow_stage(
-            state_value, status_block.get("stage")
+            record = {}
+            payload["record"] = record
+        if not isinstance(record.get("embeddingStatus"), dict):
+            record["embeddingStatus"] = {key: value for key, value in fallback.items()}
+
+        stage_value = _normalise_workflow_stage(
+            fallback.get("state"), fallback.get("stage")
         )
         if stage_value:
             payload["embeddingStage"] = stage_value
-        if state_value == "pending":
+        state_value = str(fallback.get("state") or "").strip().lower()
+        if state_value in {"pending", "running", "start", "starting", "processing", "queued", "queue"}:
             payload["status"] = "pending"
-        message_value = status_block.get("message")
+        message_value = fallback.get("message")
         if isinstance(message_value, str) and message_value.strip():
             combined = message_value.strip()
             existing_message = payload.get("message")
             if isinstance(existing_message, str) and existing_message.strip():
-                if combined in existing_message:
-                    return
-                combined = f"{existing_message.strip()} {combined}"
+                if combined not in existing_message:
+                    combined = f"{existing_message.strip()} {combined}"
+                else:
+                    combined = existing_message.strip()
             payload["message"] = combined
 
-    @staticmethod
-    def _merge_analysis_status(payload: Dict[str, Any]) -> None:
-        record = payload.get("record") if isinstance(payload, dict) else None
+    def _merge_analysis_status(
+        self,
+        payload: Dict[str, Any],
+        stream_id: str = "",
+        file_name: str = "",
+    ) -> None:
+        if not isinstance(payload, dict):
+            return
+        record = payload.get("record") if isinstance(payload.get("record"), dict) else None
+        stream_value = (stream_id or "").strip()
+        file_value = (file_name or "").strip()
+        if isinstance(record, dict):
+            stream_candidate = record.get("streamId") or record.get("StreamID")
+            file_candidate = (
+                record.get("fileName")
+                or record.get("FileName")
+                or record.get("name")
+            )
+            if isinstance(stream_candidate, str) and stream_candidate.strip():
+                stream_value = stream_candidate.strip()
+            if isinstance(file_candidate, str) and file_candidate.strip():
+                file_value = file_candidate.strip()
+
+        status_block = record.get("analysisStatus") if isinstance(record, dict) else None
+        if isinstance(status_block, dict):
+            if stream_value or file_value:
+                self._workflow_registry.ingest(stream_value, file_value, "analysis", status_block)
+            state_value = str(status_block.get("state") or "").strip().lower()
+            stage_value = _normalise_workflow_stage(state_value, status_block.get("stage"))
+            if stage_value:
+                payload["analysisStage"] = stage_value
+            message_value = status_block.get("message")
+            if isinstance(message_value, str) and message_value.strip():
+                combined = message_value.strip()
+                existing_message = payload.get("message")
+                if isinstance(existing_message, str) and existing_message.strip():
+                    if combined not in existing_message:
+                        combined = f"{existing_message.strip()} {combined}"
+                    else:
+                        combined = existing_message.strip()
+                payload["message"] = combined
+            return
+
+        fallback = (
+            self._workflow_registry.get(stream_value, file_value, "analysis")
+            if (stream_value or file_value)
+            else None
+        )
+        if not fallback:
+            return
+
         if not isinstance(record, dict):
-            return
-        status_block = record.get("analysisStatus")
-        if not isinstance(status_block, dict):
-            return
-        state_value = str(status_block.get("state") or "").strip().lower()
-        stage_value = DetectionBroadcaster._normalise_workflow_stage(
-            state_value, status_block.get("stage")
+            record = {}
+            payload["record"] = record
+        if not isinstance(record.get("analysisStatus"), dict):
+            record["analysisStatus"] = {key: value for key, value in fallback.items()}
+
+        stage_value = _normalise_workflow_stage(
+            fallback.get("state"), fallback.get("stage")
         )
         if stage_value:
             payload["analysisStage"] = stage_value
-        message_value = status_block.get("message")
+        message_value = fallback.get("message")
         if isinstance(message_value, str) and message_value.strip():
             combined = message_value.strip()
             existing_message = payload.get("message")
             if isinstance(existing_message, str) and existing_message.strip():
-                if combined in existing_message:
-                    return
-                combined = f"{existing_message.strip()} {combined}"
+                if combined not in existing_message:
+                    combined = f"{existing_message.strip()} {combined}"
+                else:
+                    combined = existing_message.strip()
             payload["message"] = combined
 
     @staticmethod
@@ -1137,7 +1479,13 @@ class DetectionBroadcaster:
 
                         status_block = cached_record.get("analysisStatus")
                         if isinstance(status_block, dict):
-                            stage_value = self._normalise_workflow_stage(
+                            self._workflow_registry.ingest(
+                                stream,
+                                file_path.name,
+                                "analysis",
+                                status_block,
+                            )
+                            stage_value = _normalise_workflow_stage(
                                 str(status_block.get("state") or ""),
                                 status_block.get("stage"),
                             )
@@ -1167,6 +1515,12 @@ class DetectionBroadcaster:
 
                         status_block = cached_record.get("embeddingStatus")
                         if isinstance(status_block, dict):
+                            self._workflow_registry.ingest(
+                                stream,
+                                file_path.name,
+                                "embedding",
+                                status_block,
+                            )
                             payload["embeddingStatus"] = status_block
 
                         embeddings_block = cached_record.get("embeddings")
@@ -1203,6 +1557,7 @@ class DetectionBroadcaster:
                             if summary:
                                 payload["embeddings"] = summary
 
+                self._workflow_registry.apply_summary(payload, stream, file_path.name)
                 entries.append((modified.timestamp(), payload))
 
         entries.sort(key=lambda item: item[0], reverse=True)
