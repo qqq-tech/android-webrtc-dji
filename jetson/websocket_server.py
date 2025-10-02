@@ -818,7 +818,11 @@ class DetectionBroadcaster:
                 )
             except RecordingNotFoundError as exc:
                 return self._json_response(
-                    {"error": "recording_not_found", "message": str(exc)},
+                    {
+                        "error": "recording_not_found",
+                        "message": str(exc),
+                        "analysisStage": "error",
+                    },
                     status=http.HTTPStatus.NOT_FOUND,
                 )
             except AnalysisServiceError as exc:
@@ -833,7 +837,11 @@ class DetectionBroadcaster:
                         "Twelve Labs service reported an unknown error while starting analysis."
                     )
                 return self._json_response(
-                    {"error": "analysis_failed", "message": message},
+                    {
+                        "error": "analysis_failed",
+                        "message": message,
+                        "analysisStage": "error",
+                    },
                     status=http.HTTPStatus.BAD_GATEWAY,
                 )
             except Exception:  # pragma: no cover - defensive logging
@@ -842,6 +850,7 @@ class DetectionBroadcaster:
                     {
                         "error": "analysis_failed",
                         "message": "Unexpected error while running Twelve Labs analysis.",
+                        "analysisStage": "error",
                     },
                     status=http.HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
@@ -853,6 +862,8 @@ class DetectionBroadcaster:
                 "record": result.record,
                 "message": message,
             }
+            self._merge_analysis_status(payload)
+            self._merge_embedding_status(payload)
             return self._json_response(payload)
 
         if action in {"embed", "embedding", "embeddings"}:
@@ -881,12 +892,20 @@ class DetectionBroadcaster:
                 )
             except RecordingNotFoundError as exc:
                 return self._json_response(
-                    {"error": "recording_not_found", "message": str(exc)},
+                    {
+                        "error": "recording_not_found",
+                        "message": str(exc),
+                        "embeddingStage": "error",
+                    },
                     status=http.HTTPStatus.NOT_FOUND,
                 )
             except AnalysisServiceError as exc:
                 return self._json_response(
-                    {"error": "embedding_failed", "message": str(exc)},
+                    {
+                        "error": "embedding_failed",
+                        "message": str(exc),
+                        "embeddingStage": "error",
+                    },
                     status=http.HTTPStatus.BAD_GATEWAY,
                 )
             except Exception:  # pragma: no cover - defensive logging
@@ -895,6 +914,7 @@ class DetectionBroadcaster:
                     {
                         "error": "embedding_failed",
                         "message": "Unexpected error while retrieving Twelve Labs embeddings.",
+                        "embeddingStage": "error",
                     },
                     status=http.HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
@@ -906,6 +926,7 @@ class DetectionBroadcaster:
                 "record": result.record,
                 "message": message,
             }
+            self._merge_analysis_status(payload)
             self._merge_embedding_status(payload)
             return self._json_response(payload)
 
@@ -925,8 +946,33 @@ class DetectionBroadcaster:
             "record": existing,
             "message": self._format_analysis_message(existing, True),
         }
+        self._merge_analysis_status(payload)
         self._merge_embedding_status(payload)
         return self._json_response(payload)
+
+    @staticmethod
+    def _normalise_workflow_stage(state_value: str, stage_value: Any) -> str:
+        candidate = str(stage_value or "").strip().lower()
+        if candidate in {"start", "end", "error"}:
+            return candidate
+        state = str(state_value or "").strip().lower()
+        if not state:
+            return ""
+        mapping = {
+            "pending": "start",
+            "starting": "start",
+            "processing": "start",
+            "running": "start",
+            "ready": "end",
+            "completed": "end",
+            "done": "end",
+            "ok": "end",
+            "success": "end",
+            "error": "error",
+            "failed": "error",
+            "failure": "error",
+        }
+        return mapping.get(state, "")
 
     @staticmethod
     def _merge_embedding_status(payload: Dict[str, Any]) -> None:
@@ -937,10 +983,39 @@ class DetectionBroadcaster:
         if not isinstance(status_block, dict):
             return
         state_value = str(status_block.get("state") or "").strip().lower()
-        if not state_value:
+        if not state_value and not status_block.get("stage"):
             return
+        stage_value = DetectionBroadcaster._normalise_workflow_stage(
+            state_value, status_block.get("stage")
+        )
+        if stage_value:
+            payload["embeddingStage"] = stage_value
         if state_value == "pending":
             payload["status"] = "pending"
+        message_value = status_block.get("message")
+        if isinstance(message_value, str) and message_value.strip():
+            combined = message_value.strip()
+            existing_message = payload.get("message")
+            if isinstance(existing_message, str) and existing_message.strip():
+                if combined in existing_message:
+                    return
+                combined = f"{existing_message.strip()} {combined}"
+            payload["message"] = combined
+
+    @staticmethod
+    def _merge_analysis_status(payload: Dict[str, Any]) -> None:
+        record = payload.get("record") if isinstance(payload, dict) else None
+        if not isinstance(record, dict):
+            return
+        status_block = record.get("analysisStatus")
+        if not isinstance(status_block, dict):
+            return
+        state_value = str(status_block.get("state") or "").strip().lower()
+        stage_value = DetectionBroadcaster._normalise_workflow_stage(
+            state_value, status_block.get("stage")
+        )
+        if stage_value:
+            payload["analysisStage"] = stage_value
         message_value = status_block.get("message")
         if isinstance(message_value, str) and message_value.strip():
             combined = message_value.strip()

@@ -58,6 +58,38 @@ def _clone(data: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(json.dumps(data))
 
 
+def _normalise_workflow_stage(
+    state: str, explicit: Optional[str] = None
+) -> Optional[str]:
+    """Map the Twelve Labs workflow state to a generic stage label."""
+
+    if explicit:
+        stage_candidate = str(explicit or "").strip().lower()
+        if stage_candidate in {"start", "end", "error"}:
+            return stage_candidate
+
+    state_value = str(state or "").strip().lower()
+    if not state_value:
+        return None
+
+    mapping = {
+        "pending": "start",
+        "starting": "start",
+        "processing": "start",
+        "running": "start",
+        "ready": "end",
+        "completed": "end",
+        "done": "end",
+        "ok": "end",
+        "success": "end",
+        "error": "error",
+        "failed": "error",
+        "failure": "error",
+    }
+
+    return mapping.get(state_value, explicit)
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -227,11 +259,57 @@ class TwelveLabsAnalysisService:
         if include_transcription is not None:
             status_payload["includeTranscription"] = bool(include_transcription)
 
+        stage_value = _normalise_workflow_stage(state_value)
+        if stage_value:
+            status_payload["stage"] = stage_value
+
         with self._lock:
             record = self._records.get(key)
             if not record:
                 return
             record["embeddingStatus"] = status_payload
+            self._save_cache()
+
+    def _set_analysis_status(
+        self,
+        key: str,
+        *,
+        state: str,
+        message: Optional[str] = None,
+        prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timestamp: Optional[str] = None,
+    ) -> None:
+        """Persist the latest analysis workflow state for a cached record."""
+
+        state_value = str(state or "").strip().lower()
+        if not state_value:
+            return
+
+        status_payload: Dict[str, Any] = {
+            "state": state_value,
+            "updatedAt": timestamp or _utc_now(),
+        }
+
+        stage_value = _normalise_workflow_stage(state_value)
+        if stage_value:
+            status_payload["stage"] = stage_value
+
+        if message:
+            status_payload["message"] = message
+        if isinstance(prompt, str) and prompt:
+            status_payload["prompt"] = prompt
+        if temperature is not None:
+            status_payload["temperature"] = temperature
+        if max_tokens is not None:
+            status_payload["maxTokens"] = max_tokens
+
+        with self._lock:
+            record = self._records.get(key)
+            if not record:
+                return
+            record["analysisStatus"] = status_payload
             self._save_cache()
 
     def _load_cache(self) -> None:
@@ -446,93 +524,129 @@ class TwelveLabsAnalysisService:
         if not prompt_value:
             prompt_value = self._default_prompt
 
-        gist_payload = self._client.fetch_gist(
-            video_id=video_id,
-            gist_types=self._gist_types,
-        )
-
-        if isinstance(gist_payload, dict):
-            title = gist_payload.get("title")
-            topics = gist_payload.get("topics") or gist_payload.get("topic")
-            hashtags = gist_payload.get("hashtags") or gist_payload.get("hashtag")
-            LOGGER.info("Title=%s\nTopics=%s\nHashtags=%s", title, topics, hashtags)
-
-        stream = self._client.analyze_stream(
-            video_id=video_id,
+        self._set_analysis_status(
+            key,
+            state="start",
+            message="Requesting Twelve Labs analysis.",
             prompt=prompt_value,
             temperature=temperature,
             max_tokens=max_tokens,
         )
 
-        chunk_texts: list[str] = []
-        for event in stream:
-            event_type = getattr(event, "event_type", None) or getattr(event, "type", None)
-            if event_type != "text_generation":
-                continue
-            raw_text = getattr(event, "text", None) or getattr(event, "data", None)
-            if not isinstance(raw_text, str):
-                continue
-            cleaned = self._client.clean_generated_text(raw_text)
-            if not cleaned:
-                continue
-            LOGGER.info("%s", cleaned)
-            chunk_texts.append(cleaned.strip())
+        try:
+            gist_payload = self._client.fetch_gist(
+                video_id=video_id,
+                gist_types=self._gist_types,
+            )
 
-        analysis_chunks = [chunk for chunk in chunk_texts if chunk]
-        combined_text = " ".join(analysis_chunks)
-        analysis_text = AnalysisText(text=combined_text, chunks=analysis_chunks)
+            if isinstance(gist_payload, dict):
+                title = gist_payload.get("title")
+                topics = gist_payload.get("topics") or gist_payload.get("topic")
+                hashtags = gist_payload.get("hashtags") or gist_payload.get("hashtag")
+                LOGGER.info("Title=%s\nTopics=%s\nHashtags=%s", title, topics, hashtags)
 
-        timestamp = _utc_now()
-        created_at = existing.get("createdAt") if isinstance(existing, dict) else None
-        previous_embeddings = existing.get("embeddings") if isinstance(existing, dict) else None
+            stream = self._client.analyze_stream(
+                video_id=video_id,
+                prompt=prompt_value,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
 
-        with self._lock:
-            record = self._records.get(key)
-            if record is None:
-                raise AnalysisServiceError(
-                    "Recording cache was removed while running analysis"
-                )
-            record["streamId"] = stream_id
-            record["fileName"] = file_name
-            record["videoId"] = video_id
-            record["prompt"] = prompt_value
-            record["temperature"] = temperature
-            record["maxTokens"] = max_tokens
-            record["updatedAt"] = timestamp
-            if not record.get("createdAt") and created_at:
-                record["createdAt"] = created_at
+            chunk_texts: list[str] = []
+            for event in stream:
+                event_type = getattr(event, "event_type", None) or getattr(event, "type", None)
+                if event_type != "text_generation":
+                    continue
+                raw_text = getattr(event, "text", None) or getattr(event, "data", None)
+                if not isinstance(raw_text, str):
+                    continue
+                cleaned = self._client.clean_generated_text(raw_text)
+                if not cleaned:
+                    continue
+                LOGGER.info("%s", cleaned)
+                chunk_texts.append(cleaned.strip())
 
-            source_block = record.get("source")
-            if isinstance(source_block, dict):
-                source_block["path"] = str(recording_path)
-                source_block["signature"] = signature
-            else:
-                record["source"] = {
-                    "path": str(recording_path),
-                    "signature": signature,
+            analysis_chunks = [chunk for chunk in chunk_texts if chunk]
+            combined_text = " ".join(analysis_chunks)
+            analysis_text = AnalysisText(text=combined_text, chunks=analysis_chunks)
+
+            timestamp = _utc_now()
+            created_at = existing.get("createdAt") if isinstance(existing, dict) else None
+            previous_embeddings = existing.get("embeddings") if isinstance(existing, dict) else None
+
+            with self._lock:
+                record = self._records.get(key)
+                if record is None:
+                    raise AnalysisServiceError(
+                        "Recording cache was removed while running analysis"
+                    )
+                record["streamId"] = stream_id
+                record["fileName"] = file_name
+                record["videoId"] = video_id
+                record["prompt"] = prompt_value
+                record["temperature"] = temperature
+                record["maxTokens"] = max_tokens
+                record["updatedAt"] = timestamp
+                if not record.get("createdAt") and created_at:
+                    record["createdAt"] = created_at
+
+                source_block = record.get("source")
+                if isinstance(source_block, dict):
+                    source_block["path"] = str(recording_path)
+                    source_block["signature"] = signature
+                else:
+                    record["source"] = {
+                        "path": str(recording_path),
+                        "signature": signature,
+                    }
+
+                record["index"] = {
+                    "id": index_id,
+                    "name": self._index_name,
                 }
 
-            record["index"] = {
-                "id": index_id,
-                "name": self._index_name,
-            }
+                record["gist"] = {
+                    "types": list(self._gist_types),
+                    "response": gist_payload,
+                }
 
-            record["gist"] = {
-                "types": list(self._gist_types),
-                "response": gist_payload,
-            }
+                record["analysis"] = {
+                    "prompt": prompt_value,
+                    "text": analysis_text.text,
+                    "chunks": list(analysis_text.chunks),
+                }
 
-            record["analysis"] = {
-                "prompt": prompt_value,
-                "text": analysis_text.text,
-                "chunks": list(analysis_text.chunks),
-            }
+                if isinstance(previous_embeddings, dict):
+                    record["embeddings"] = previous_embeddings
 
-            if isinstance(previous_embeddings, dict):
-                record["embeddings"] = previous_embeddings
+                status_block: Dict[str, Any] = {
+                    "state": "end",
+                    "stage": "end",
+                    "updatedAt": timestamp,
+                    "message": "Twelve Labs analysis completed.",
+                }
+                if prompt_value:
+                    status_block["prompt"] = prompt_value
+                if temperature is not None:
+                    status_block["temperature"] = temperature
+                if max_tokens is not None:
+                    status_block["maxTokens"] = max_tokens
 
-            self._save_cache()
-            updated = _clone(record)
+                record["analysisStatus"] = status_block
+
+                self._save_cache()
+                updated = _clone(record)
+        except Exception as exc:
+            error_message = str(exc) or "Failed to run Twelve Labs analysis."
+            self._set_analysis_status(
+                key,
+                state="error",
+                message=error_message,
+                prompt=prompt_value,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            raise
 
         return AnalysisResult(record=updated, cached=False)
 
@@ -688,6 +802,7 @@ class TwelveLabsAnalysisService:
                     record["embeddings"]["transcription"] = transcription_payload
                 status_block: Dict[str, Any] = {
                     "state": "ready",
+                    "stage": "end",
                     "updatedAt": timestamp,
                     "message": "Twelve Labs embeddings retrieved.",
                     "options": list(retrieved_options),
