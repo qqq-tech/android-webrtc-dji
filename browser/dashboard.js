@@ -1688,52 +1688,6 @@ function buildEmbeddingsMessage(record, cached) {
     : `Twelve Labs embeddings (${options}) retrieved.`;
 }
 
-function buildRecordingWorkflowSummary(recording, cached) {
-  if (!analysisIntegrationAvailable) {
-    return 'Configure the Twelve Labs integration to enable embeddings and analysis.';
-  }
-
-  const cachedRecord = cached?.record || null;
-  const summarySources = [];
-  if (cachedRecord) {
-    summarySources.push(cachedRecord);
-  }
-  if (recording && recording !== cachedRecord) {
-    summarySources.push(recording);
-  }
-  const statusInfo = getEffectiveEmbeddingStatus(recording, ...summarySources);
-  if (isEmbeddingPendingStatus(statusInfo)) {
-    return buildPendingEmbeddingMessage(recording, cachedRecord || recording, statusInfo);
-  }
-  if (isEmbeddingErrorStatus(statusInfo)) {
-    return (
-      statusInfo?.message || 'Failed to retrieve Twelve Labs embeddings for this recording.'
-    );
-  }
-
-  const cachedFlag = Boolean(cached?.cached);
-  const recordSource = cachedRecord || (recording && typeof recording === 'object' ? recording : null);
-  if (recordSource) {
-    const combinedMessage = combineAnalysisAndEmbeddingMessages(
-      recordSource,
-      buildAnalysisCompleteMessage(recordSource, cachedFlag),
-      cachedFlag
-    );
-    if (combinedMessage) {
-      return combinedMessage;
-    }
-  }
-
-  if (recordSource) {
-    const embeddingMessage = buildEmbeddingsMessage(recordSource, cachedFlag);
-    if (embeddingMessage) {
-      return embeddingMessage;
-    }
-  }
-
-  return 'Press “Embeddings” to upload this recording to Twelve Labs and retrieve vectors.';
-}
-
 function combineAnalysisAndEmbeddingMessages(record, baseMessage, cached) {
   if (!record || typeof record !== 'object') {
     return baseMessage;
@@ -2065,6 +2019,7 @@ function renderRecordingsList() {
     placeholder.textContent = 'Loading recordings…';
     recordingsListElement.appendChild(placeholder);
     updateRecordingsSummary();
+    syncActiveAnalysisView();
     return;
   }
   if (!Array.isArray(recordingsState.items) || recordingsState.items.length === 0) {
@@ -2073,6 +2028,7 @@ function renderRecordingsList() {
     emptyMessage.textContent = 'No recordings available yet. Capture missions to populate this list.';
     recordingsListElement.appendChild(emptyMessage);
     updateRecordingsSummary();
+    syncActiveAnalysisView();
     return;
   }
 
@@ -2174,13 +2130,11 @@ function renderRecordingsList() {
     });
 
     const cached = getCachedAnalysis(recording);
-    let workflowSummaryText = '';
     if (!analysisIntegrationAvailable) {
       analyzeButton.disabled = true;
       analyzeButton.title = 'Configure the Twelve Labs integration to enable analysis.';
       embedButton.disabled = true;
       embedButton.title = 'Configure the Twelve Labs integration to enable embeddings.';
-      workflowSummaryText = buildRecordingWorkflowSummary(recording, cached);
     } else {
       const hasCachedRecord = Boolean(cached?.record);
       const hasCachedAnalysis = Boolean(cached?.hasAnalysis);
@@ -2236,25 +2190,17 @@ function renderRecordingsList() {
             : 'Run embeddings before requesting Twelve Labs analysis.';
         }
       }
-
-      workflowSummaryText = buildRecordingWorkflowSummary(recording, cached);
     }
 
     actionsContainer.appendChild(embedButton);
     actionsContainer.appendChild(analyzeButton);
     item.appendChild(actionsContainer);
 
-    if (workflowSummaryText) {
-      const detail = document.createElement('p');
-      detail.className = 'recording-status-detail';
-      detail.textContent = workflowSummaryText;
-      item.appendChild(detail);
-    }
-
     recordingsListElement.appendChild(item);
   });
 
   updateRecordingsSummary();
+  syncActiveAnalysisView();
 }
 
 function appendAnalysisMeta(container, label, value) {
@@ -3035,7 +2981,12 @@ async function loadCachedAnalysis(recording) {
         const cacheKey = getAnalysisCacheKey(recording);
         if (cacheKey && !analysisCache.has(cacheKey)) {
           analysisCache.set(cacheKey, { record: null, cached: false, hasAnalysis: false });
-          rememberEmbeddingState(recording, null);
+          const hasEmbeddingStatus =
+            Boolean(extractEmbeddingStatus(recording)) ||
+            Boolean(getSharedEmbeddingStatus(recording));
+          if (!hasEmbeddingStatus) {
+            rememberEmbeddingState(recording, null);
+          }
         }
         if (analysisViewState.recording?.id === recording.id) {
           const displayName =
@@ -3074,23 +3025,34 @@ async function loadCachedAnalysis(recording) {
   }
 }
 
-function setSelectedRecording(recording) {
-  activeAnalysisPromise = null;
+function updateAnalysisPanelForRecording(recording, options = {}) {
+  const { triggerLoad = false, preserveExistingResult = false } = options;
   if (!recording) {
-    selectedRecordingId = null;
     setAnalysisView(null, 'idle', defaultAnalysisMessage);
-    renderRecordingsList();
     return;
   }
-  selectedRecordingId = recording.id;
+
+  const displayName =
+    typeof recording.displayName === 'string' && recording.displayName.trim().length > 0
+      ? recording.displayName.trim()
+      : 'this recording';
+
+  const shouldPreserveResult =
+    preserveExistingResult && analysisViewState.recording?.id === recording.id;
+  const preservedResult = shouldPreserveResult ? analysisViewState.result : null;
+  const preservedCached = shouldPreserveResult ? analysisViewState.cached : false;
+  const preservedErrorCode = shouldPreserveResult ? analysisViewState.errorCode : null;
+
+  const applyView = (status, message) => {
+    const resolvedMessage = message || defaultAnalysisMessage;
+    setAnalysisView(recording, status, resolvedMessage, preservedResult, preservedCached, preservedErrorCode);
+  };
 
   if (!analysisIntegrationAvailable) {
-    setAnalysisView(
-      recording,
+    applyView(
       'disabled',
       'Configure the Twelve Labs integration on the server to enable analysis for stored recordings.'
     );
-    renderRecordingsList();
     return;
   }
 
@@ -3117,44 +3079,96 @@ function setSelectedRecording(recording) {
       defaultStatus,
       combinedMessage
     );
+    return;
+  }
+
+  const statusInfo = getEffectiveEmbeddingStatus(recording, cached?.record, recording);
+  const sharedEmbeddingStatus = getSharedEmbeddingStatus(recording);
+  const pendingStatusInfo = isEmbeddingPendingStatus(statusInfo)
+    ? statusInfo
+    : isWorkflowPendingStatus(sharedEmbeddingStatus)
+    ? sharedEmbeddingStatus
+    : null;
+  const sharedAnalysisStatus = getSharedAnalysisStatus(recording);
+  const embeddingReady =
+    hasEmbeddingSuccess(recording) ||
+    isEmbeddingReadyStatus(statusInfo) ||
+    isEmbeddingReadyStatus(sharedEmbeddingStatus);
+
+  if (pendingStatusInfo) {
+    const pendingMessage =
+      pendingStatusInfo?.message ||
+      statusInfo?.message ||
+      sharedEmbeddingStatus?.message ||
+      `Twelve Labs embeddings are still processing for “${displayName}”.`;
+    applyView('pending', pendingMessage);
+  } else if (isWorkflowPendingStatus(sharedAnalysisStatus)) {
+    const analysisMessage =
+      sharedAnalysisStatus?.message ||
+      `Requesting Twelve Labs analysis for “${displayName}”…`;
+    applyView('loading', analysisMessage);
+  } else if (isEmbeddingErrorStatus(statusInfo)) {
+    const errorMessage =
+      statusInfo?.message ||
+      `Twelve Labs embedding request for “${displayName}” failed.`;
+    applyView('error', errorMessage);
+  } else if (embeddingReady) {
+    const readyMessage =
+      statusInfo?.message ||
+      sharedEmbeddingStatus?.message ||
+      `Twelve Labs embeddings are available for “${displayName}”.`;
+    applyView('ready', readyMessage);
+  } else if (recordHasAnalysisContent(recording)) {
+    applyView(
+      'loading',
+      `Loading stored Twelve Labs analysis for “${displayName}”…`
+    );
   } else {
-    const statusInfo = getEffectiveEmbeddingStatus(recording, recording);
-    const sharedAnalysisStatus = getSharedAnalysisStatus(recording);
-    if (isEmbeddingPendingStatus(statusInfo)) {
-      const pendingMessage =
-        statusInfo.message ||
-        `Twelve Labs embeddings are still processing for “${recording.displayName}”.`;
-      setAnalysisView(recording, 'pending', pendingMessage);
-    } else if (isWorkflowPendingStatus(sharedAnalysisStatus)) {
-      const analysisMessage =
-        sharedAnalysisStatus?.message ||
-        `Requesting Twelve Labs analysis for “${recording.displayName}”…`;
-      setAnalysisView(recording, 'loading', analysisMessage);
-    } else if (isEmbeddingReadyStatus(statusInfo)) {
-      const readyMessage =
-        statusInfo.message ||
-        `Twelve Labs embeddings are available for “${recording.displayName}”.`;
-      setAnalysisView(recording, 'ready', readyMessage);
-    } else if (isEmbeddingErrorStatus(statusInfo)) {
-      const errorMessage =
-        statusInfo.message ||
-        `Twelve Labs embedding request for “${recording.displayName}” failed.`;
-      setAnalysisView(recording, 'error', errorMessage, null, false, 'embedding_failed');
-    } else if (recordHasAnalysisContent(recording)) {
-      setAnalysisView(
-        recording,
-        'loading',
-        `Loading stored Twelve Labs analysis for “${recording.displayName}”…`
-      );
-    } else {
-      setAnalysisView(
-        recording,
-        'ready',
-        `Press “Analyze” to request AI insights for “${recording.displayName}” via Twelve Labs, or choose “Embeddings” to upload and retrieve vectors in one step.`
-      );
-    }
+    applyView(
+      'ready',
+      `Press “Analyze” to request AI insights for “${displayName}” via Twelve Labs, or choose “Embeddings” to upload and retrieve vectors in one step.`
+    );
+  }
+
+  if (triggerLoad) {
     void loadCachedAnalysis(recording);
   }
+}
+
+function syncActiveAnalysisView() {
+  const currentRecording = analysisViewState.recording;
+  if (!currentRecording) {
+    return;
+  }
+  if (recordingsState.isLoading) {
+    return;
+  }
+  const items = Array.isArray(recordingsState.items) ? recordingsState.items : [];
+  if (items.length === 0) {
+    setAnalysisView(null, 'idle', defaultAnalysisMessage);
+    return;
+  }
+  const active = currentRecording.id
+    ? items.find((item) => item.id === currentRecording.id)
+    : null;
+  if (!active) {
+    setAnalysisView(null, 'idle', defaultAnalysisMessage);
+    return;
+  }
+  updateAnalysisPanelForRecording(active, { preserveExistingResult: true });
+}
+
+function setSelectedRecording(recording) {
+  activeAnalysisPromise = null;
+  if (!recording) {
+    selectedRecordingId = null;
+    setAnalysisView(null, 'idle', defaultAnalysisMessage);
+    renderRecordingsList();
+    return;
+  }
+  selectedRecordingId = recording.id;
+
+  updateAnalysisPanelForRecording(recording, { triggerLoad: true });
   renderRecordingsList();
 }
 
