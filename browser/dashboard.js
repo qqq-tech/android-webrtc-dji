@@ -1998,7 +1998,18 @@ async function fetchAnalysis(recording, options = {}) {
   const cached = Boolean(payload && (payload.cached || payload.status === 'cached'));
   const status = (payload && payload.status) || (cached ? 'cached' : 'ok');
   const message = (payload && payload.message) || '';
-  const embeddingStatus = record ? extractEmbeddingStatus(record) : null;
+
+  const recordEmbeddingStatus = record ? extractEmbeddingStatus(record) : null;
+  const payloadEmbeddingStatus =
+    payload &&
+    payload.embeddingStatus &&
+    typeof payload.embeddingStatus === 'object'
+      ? extractEmbeddingStatus({ embeddingStatus: payload.embeddingStatus })
+      : null;
+  const embeddingStatus = choosePreferredEmbeddingStatus(
+    recordEmbeddingStatus,
+    payloadEmbeddingStatus
+  );
   let embeddingStage =
     payload && typeof payload.embeddingStage === 'string'
       ? payload.embeddingStage.trim().toLowerCase()
@@ -2006,6 +2017,13 @@ async function fetchAnalysis(recording, options = {}) {
   if (!embeddingStage && embeddingStatus) {
     embeddingStage = getWorkflowStageValue(embeddingStatus);
   }
+
+  const analysisStatus =
+    payload && payload.analysisStatus && typeof payload.analysisStatus === 'object'
+      ? normaliseWorkflowStatus(payload.analysisStatus)
+      : record && record.analysisStatus && typeof record.analysisStatus === 'object'
+      ? normaliseWorkflowStatus(record.analysisStatus)
+      : null;
   return {
     ok: true,
     status,
@@ -2014,6 +2032,7 @@ async function fetchAnalysis(recording, options = {}) {
     message,
     embeddingStage,
     embeddingStatus,
+    analysisStatus,
     requestType,
   };
 }
