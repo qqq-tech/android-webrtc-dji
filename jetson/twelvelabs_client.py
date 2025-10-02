@@ -263,6 +263,36 @@ class TwelveLabsClient:
         response = self._sdk.gist(video_id=video_id, types=list(gist_types))
         return _serialise(response)
 
+    def analyze_stream(
+        self,
+        *,
+        video_id: str,
+        prompt: str = DEFAULT_PROMPT,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ):
+        """Proxy ``twelvelabs.TwelveLabs.analyze_stream`` with validation."""
+
+        if not video_id:
+            raise ValueError("video_id must be provided")
+        prompt_value = prompt.strip() if isinstance(prompt, str) else ""
+        if not prompt_value:
+            prompt_value = DEFAULT_PROMPT
+
+        return self._sdk.analyze_stream(
+            video_id=video_id,
+            prompt=prompt_value,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    def clean_generated_text(self, text: Any) -> str:
+        """Normalise a generated text chunk to improve readability."""
+
+        if not isinstance(text, str):
+            return ""
+        return _remove_isolated_double_newlines(text).strip()
+
     def collect_analysis(
         self,
         *,
@@ -271,15 +301,9 @@ class TwelveLabsClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> AnalysisText:
-        if not video_id:
-            raise ValueError("video_id must be provided")
-        prompt_value = prompt.strip() if isinstance(prompt, str) else ""
-        if not prompt_value:
-            prompt_value = DEFAULT_PROMPT
-
-        stream = self._sdk.analyze_stream(
+        stream = self.analyze_stream(
             video_id=video_id,
-            prompt=prompt_value,
+            prompt=prompt,
             temperature=temperature,
             max_tokens=max_tokens,
         )
@@ -290,9 +314,7 @@ class TwelveLabsClient:
             if event_type != "text_generation":
                 continue
             text = getattr(event, "text", None) or getattr(event, "data", None)
-            if not isinstance(text, str):
-                continue
-            cleaned = text.strip()
+            cleaned = self.clean_generated_text(text)
             if cleaned:
                 chunks.append(cleaned)
 
