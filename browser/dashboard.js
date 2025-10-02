@@ -1688,6 +1688,52 @@ function buildEmbeddingsMessage(record, cached) {
     : `Twelve Labs embeddings (${options}) retrieved.`;
 }
 
+function buildRecordingWorkflowSummary(recording, cached) {
+  if (!analysisIntegrationAvailable) {
+    return 'Configure the Twelve Labs integration to enable embeddings and analysis.';
+  }
+
+  const cachedRecord = cached?.record || null;
+  const summarySources = [];
+  if (cachedRecord) {
+    summarySources.push(cachedRecord);
+  }
+  if (recording && recording !== cachedRecord) {
+    summarySources.push(recording);
+  }
+  const statusInfo = getEffectiveEmbeddingStatus(recording, ...summarySources);
+  if (isEmbeddingPendingStatus(statusInfo)) {
+    return buildPendingEmbeddingMessage(recording, cachedRecord || recording, statusInfo);
+  }
+  if (isEmbeddingErrorStatus(statusInfo)) {
+    return (
+      statusInfo?.message || 'Failed to retrieve Twelve Labs embeddings for this recording.'
+    );
+  }
+
+  const cachedFlag = Boolean(cached?.cached);
+  const recordSource = cachedRecord || (recording && typeof recording === 'object' ? recording : null);
+  if (recordSource) {
+    const combinedMessage = combineAnalysisAndEmbeddingMessages(
+      recordSource,
+      buildAnalysisCompleteMessage(recordSource, cachedFlag),
+      cachedFlag
+    );
+    if (combinedMessage) {
+      return combinedMessage;
+    }
+  }
+
+  if (recordSource) {
+    const embeddingMessage = buildEmbeddingsMessage(recordSource, cachedFlag);
+    if (embeddingMessage) {
+      return embeddingMessage;
+    }
+  }
+
+  return 'Press “Embeddings” to upload this recording to Twelve Labs and retrieve vectors.';
+}
+
 function combineAnalysisAndEmbeddingMessages(record, baseMessage, cached) {
   if (!record || typeof record !== 'object') {
     return baseMessage;
@@ -2088,30 +2134,70 @@ function renderRecordingsList() {
     embedButton.addEventListener('click', async (event) => {
       event.stopPropagation();
       setSelectedRecording(recording);
+      const latestCached = getCachedAnalysis(recording);
+      const latestStatus = getEffectiveEmbeddingStatus(
+        recording,
+        latestCached?.record,
+        recording
+      );
+      if (isEmbeddingPendingStatus(latestStatus)) {
+        embedButton.disabled = true;
+        embedButton.textContent = 'Embedding…';
+        embedButton.title =
+          latestStatus?.message ||
+          'Twelve Labs embeddings are still processing for this recording.';
+        return;
+      }
       embedButton.disabled = true;
       try {
         await requestRecordingEmbeddings(recording);
       } finally {
-        if (document.body.contains(embedButton)) {
-          embedButton.disabled = false;
+        if (!document.body.contains(embedButton)) {
+          return;
         }
+        const refreshedCached = getCachedAnalysis(recording);
+        const refreshedStatus = getEffectiveEmbeddingStatus(
+          recording,
+          refreshedCached?.record,
+          recording
+        );
+        if (isEmbeddingPendingStatus(refreshedStatus)) {
+          embedButton.disabled = true;
+          embedButton.textContent = 'Embedding…';
+          embedButton.title =
+            refreshedStatus?.message ||
+            'Twelve Labs embeddings are still processing for this recording.';
+          return;
+        }
+        embedButton.disabled = false;
       }
     });
 
+    const cached = getCachedAnalysis(recording);
+    let workflowSummaryText = '';
     if (!analysisIntegrationAvailable) {
       analyzeButton.disabled = true;
       analyzeButton.title = 'Configure the Twelve Labs integration to enable analysis.';
       embedButton.disabled = true;
       embedButton.title = 'Configure the Twelve Labs integration to enable embeddings.';
+      workflowSummaryText = buildRecordingWorkflowSummary(recording, cached);
     } else {
-      const cached = getCachedAnalysis(recording);
       const hasCachedRecord = Boolean(cached?.record);
       const hasCachedAnalysis = Boolean(cached?.hasAnalysis);
       const hasInlineAnalysis = recordHasAnalysisContent(recording);
       const hasAnalysisAvailable = hasCachedAnalysis || hasInlineAnalysis;
       const statusInfo = getEffectiveEmbeddingStatus(recording, cached?.record, recording);
-      const embeddingPending = isEmbeddingPendingStatus(statusInfo);
-      const embeddingReady = hasEmbeddingSuccess(recording) || isEmbeddingReadyStatus(statusInfo);
+      const sharedEmbeddingStatus = getSharedEmbeddingStatus(recording);
+      const pendingStatusInfo = isEmbeddingPendingStatus(statusInfo)
+        ? statusInfo
+        : isWorkflowPendingStatus(sharedEmbeddingStatus)
+        ? sharedEmbeddingStatus
+        : null;
+      const embeddingPending = Boolean(pendingStatusInfo);
+      const embeddingReady =
+        hasEmbeddingSuccess(recording) ||
+        isEmbeddingReadyStatus(statusInfo) ||
+        isEmbeddingReadyStatus(sharedEmbeddingStatus);
       const sharedAnalysisStatus = getSharedAnalysisStatus(recording);
       const analysisPendingShared = isWorkflowPendingStatus(sharedAnalysisStatus);
 
@@ -2122,7 +2208,9 @@ function renderRecordingsList() {
         embedButton.disabled = true;
         embedButton.textContent = 'Embedding…';
         const pendingMessage =
+          pendingStatusInfo?.message ||
           statusInfo?.message ||
+          sharedEmbeddingStatus?.message ||
           'Twelve Labs embeddings are still processing for this recording.';
         embedButton.title = pendingMessage;
         analyzeButton.disabled = true;
@@ -2148,11 +2236,20 @@ function renderRecordingsList() {
             : 'Run embeddings before requesting Twelve Labs analysis.';
         }
       }
+
+      workflowSummaryText = buildRecordingWorkflowSummary(recording, cached);
     }
 
     actionsContainer.appendChild(embedButton);
     actionsContainer.appendChild(analyzeButton);
     item.appendChild(actionsContainer);
+
+    if (workflowSummaryText) {
+      const detail = document.createElement('p');
+      detail.className = 'recording-status-detail';
+      detail.textContent = workflowSummaryText;
+      item.appendChild(detail);
+    }
 
     recordingsListElement.appendChild(item);
   });
