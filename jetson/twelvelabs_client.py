@@ -17,7 +17,7 @@ quality-of-life improvements for the WebRTC project:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import re
 
@@ -181,21 +181,28 @@ class TwelveLabsClient:
         self,
         *,
         task_id: str,
-        poll_interval: float = 5.0,
+        poll_interval: float = 1.0,
+        callback: Optional[Callable[[TasksRetrieveResponse], None]] = None,
     ) -> Dict[str, Any]:
         if not task_id:
             raise ValueError("task_id must be provided")
 
-        def _callback(task: TasksRetrieveResponse) -> None:
-            # The SDK invokes this callback with live status updates.  The
-            # caller does not need them, so we simply ignore the payload while
-            # still complying with the API.
-            _ = task
+        if callback is None:
+
+            def _noop(task: TasksRetrieveResponse) -> None:
+                # The SDK invokes this callback with live status updates.  The
+                # caller does not need them, so we simply ignore the payload while
+                # still complying with the API.
+                _ = task
+
+            callback_fn: Callable[[TasksRetrieveResponse], None] = _noop
+        else:
+            callback_fn = callback
 
         status = self._sdk.tasks.wait_for_done(
             task_id=task_id,
             sleep_interval=poll_interval,
-            callback=_callback,
+            callback=callback_fn,
         )
         return _serialise(status)
 
