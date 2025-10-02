@@ -491,6 +491,14 @@ function resolveAnalysisViewState(recording, record, defaultStatus, baseMessage,
       cached,
     };
   }
+  const hasAnalysis = recordHasAnalysisContent(record);
+  if (!hasAnalysis) {
+    return {
+      status: 'ready',
+      message: baseMessage || defaultAnalysisMessage,
+      cached,
+    };
+  }
   let normalisedStatus = defaultStatus || (cached ? 'cached' : 'ready');
   if (normalisedStatus === 'pending') {
     normalisedStatus = 'embedding';
@@ -1070,6 +1078,11 @@ function buildAnalysisCompleteMessage(record, cached) {
     return cached
       ? 'Showing stored Twelve Labs analysis.'
       : 'Twelve Labs analysis completed.';
+  }
+  if (!recordHasAnalysisContent(record)) {
+    return cached
+      ? 'No stored Twelve Labs analysis is available yet. Press “Analyze” to generate insights.'
+      : 'Twelve Labs analysis has not been generated yet. Press “Analyze” to request insights.';
   }
   const updatedAt =
     typeof record.updatedAt === 'string' && record.updatedAt ? new Date(record.updatedAt) : null;
@@ -1870,7 +1883,6 @@ function createEmbeddingsBlock(record, cached) {
         typeof segment.embedding_option === 'string' && segment.embedding_option
           ? segment.embedding_option
           : '';
-      const scopeLabel = formatEmbeddingOptionLabel(scope);
       const rangeParts = [];
       if (start !== null) {
         rangeParts.push(`${start.toFixed(1)}s`);
@@ -1881,9 +1893,6 @@ function createEmbeddingsBlock(record, cached) {
       const labelParts = [];
       if (rangeParts.length > 0) {
         labelParts.push(rangeParts.join(' – '));
-      }
-      if (scope) {
-        labelParts.push(scopeLabel || scope);
       }
       header.textContent = labelParts.length > 0 ? labelParts.join(' · ') : `Segment ${index + 1}`;
       segmentBlock.appendChild(header);
