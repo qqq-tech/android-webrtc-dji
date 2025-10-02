@@ -2516,7 +2516,7 @@ async function requestRecordingAnalysis(recording) {
   }
 
   const cached = getCachedAnalysis(recording);
-  if (cached?.record) {
+  if (cached?.record && recordHasAnalysisContent(cached.record)) {
     const message = buildAnalysisCompleteMessage(cached.record, true);
     setAnalysisView(recording, 'cached', message, cached.record, true);
     return;
