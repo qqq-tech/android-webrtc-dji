@@ -3404,11 +3404,13 @@ function refreshActiveAnalysisStatus(options = {}) {
   if (activeAnalysisPromise) {
     return;
   }
-  updateAnalysisPanelForRecording(recording, { preserveExistingResult: true });
+
   if (!force && !shouldPollAnalysisStatus(recording)) {
     return;
   }
-  void loadCachedAnalysis(recording);
+
+  updateAnalysisPanelForRecording(recording, { preserveExistingResult: true });
+  void loadCachedAnalysis(recording, { force });
 }
 
 function setSelectedRecording(recording, options = {}) {
