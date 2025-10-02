@@ -385,6 +385,7 @@ const lastRenderedAnalysisContent = {
   resultRef: null,
   cached: false,
   errorCode: null,
+  messageElement: null,
 };
 
 const ANALYSIS_STATUS_REFRESH_INTERVAL_MS = 5000;
@@ -2927,42 +2928,72 @@ function renderAnalysisView() {
   }
   updateAnalysisStatusBadgeDisplay();
   if (analysisDetailsContainer) {
-    analysisDetailsContainer.replaceChildren();
-    if (analysisViewState.message) {
-      const messageParagraph = document.createElement('p');
-      messageParagraph.textContent = analysisViewState.message;
-      analysisDetailsContainer.appendChild(messageParagraph);
-    }
-    if (analysisViewState.recording) {
-      const grid = document.createElement('dl');
-      grid.className = 'analysis-meta-grid';
-      appendAnalysisMeta(grid, 'Filename', analysisViewState.recording.displayName);
-      if (analysisViewState.recording.recordedAtText) {
-        appendAnalysisMeta(grid, 'Captured', analysisViewState.recording.recordedAtText);
+    const previousRecordingId = lastRenderedAnalysisContent.recordingId;
+    const nextRecordingId = analysisViewState.recording?.id || null;
+    const recordingChanged = previousRecordingId !== nextRecordingId;
+    const resultChanged =
+      lastRenderedAnalysisContent.resultRef !== analysisViewState.result ||
+      lastRenderedAnalysisContent.cached !== Boolean(analysisViewState.cached) ||
+      lastRenderedAnalysisContent.errorCode !== analysisViewState.errorCode;
+    const requiresFullRender = recordingChanged || resultChanged;
+
+    if (requiresFullRender) {
+      analysisDetailsContainer.replaceChildren();
+      lastRenderedAnalysisContent.messageElement = null;
+
+      if (analysisViewState.message) {
+        const messageParagraph = document.createElement('p');
+        messageParagraph.textContent = analysisViewState.message;
+        analysisDetailsContainer.appendChild(messageParagraph);
+        lastRenderedAnalysisContent.messageElement = messageParagraph;
       }
-      if (analysisViewState.recording.durationText) {
-        appendAnalysisMeta(grid, 'Duration', analysisViewState.recording.durationText);
+      if (analysisViewState.recording) {
+        const grid = document.createElement('dl');
+        grid.className = 'analysis-meta-grid';
+        appendAnalysisMeta(grid, 'Filename', analysisViewState.recording.displayName);
+        if (analysisViewState.recording.recordedAtText) {
+          appendAnalysisMeta(grid, 'Captured', analysisViewState.recording.recordedAtText);
+        }
+        if (analysisViewState.recording.durationText) {
+          appendAnalysisMeta(grid, 'Duration', analysisViewState.recording.durationText);
+        }
+        if (analysisViewState.recording.sizeText) {
+          appendAnalysisMeta(grid, 'Size', analysisViewState.recording.sizeText);
+        }
+        if (analysisViewState.recording.location) {
+          appendAnalysisMeta(grid, 'Location', analysisViewState.recording.location);
+        }
+        if (analysisViewState.recording.notes) {
+          appendAnalysisMeta(grid, 'Notes', analysisViewState.recording.notes);
+        }
+        if (Array.isArray(analysisViewState.recording.tags) && analysisViewState.recording.tags.length > 0) {
+          appendAnalysisMeta(grid, 'Tags', analysisViewState.recording.tags.join(', '));
+        }
+        analysisDetailsContainer.appendChild(grid);
       }
-      if (analysisViewState.recording.sizeText) {
-        appendAnalysisMeta(grid, 'Size', analysisViewState.recording.sizeText);
+      if (analysisViewState.result) {
+        const resultBlock = renderAnalysisResult(
+          analysisViewState.result,
+          Boolean(analysisViewState.cached)
+        );
+        analysisDetailsContainer.appendChild(resultBlock);
       }
-      if (analysisViewState.recording.location) {
-        appendAnalysisMeta(grid, 'Location', analysisViewState.recording.location);
+    } else if (analysisViewState.message !== lastRenderedAnalysisContent.message) {
+      const existingMessage = lastRenderedAnalysisContent.messageElement;
+      if (analysisViewState.message) {
+        if (existingMessage && existingMessage.isConnected) {
+          existingMessage.textContent = analysisViewState.message;
+          lastRenderedAnalysisContent.messageElement = existingMessage;
+        } else {
+          const messageParagraph = document.createElement('p');
+          messageParagraph.textContent = analysisViewState.message;
+          analysisDetailsContainer.prepend(messageParagraph);
+          lastRenderedAnalysisContent.messageElement = messageParagraph;
+        }
+      } else if (existingMessage && existingMessage.isConnected) {
+        existingMessage.remove();
+        lastRenderedAnalysisContent.messageElement = null;
       }
-      if (analysisViewState.recording.notes) {
-        appendAnalysisMeta(grid, 'Notes', analysisViewState.recording.notes);
-      }
-      if (Array.isArray(analysisViewState.recording.tags) && analysisViewState.recording.tags.length > 0) {
-        appendAnalysisMeta(grid, 'Tags', analysisViewState.recording.tags.join(', '));
-      }
-      analysisDetailsContainer.appendChild(grid);
-    }
-    if (analysisViewState.result) {
-      const resultBlock = renderAnalysisResult(
-        analysisViewState.result,
-        Boolean(analysisViewState.cached)
-      );
-      analysisDetailsContainer.appendChild(resultBlock);
     }
   }
 
@@ -2971,6 +3002,9 @@ function renderAnalysisView() {
   lastRenderedAnalysisContent.resultRef = analysisViewState.result;
   lastRenderedAnalysisContent.cached = Boolean(analysisViewState.cached);
   lastRenderedAnalysisContent.errorCode = analysisViewState.errorCode;
+  if (!analysisViewState.message) {
+    lastRenderedAnalysisContent.messageElement = null;
+  }
 }
 
 function updateAnalysisStatusBadgeDisplay() {
