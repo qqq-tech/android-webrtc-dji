@@ -1002,13 +1002,66 @@ function getCachedAnalysis(recording) {
   return analysisCache.get(key) || null;
 }
 
+function recordHasAnalysisContent(record) {
+  if (!record || typeof record !== 'object') {
+    return false;
+  }
+
+  const gist = record?.gist;
+  if (gist && typeof gist === 'object' && Object.keys(gist).length > 0) {
+    return true;
+  }
+
+  const analysis = record?.analysis;
+  if (analysis && typeof analysis === 'object') {
+    const analysisText =
+      typeof analysis.text === 'string' && analysis.text.trim().length > 0
+        ? analysis.text.trim()
+        : '';
+    if (analysisText) {
+      return true;
+    }
+    const analysisChunks = Array.isArray(analysis.chunks)
+      ? analysis.chunks.filter((chunk) => typeof chunk === 'string' && chunk.trim().length > 0)
+      : [];
+    if (analysisChunks.length > 0) {
+      return true;
+    }
+    const analysisKeys = Object.keys(analysis);
+    if (analysisKeys.length > 0) {
+      if (
+        analysisKeys.some((key) => key !== 'prompt') ||
+        (typeof analysis.prompt === 'string' && analysis.prompt.trim().length > 0)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  const summary = record?.summary;
+  if (summary && typeof summary === 'object' && Object.keys(summary).length > 0) {
+    return true;
+  }
+
+  const insights = record?.insights;
+  if (Array.isArray(insights) && insights.length > 0) {
+    return true;
+  }
+
+  return false;
+}
+
 function storeAnalysisRecord(recording, record, cached) {
   const key = getAnalysisCacheKey(recording);
   if (!key || !record) {
     rememberEmbeddingState(recording, null);
     return;
   }
-  analysisCache.set(key, { record, cached: Boolean(cached) });
+  analysisCache.set(key, {
+    record,
+    cached: Boolean(cached),
+    hasAnalysis: recordHasAnalysisContent(record),
+  });
   rememberEmbeddingState(recording, record);
 }
 
@@ -1498,11 +1551,12 @@ function renderRecordingsList() {
     } else {
       const cached = getCachedAnalysis(recording);
       const hasCachedRecord = Boolean(cached?.record);
+      const hasAnalysisContent = Boolean(cached?.hasAnalysis);
       const statusInfo = extractEmbeddingStatus(cached?.record) || extractEmbeddingStatus(recording);
       const embeddingPending = statusInfo?.state === 'pending';
       const embeddingReady = hasEmbeddingSuccess(recording);
 
-      if (hasCachedRecord) {
+      if (hasCachedRecord && hasAnalysisContent) {
         analyzeButton.textContent = 'View analysis';
       }
 
@@ -1833,32 +1887,6 @@ function createEmbeddingsBlock(record, cached) {
       }
       header.textContent = labelParts.length > 0 ? labelParts.join(' · ') : `Segment ${index + 1}`;
       segmentBlock.appendChild(header);
-
-      const vector = getEmbeddingVector(segment);
-      if (vector.length > 0) {
-        const previewSummary = document.createElement('p');
-        previewSummary.className = 'analysis-embedding-note';
-        const shownCount = Math.min(vector.length, 12);
-        const descriptor =
-          vector.length > 12
-            ? `First ${shownCount} of ${vector.length} values`
-            : `${vector.length} value${vector.length === 1 ? '' : 's'}`;
-        previewSummary.textContent = `Embedding vector preview (${descriptor}).`;
-        segmentBlock.appendChild(previewSummary);
-
-        const preview = document.createElement('pre');
-        preview.className = 'embedding-preview';
-        const previewValues = vector.slice(0, 12).map((value) => {
-          const numeric = Number(value);
-          return Number.isFinite(numeric) ? numeric.toFixed(4) : String(value);
-        });
-        if (vector.length > 12) {
-          previewValues.push('…');
-        }
-        preview.textContent = `[${previewValues.join(', ')}]`;
-        segmentBlock.appendChild(preview);
-      }
-
       segmentsContainer.appendChild(segmentBlock);
     }
 
@@ -2121,7 +2149,7 @@ async function loadCachedAnalysis(recording) {
       if (['not_found', 'missing', 'empty'].includes(statusKey)) {
         const cacheKey = getAnalysisCacheKey(recording);
         if (cacheKey && !analysisCache.has(cacheKey)) {
-          analysisCache.set(cacheKey, { record: null, cached: false });
+          analysisCache.set(cacheKey, { record: null, cached: false, hasAnalysis: false });
           rememberEmbeddingState(recording, null);
         }
         if (analysisViewState.recording?.id === recording.id) {
