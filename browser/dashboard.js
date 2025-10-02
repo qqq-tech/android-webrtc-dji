@@ -384,6 +384,27 @@ const embeddingSuccessCache = new Map();
 const EMBEDDING_POLL_INTERVAL_MS = 5000;
 const embeddingMonitorState = new Map();
 
+const ANALYSIS_REQUEST_TYPE_LABELS = {
+  status: 'analysis status',
+  start: 'analysis',
+  embed: 'embedding',
+};
+
+function getAnalysisRequestLabel(requestType) {
+  const key = typeof requestType === 'string' ? requestType : '';
+  return ANALYSIS_REQUEST_TYPE_LABELS[key] || 'analysis';
+}
+
+function buildNetworkFailureMessage(requestType, originalMessage) {
+  const label = getAnalysisRequestLabel(requestType);
+  const baseMessage = `Unable to reach the Twelve Labs ${label} endpoint. Check the server connection and try again.`;
+  const original = typeof originalMessage === 'string' ? originalMessage.trim() : '';
+  if (original && original.length > 0 && !/^failed to fetch$/i.test(original)) {
+    return `${baseMessage} (${original}).`;
+  }
+  return baseMessage;
+}
+
 function extractEmbeddingStatus(record) {
   if (!record || typeof record !== 'object') {
     return null;
@@ -668,6 +689,38 @@ function rememberEmbeddingState(recording, record) {
     return;
   }
 
+  const rawStatus =
+    record &&
+    typeof record === 'object' &&
+    record.embeddingStatus &&
+    typeof record.embeddingStatus === 'object'
+      ? record.embeddingStatus
+      : null;
+  const statusInfo = rawStatus ? extractEmbeddingStatus(record) : null;
+  if (recording && typeof recording === 'object') {
+    if (statusInfo) {
+      const nextStatus = {
+        state: statusInfo.state,
+        updatedAt: statusInfo.updatedAt || rawStatus?.updatedAt || new Date().toISOString(),
+      };
+      if (statusInfo.message) {
+        nextStatus.message = statusInfo.message;
+      }
+      if (Array.isArray(statusInfo.options) && statusInfo.options.length > 0) {
+        nextStatus.options = [...statusInfo.options];
+      }
+      if (Array.isArray(statusInfo.missingOptions) && statusInfo.missingOptions.length > 0) {
+        nextStatus.missingOptions = [...statusInfo.missingOptions];
+      }
+      if (rawStatus && Object.prototype.hasOwnProperty.call(rawStatus, 'includeTranscription')) {
+        nextStatus.includeTranscription = Boolean(statusInfo.includeTranscription);
+      }
+      recording.embeddingStatus = nextStatus;
+    } else if (record == null) {
+      delete recording.embeddingStatus;
+    }
+  }
+
   const sources = [];
   if (record && typeof record === 'object') {
     sources.push(record);
@@ -745,6 +798,24 @@ function hasEmbeddingSuccess(recording) {
 }
 let activeAnalysisPromise = null;
 
+const NETWORK_ERROR_PATTERNS = [
+  /failed to fetch/i,
+  /networkerror/i,
+  /network error/i,
+  /load failed/i,
+];
+
+function isNetworkFailureMessage(message) {
+  if (typeof message !== 'string') {
+    return false;
+  }
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return false;
+  }
+  return NETWORK_ERROR_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
 const ANALYSIS_INTEGRATION_DISABLED_CODES = new Set([
   'integration_unavailable',
   'recordings_unavailable',
@@ -755,8 +826,17 @@ const ANALYSIS_INTEGRATION_DISABLED_CODES = new Set([
 ]);
 
 function resolveIntegrationErrorMessage(result, fallbackMessage) {
+  const requestType =
+    result && typeof result.requestType === 'string' ? result.requestType : null;
+  const fallbackBase =
+    fallbackMessage ||
+    (requestType === 'embed'
+      ? 'Failed to request Twelve Labs embeddings.'
+      : requestType === 'start'
+      ? 'Failed to request Twelve Labs analysis.'
+      : 'Failed to retrieve the Twelve Labs analysis status.');
   const fallback =
-    fallbackMessage || 'Failed to obtain a response from the Twelve Labs service.';
+    fallbackBase || 'Failed to obtain a response from the Twelve Labs service.';
   if (!result || typeof result !== 'object') {
     return fallback;
   }
@@ -776,18 +856,38 @@ function resolveIntegrationErrorMessage(result, fallbackMessage) {
       });
   }
 
-  if (messageCandidates.length > 0) {
-    return messageCandidates[0];
+  const meaningfulCandidate = messageCandidates.find(
+    (message) => !isNetworkFailureMessage(message)
+  );
+  if (meaningfulCandidate) {
+    return meaningfulCandidate;
   }
 
   if (result.details && typeof result.details === 'object') {
-    const { message, error } = result.details;
-    if (typeof message === 'string' && message.trim()) {
-      return message.trim();
+    const detailMessages = [];
+    if (typeof result.details.message === 'string' && result.details.message.trim()) {
+      detailMessages.push(result.details.message.trim());
     }
-    if (typeof error === 'string' && error.trim()) {
-      return error.trim();
+    if (typeof result.details.error === 'string' && result.details.error.trim()) {
+      detailMessages.push(result.details.error.trim());
     }
+    const meaningfulDetail = detailMessages.find(
+      (message) => !isNetworkFailureMessage(message)
+    );
+    if (meaningfulDetail) {
+      return meaningfulDetail;
+    }
+  }
+
+  if (result.status === 'network_error') {
+    const originalMessage =
+      (result.details && typeof result.details === 'object'
+        ? result.details.message || result.details.error
+        : null) ||
+      result.error ||
+      result.message ||
+      '';
+    return buildNetworkFailureMessage(requestType, originalMessage);
   }
 
   return fallback;
@@ -1008,11 +1108,13 @@ async function fetchAnalysis(recording, options = {}) {
     includeTranscription = false,
     embeddingOptions = [],
   } = options;
+  const requestType = start ? 'start' : embed ? 'embed' : 'status';
   if (!analysisEndpoint) {
     return {
       ok: false,
       status: 'disabled',
       error: 'Analysis endpoint is unavailable.',
+      requestType,
     };
   }
 
@@ -1061,10 +1163,16 @@ async function fetchAnalysis(recording, options = {}) {
   try {
     response = await fetch(url.toString(), { cache: 'no-store' });
   } catch (error) {
+    const originalMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = buildNetworkFailureMessage(requestType, originalMessage);
     return {
       ok: false,
       status: 'network_error',
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage,
+      message: errorMessage,
+      code: 'network_error',
+      requestType,
+      details: { message: originalMessage },
     };
   }
 
@@ -1095,6 +1203,7 @@ async function fetchAnalysis(recording, options = {}) {
       message: errorMessage,
       code: payload && (payload.error || payload.code),
       details: payload,
+      requestType,
     };
   }
 
@@ -1108,6 +1217,7 @@ async function fetchAnalysis(recording, options = {}) {
     record,
     cached,
     message,
+    requestType,
   };
 }
 
@@ -2232,6 +2342,25 @@ async function requestRecordingEmbeddings(recording) {
     Boolean(workingRecord)
   );
 
+  const pendingStatusPayload = {
+    embeddingStatus: {
+      state: 'pending',
+      message: pendingMessage,
+      updatedAt: new Date().toISOString(),
+    },
+  };
+  if (Array.isArray(embeddingOptions) && embeddingOptions.length > 0) {
+    const pendingOptions = embeddingOptions
+      .map((option) => (typeof option === 'string' ? option.trim() : ''))
+      .filter((option, index, array) => option && array.indexOf(option) === index);
+    if (pendingOptions.length > 0) {
+      pendingStatusPayload.embeddingStatus.options = pendingOptions;
+    }
+  }
+  pendingStatusPayload.embeddingStatus.includeTranscription = Boolean(includeTranscription);
+  rememberEmbeddingState(recording, pendingStatusPayload);
+  renderRecordingsList();
+
   try {
     activeAnalysisPromise = fetchAnalysis(recording, {
       embed: true,
@@ -2244,6 +2373,7 @@ async function requestRecordingEmbeddings(recording) {
     }
     if (!result.ok || !result.record) {
       if (isAnalysisIntegrationError(result)) {
+        rememberEmbeddingState(recording, null);
         disableAnalysisIntegration(
           recording,
           result.error || 'Twelve Labs analysis is not configured on the server.',
@@ -2263,6 +2393,22 @@ async function requestRecordingEmbeddings(recording) {
         Boolean(workingRecord),
         result.code || result.status
       );
+      const errorStatus = {
+        state: 'error',
+        message: errorMessage,
+        updatedAt: new Date().toISOString(),
+        includeTranscription: Boolean(includeTranscription),
+      };
+      if (Array.isArray(embeddingOptions) && embeddingOptions.length > 0) {
+        const optionList = embeddingOptions
+          .map((option) => (typeof option === 'string' ? option.trim() : ''))
+          .filter((option, index, array) => option && array.indexOf(option) === index);
+        if (optionList.length > 0) {
+          errorStatus.options = optionList;
+        }
+      }
+      rememberEmbeddingState(recording, { embeddingStatus: errorStatus });
+      renderRecordingsList();
       return;
     }
 
@@ -2296,6 +2442,22 @@ async function requestRecordingEmbeddings(recording) {
       workingRecord,
       Boolean(workingRecord)
     );
+    const errorStatus = {
+      state: 'error',
+      message: `Failed to request Twelve Labs embeddings: ${fallback}`,
+      updatedAt: new Date().toISOString(),
+      includeTranscription: Boolean(includeTranscription),
+    };
+    if (Array.isArray(embeddingOptions) && embeddingOptions.length > 0) {
+      const optionList = embeddingOptions
+        .map((option) => (typeof option === 'string' ? option.trim() : ''))
+        .filter((option, index, array) => option && array.indexOf(option) === index);
+      if (optionList.length > 0) {
+        errorStatus.options = optionList;
+      }
+    }
+    rememberEmbeddingState(recording, { embeddingStatus: errorStatus });
+    renderRecordingsList();
   } finally {
     if (analysisViewState.recording?.id === recording.id) {
       activeAnalysisPromise = null;
