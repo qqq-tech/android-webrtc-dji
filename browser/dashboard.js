@@ -2621,6 +2621,45 @@ async function requestRecordingAnalysis(recording) {
   }
 }
 
+async function recoverEmbeddingStateFromNetworkError(recording) {
+  if (!recording) {
+    return false;
+  }
+  try {
+    const statusResult = await fetchAnalysis(recording, { start: false });
+    if (analysisViewState.recording?.id !== recording.id) {
+      return true;
+    }
+    if (statusResult.ok && statusResult.record) {
+      const cachedStatus = Boolean(statusResult.cached);
+      storeAnalysisRecord(recording, statusResult.record, cachedStatus);
+      const baseMessage =
+        statusResult.message ||
+        buildAnalysisCompleteMessage(statusResult.record, cachedStatus);
+      const combinedMessage = combineAnalysisAndEmbeddingMessages(
+        statusResult.record,
+        baseMessage,
+        cachedStatus
+      );
+      const defaultStatus = cachedStatus
+        ? 'cached'
+        : statusResult.status || 'ok';
+      updateAnalysisViewWithRecord(
+        recording,
+        statusResult.record,
+        cachedStatus,
+        defaultStatus,
+        combinedMessage
+      );
+      renderRecordingsList();
+      return true;
+    }
+  } catch (error) {
+    console.warn('Failed to refresh embedding status after network error', error);
+  }
+  return false;
+}
+
 async function requestRecordingEmbeddings(recording) {
   if (!recording) {
     return;
@@ -2679,6 +2718,15 @@ async function requestRecordingEmbeddings(recording) {
       return;
     }
     if (!result.ok || !result.record) {
+      if (
+        result.requestType === 'embed' &&
+        (result.status === 'network_error' || result.code === 'network_error')
+      ) {
+        const recovered = await recoverEmbeddingStateFromNetworkError(recording);
+        if (recovered) {
+          return;
+        }
+      }
       if (isAnalysisIntegrationError(result)) {
         rememberEmbeddingState(recording, null);
         disableAnalysisIntegration(
@@ -2739,6 +2787,10 @@ async function requestRecordingEmbeddings(recording) {
     renderRecordingsList();
   } catch (error) {
     if (analysisViewState.recording?.id !== recording.id) {
+      return;
+    }
+    const recovered = await recoverEmbeddingStateFromNetworkError(recording);
+    if (recovered) {
       return;
     }
     const fallback = error instanceof Error ? error.message : String(error);

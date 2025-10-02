@@ -334,6 +334,14 @@ class DetectionBroadcaster:
         self._recordings_mount_path = "/recordings"
         self._ssl_context = ssl_context
         self._send_timeout = 3.0
+        # ``websockets`` routes regular HTTP requests through the WebSocket
+        # handshake logic. Long running analysis or embedding requests can
+        # therefore exceed the default 3 second ``open_timeout`` that we use
+        # for WebSocket clients, resulting in spurious network errors on the
+        # dashboard even though the server is still processing the request.
+        # Track a dedicated HTTP timeout so we can keep the stricter send
+        # timeout for WebSocket broadcasts while allowing longer REST calls.
+        self._http_request_timeout = 300.0
         if static_dir is None:
             default_static = Path(__file__).resolve().parents[1] / "browser"
             self._static_dir = default_static if default_static.exists() else None
@@ -398,7 +406,7 @@ class DetectionBroadcaster:
                 process_request=self._process_http_request,
                 logger=websocket_logger,
                 ssl=ssl_ctx,
-                open_timeout=self._send_timeout,
+                open_timeout=max(self._send_timeout, self._http_request_timeout),
             )
             servers.append((server, host, port, ssl_ctx))
 
