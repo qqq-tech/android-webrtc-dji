@@ -533,6 +533,8 @@ async function pollRecordingAnalysisStatus(entry) {
   if (!entry || entry.running) {
     return;
   }
+  const now = Date.now();
+  entry.lastPolledAt = now;
   entry.running = true;
   try {
     const { recording } = entry;
@@ -554,6 +556,7 @@ async function pollRecordingAnalysisStatus(entry) {
     console.warn('Failed to refresh analysis status', error);
   } finally {
     entry.running = false;
+    entry.lastPolledAt = Date.now();
   }
 }
 
@@ -574,14 +577,24 @@ function startAnalysisStatusMonitor(recording, options = {}) {
 
   let entry = analysisStatusMonitors.get(key);
   if (!entry) {
-    entry = { key, recording, timerId: null, running: false };
+    entry = { key, recording, timerId: null, running: false, lastPolledAt: 0 };
     analysisStatusMonitors.set(key, entry);
   } else {
     entry.recording = recording;
   }
 
   if (immediate) {
-    void pollRecordingAnalysisStatus(entry);
+    if (entry.running) {
+      ensureAnalysisStatusMonitorTimer(entry);
+      return;
+    }
+    const lastPolledAt = typeof entry.lastPolledAt === 'number' ? entry.lastPolledAt : 0;
+    const now = Date.now();
+    if (!lastPolledAt || now - lastPolledAt >= STATUS_POLL_INTERVAL_MS) {
+      void pollRecordingAnalysisStatus(entry);
+    } else {
+      ensureAnalysisStatusMonitorTimer(entry);
+    }
   } else {
     ensureAnalysisStatusMonitorTimer(entry);
   }
@@ -3418,6 +3431,7 @@ function setAnalysisView(recording, status, message, result = null, cached = fal
   const resolvedMessage = message || defaultAnalysisMessage;
   const resolvedCached = Boolean(cached);
   const nextRecordingId = recording?.id || null;
+  const previousStatus = analysisViewState.status;
   const statusOnlyChange =
     lastRenderedAnalysisContent.recordingId === nextRecordingId &&
     lastRenderedAnalysisContent.message === resolvedMessage &&
@@ -3434,10 +3448,14 @@ function setAnalysisView(recording, status, message, result = null, cached = fal
 
   if (statusOnlyChange) {
     updateAnalysisStatusBadgeDisplay();
+    if (previousStatus !== status) {
+      scheduleAnalysisStatusRender();
+    }
     return;
   }
 
   renderAnalysisView();
+  scheduleAnalysisStatusRender();
 }
 
 async function loadCachedAnalysis(recording, options = {}) {
@@ -3618,19 +3636,6 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
     return;
   }
 
-  if (!cached?.record && cachedStatusValue && ['missing', 'not_found', 'empty'].includes(cachedStatusValue)) {
-    const fallbackMessage =
-      cachedStatusMessage ||
-      `No stored Twelve Labs analysis found for “${displayName}” yet. Press “Analyze” to generate insights.`;
-    setAnalysisView(recording, 'missing', fallbackMessage, null, false, cachedStatusValue);
-    if (triggerLoad) {
-      void loadCachedAnalysis(recording).then(() => {
-        refreshAnalysisViewFromCache(recording, { preserveExistingResult: false });
-      });
-    }
-    return;
-  }
-
   if (cached?.record) {
     const cachedRecord = cached.record;
     const cachedResult = Boolean(cached.cached);
@@ -3676,11 +3681,31 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
     : isWorkflowPendingStatus(sharedEmbeddingStatus)
     ? sharedEmbeddingStatus
     : null;
-  const sharedAnalysisStatus = getSharedAnalysisStatus(recording);
   const embeddingReady =
     hasEmbeddingSuccess(recording) ||
     isEmbeddingReadyStatus(statusInfo) ||
     isEmbeddingReadyStatus(sharedEmbeddingStatus);
+  const sharedAnalysisStatus = getSharedAnalysisStatus(recording);
+  const analysisPendingShared = isWorkflowPendingStatus(sharedAnalysisStatus);
+
+  if (
+    !cached?.record &&
+    cachedStatusValue &&
+    ['missing', 'not_found', 'empty'].includes(cachedStatusValue) &&
+    !pendingStatusInfo &&
+    !analysisPendingShared
+  ) {
+    const fallbackMessage =
+      cachedStatusMessage ||
+      `No stored Twelve Labs analysis found for “${displayName}” yet. Press “Analyze” to generate insights.`;
+    setAnalysisView(recording, 'missing', fallbackMessage, null, false, cachedStatusValue);
+    if (triggerLoad) {
+      void loadCachedAnalysis(recording).then(() => {
+        refreshAnalysisViewFromCache(recording, { preserveExistingResult: false });
+      });
+    }
+    return;
+  }
 
   const isCurrentRecording = analysisViewState.recording?.id === recording.id;
   const existingStatus = isCurrentRecording ? analysisViewState.status : null;
@@ -3691,7 +3716,7 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
     isCurrentRecording &&
     ACTIVE_ANALYSIS_STATUSES.has(existingStatus) &&
     !pendingStatusInfo &&
-    !isWorkflowPendingStatus(sharedAnalysisStatus) &&
+    !analysisPendingShared &&
     !isEmbeddingErrorStatus(statusInfo) &&
     !embeddingReady &&
     !recordHasAnalysisContent(recording);
@@ -3710,7 +3735,7 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
     suppressInitialStatus &&
     !cached?.record &&
     !pendingStatusInfo &&
-    !isWorkflowPendingStatus(sharedAnalysisStatus) &&
+    !analysisPendingShared &&
     !isEmbeddingErrorStatus(statusInfo) &&
     !embeddingReady &&
     !recordHasAnalysisContent(recording);
@@ -3745,7 +3770,7 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
       sharedEmbeddingStatus?.message ||
       `Twelve Labs embeddings are still processing for “${displayName}”.`;
     applyView('pending', pendingMessage);
-  } else if (isWorkflowPendingStatus(sharedAnalysisStatus)) {
+  } else if (analysisPendingShared) {
     const analysisMessage =
       sharedAnalysisStatus?.message ||
       `Requesting Twelve Labs analysis for “${displayName}”…`;
