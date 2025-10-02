@@ -1849,6 +1849,28 @@ async function fetchAnalysis(recording, options = {}) {
   if (!embeddingStage && embeddingStatus) {
     embeddingStage = getWorkflowStageValue(embeddingStatus);
   }
+  if (requestType === 'status') {
+    const cacheKey = getAnalysisCacheKey(recording);
+    if (record && cacheKey) {
+      storeAnalysisRecord(recording, record, cached);
+    } else if (cacheKey) {
+      const previousEntry = analysisCache.get(cacheKey);
+      const nextEntry = { checkedAt: Date.now() };
+      const statusKey = typeof status === 'string' ? status.toLowerCase() : '';
+      const shouldClearRecord =
+        !previousEntry || ['not_found', 'missing', 'empty'].includes(statusKey);
+      if (shouldClearRecord) {
+        nextEntry.record = null;
+        nextEntry.cached = false;
+        nextEntry.hasAnalysis = false;
+      }
+      analysisCache.set(cacheKey, previousEntry ? { ...previousEntry, ...nextEntry } : nextEntry);
+      if (shouldClearRecord) {
+        rememberEmbeddingState(recording, null);
+      }
+    }
+  }
+
   return {
     ok: true,
     status,
