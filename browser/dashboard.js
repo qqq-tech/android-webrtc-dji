@@ -846,6 +846,10 @@ function extractEmbeddingStatus(record) {
         .filter((option, index, array) => option && array.indexOf(option) === index)
     : [];
   const updatedAt = status.updatedAt || status.updated_at || null;
+  const stage = getWorkflowStageValue({
+    state: stateRaw,
+    stage: status.stage,
+  });
   return {
     state: stateRaw,
     message,
@@ -853,6 +857,7 @@ function extractEmbeddingStatus(record) {
     missingOptions,
     includeTranscription: Boolean(status.includeTranscription),
     updatedAt,
+    stage,
   };
 }
 
@@ -940,18 +945,33 @@ function buildPendingEmbeddingMessage(recording, record, statusInfo) {
   return `Twelve Labs embeddings${optionText} for ${displayName} are still processing…`;
 }
 
-function resolveAnalysisViewState(recording, record, defaultStatus, baseMessage, cached) {
-  const statusInfo = extractEmbeddingStatus(record);
-  if (isEmbeddingPendingStatus(statusInfo)) {
-    return {
-      status: 'embedding',
-      message: buildPendingEmbeddingMessage(recording, record, statusInfo),
-      cached,
-    };
+function resolveAnalysisViewState(
+  recording,
+  record,
+  defaultStatus,
+  baseMessage,
+  cached,
+  context = {}
+) {
+  let stageValue =
+    context && typeof context.embeddingStage === 'string'
+      ? context.embeddingStage.trim().toLowerCase()
+      : '';
+  let statusInfo = context && context.embeddingStatus ? context.embeddingStatus : null;
+  if (!statusInfo) {
+    statusInfo = extractEmbeddingStatus(record);
   }
-  if (isEmbeddingErrorStatus(statusInfo)) {
+
+  if (!stageValue && statusInfo) {
+    const derivedStage = getWorkflowStageValue(statusInfo);
+    if (derivedStage) {
+      stageValue = derivedStage;
+    }
+  }
+
+  if (stageValue === 'error' || isEmbeddingErrorStatus(statusInfo)) {
     const errorMessage =
-      statusInfo.message ||
+      (statusInfo && statusInfo.message) ||
       baseMessage ||
       'Failed to retrieve Twelve Labs embeddings for this recording.';
     return {
@@ -960,6 +980,23 @@ function resolveAnalysisViewState(recording, record, defaultStatus, baseMessage,
       cached,
     };
   }
+
+  if (stageValue === 'start') {
+    return {
+      status: 'embedding',
+      message: buildPendingEmbeddingMessage(recording, record, statusInfo),
+      cached,
+    };
+  }
+
+  if (stageValue !== 'end' && isEmbeddingPendingStatus(statusInfo)) {
+    return {
+      status: 'embedding',
+      message: buildPendingEmbeddingMessage(recording, record, statusInfo),
+      cached,
+    };
+  }
+
   const hasAnalysis = recordHasAnalysisContent(record);
   if (!hasAnalysis) {
     return {
@@ -968,12 +1005,18 @@ function resolveAnalysisViewState(recording, record, defaultStatus, baseMessage,
       cached,
     };
   }
+
   let normalisedStatus = defaultStatus || (cached ? 'cached' : 'ready');
   if (normalisedStatus === 'pending') {
     normalisedStatus = 'embedding';
   } else if (normalisedStatus === 'ok') {
     normalisedStatus = 'cached';
   }
+
+  if (stageValue === 'end' && normalisedStatus === 'embedding') {
+    normalisedStatus = cached ? 'cached' : 'ready';
+  }
+
   return {
     status: normalisedStatus,
     message: baseMessage || defaultAnalysisMessage,
@@ -981,8 +1024,22 @@ function resolveAnalysisViewState(recording, record, defaultStatus, baseMessage,
   };
 }
 
-function updateAnalysisViewWithRecord(recording, record, cached, defaultStatus, baseMessage) {
-  const resolved = resolveAnalysisViewState(recording, record, defaultStatus, baseMessage, cached);
+function updateAnalysisViewWithRecord(
+  recording,
+  record,
+  cached,
+  defaultStatus,
+  baseMessage,
+  context = {}
+) {
+  const resolved = resolveAnalysisViewState(
+    recording,
+    record,
+    defaultStatus,
+    baseMessage,
+    cached,
+    context
+  );
   setAnalysisView(recording, resolved.status, resolved.message, record, cached);
 }
 
@@ -1034,12 +1091,16 @@ async function pollEmbeddingStatus(entry) {
           result.record,
           result.cached,
           defaultStatus,
-          combinedMessage
+          combinedMessage,
+          {
+            embeddingStage: result.embeddingStage,
+            embeddingStatus: result.embeddingStatus,
+          }
         );
       }
       renderRecordingsList();
     }
-    const statusInfo = extractEmbeddingStatus(result.record);
+    const statusInfo = result.embeddingStatus || extractEmbeddingStatus(result.record);
     if (!statusInfo || statusInfo.state !== 'pending') {
       stopEmbeddingMonitor(entry.key);
     }
@@ -1786,12 +1847,22 @@ async function fetchAnalysis(recording, options = {}) {
   const cached = Boolean(payload && (payload.cached || payload.status === 'cached'));
   const status = (payload && payload.status) || (cached ? 'cached' : 'ok');
   const message = (payload && payload.message) || '';
+  const embeddingStatus = record ? extractEmbeddingStatus(record) : null;
+  let embeddingStage =
+    payload && typeof payload.embeddingStage === 'string'
+      ? payload.embeddingStage.trim().toLowerCase()
+      : '';
+  if (!embeddingStage && embeddingStatus) {
+    embeddingStage = getWorkflowStageValue(embeddingStatus);
+  }
   return {
     ok: true,
     status,
     record,
     cached,
     message,
+    embeddingStage,
+    embeddingStatus,
     requestType,
   };
 }
@@ -2429,7 +2500,7 @@ function renderAnalysisResult(record, cached) {
   section.className = 'analysis-result-block';
 
   const heading = document.createElement('h4');
-  heading.textContent = cached ? 'Stored Twelve Labs response' : 'Twelve Labs response';
+  heading.textContent = 'Twelve Labs response';
   section.appendChild(heading);
 
   const metaGrid = document.createElement('dl');
@@ -3056,7 +3127,11 @@ async function loadCachedAnalysis(recording, options = {}) {
           result.record,
           cachedResult,
           defaultStatus,
-          combinedMessage
+          combinedMessage,
+          {
+            embeddingStage: result.embeddingStage,
+            embeddingStatus: result.embeddingStatus,
+          }
         );
       }
       renderRecordingsList();
@@ -3150,7 +3225,10 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
       cachedRecord,
       cachedResult,
       defaultStatus,
-      combinedMessage
+      combinedMessage,
+      {
+        embeddingStatus: statusInfo,
+      }
     );
     return;
   }
@@ -3363,7 +3441,11 @@ async function requestRecordingAnalysis(recording) {
       result.record,
       result.cached,
       defaultStatus,
-      combinedMessage
+      combinedMessage,
+      {
+        embeddingStage: result.embeddingStage,
+        embeddingStatus: result.embeddingStatus,
+      }
     );
     renderRecordingsList();
   } catch (error) {
@@ -3412,7 +3494,11 @@ async function recoverEmbeddingStateFromNetworkError(recording) {
         statusResult.record,
         cachedStatus,
         defaultStatus,
-        combinedMessage
+        combinedMessage,
+        {
+          embeddingStage: statusResult.embeddingStage,
+          embeddingStatus: statusResult.embeddingStatus,
+        }
       );
       renderRecordingsList();
       return true;
@@ -3545,7 +3631,11 @@ async function requestRecordingEmbeddings(recording) {
       result.record,
       cachedResult,
       defaultStatus,
-      combinedMessage
+      combinedMessage,
+      {
+        embeddingStage: result.embeddingStage,
+        embeddingStatus: result.embeddingStatus,
+      }
     );
     renderRecordingsList();
   } catch (error) {
