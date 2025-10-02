@@ -1965,6 +1965,93 @@ function renderAnalysisResult(record, cached) {
     section.appendChild(embeddingsBlock);
   }
 
+  const formatLabel = (key) => {
+    if (!key) {
+      return 'Details';
+    }
+    return key
+      .toString()
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\b\w/g, (character) => character.toUpperCase());
+  };
+
+  const normaliseStringArray = (value) => {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value
+      .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+      .filter((entry) => entry.length > 0);
+  };
+
+  const pickFirstString = (source, keys) => {
+    if (!source || typeof source !== 'object') {
+      return { key: null, value: '' };
+    }
+    for (const key of keys) {
+      const candidate = source[key];
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return { key, value: candidate.trim() };
+      }
+    }
+    return { key: null, value: '' };
+  };
+
+  const appendPlainParagraph = (container, text) => {
+    if (!text) {
+      return;
+    }
+    const paragraph = document.createElement('p');
+    paragraph.textContent = text;
+    container.appendChild(paragraph);
+  };
+
+  const appendLabeledParagraph = (container, label, text) => {
+    if (!text) {
+      return;
+    }
+    const paragraph = document.createElement('p');
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'analysis-output-label';
+    labelSpan.textContent = `${label}:`;
+    paragraph.appendChild(labelSpan);
+    paragraph.appendChild(document.createTextNode(` ${text}`));
+    container.appendChild(paragraph);
+  };
+
+  const appendLabeledList = (container, label, items) => {
+    if (!Array.isArray(items) || items.length === 0) {
+      return;
+    }
+    const labelParagraph = document.createElement('p');
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'analysis-output-label';
+    labelSpan.textContent = `${label}:`;
+    labelParagraph.appendChild(labelSpan);
+    container.appendChild(labelParagraph);
+
+    const listElement = document.createElement('ul');
+    items.forEach((item) => {
+      const listItem = document.createElement('li');
+      listItem.textContent = item;
+      listElement.appendChild(listItem);
+    });
+    container.appendChild(listElement);
+  };
+
+  const appendJsonPre = (container, value) => {
+    const pre = document.createElement('pre');
+    try {
+      pre.textContent = JSON.stringify(value, null, 2);
+    } catch (error) {
+      pre.textContent = String(value);
+    }
+    container.appendChild(pre);
+  };
+
   const gistResponse = record?.gist?.response ?? record?.gist ?? null;
   if (gistResponse && typeof gistResponse === 'object') {
     const gistTitle =
@@ -2014,6 +2101,198 @@ function renderAnalysisResult(record, cached) {
     }
   }
 
+  const summary = record?.summary;
+  if (summary && typeof summary === 'object' && Object.keys(summary).length > 0) {
+    const summaryBlock = document.createElement('div');
+    summaryBlock.className = 'analysis-output-body';
+
+    const summaryHeading = document.createElement('h5');
+    summaryHeading.textContent = 'Summary';
+    summaryBlock.appendChild(summaryHeading);
+
+    let summaryContentAdded = false;
+    const usedSummaryKeys = new Set();
+
+    const { key: summaryTitleKey, value: summaryTitle } = pickFirstString(summary, [
+      'title',
+      'Title',
+      'heading',
+      'Heading',
+    ]);
+    if (summaryTitle) {
+      appendLabeledParagraph(summaryBlock, formatLabel(summaryTitleKey || 'Title'), summaryTitle);
+      if (summaryTitleKey) {
+        usedSummaryKeys.add(summaryTitleKey);
+      }
+      summaryContentAdded = true;
+    }
+
+    const { key: summaryTextKey, value: summaryText } = pickFirstString(summary, [
+      'text',
+      'Text',
+      'summary',
+      'Summary',
+      'description',
+      'Description',
+      'overview',
+      'Overview',
+    ]);
+    if (summaryText) {
+      appendPlainParagraph(summaryBlock, summaryText);
+      if (summaryTextKey) {
+        usedSummaryKeys.add(summaryTextKey);
+      }
+      summaryContentAdded = true;
+    }
+
+    const additionalStrings = Object.entries(summary).filter(
+      ([key, value]) =>
+        !usedSummaryKeys.has(key) && typeof value === 'string' && value.trim().length > 0
+    );
+    additionalStrings.forEach(([key, value]) => {
+      appendLabeledParagraph(summaryBlock, formatLabel(key), value.trim());
+      usedSummaryKeys.add(key);
+      summaryContentAdded = true;
+    });
+
+    const arrayEntries = Object.entries(summary).filter(
+      ([key, value]) => !usedSummaryKeys.has(key) && Array.isArray(value)
+    );
+    arrayEntries.forEach(([key, value]) => {
+      const items = normaliseStringArray(value);
+      if (items.length === 0) {
+        return;
+      }
+      appendLabeledList(summaryBlock, formatLabel(key), items);
+      usedSummaryKeys.add(key);
+      summaryContentAdded = true;
+    });
+
+    if (!summaryContentAdded) {
+      appendJsonPre(summaryBlock, summary);
+    }
+
+    section.appendChild(summaryBlock);
+  }
+
+  const insightItems = Array.isArray(record?.insights) ? record.insights : [];
+  if (insightItems.length > 0) {
+    const insightsBlock = document.createElement('div');
+    insightsBlock.className = 'analysis-output-body';
+
+    const insightsHeading = document.createElement('h5');
+    insightsHeading.textContent = 'Insights';
+    insightsBlock.appendChild(insightsHeading);
+
+    const listElement = document.createElement('ul');
+    let insightsAdded = false;
+
+    insightItems.forEach((insight) => {
+      const listItem = document.createElement('li');
+      const container = document.createElement('div');
+      container.className = 'analysis-insight-item';
+      let itemContentAdded = false;
+
+      if (typeof insight === 'string') {
+        const trimmed = insight.trim();
+        if (trimmed) {
+          appendPlainParagraph(container, trimmed);
+          itemContentAdded = true;
+        }
+      } else if (insight && typeof insight === 'object') {
+        const usedInsightKeys = new Set();
+        const { key: titleKey, value: insightTitle } = pickFirstString(insight, [
+          'title',
+          'Title',
+          'name',
+          'Name',
+          'label',
+          'Label',
+        ]);
+        if (insightTitle) {
+          const titleElement = document.createElement('span');
+          titleElement.className = 'analysis-insight-item-title';
+          titleElement.textContent = insightTitle;
+          container.appendChild(titleElement);
+          itemContentAdded = true;
+          if (titleKey) {
+            usedInsightKeys.add(titleKey);
+          }
+        }
+
+        const { key: detailKey, value: detailText } = pickFirstString(insight, [
+          'text',
+          'Text',
+          'detail',
+          'Detail',
+          'description',
+          'Description',
+          'summary',
+          'Summary',
+          'insight',
+          'Insight',
+        ]);
+        if (detailText) {
+          appendPlainParagraph(container, detailText);
+          itemContentAdded = true;
+          if (detailKey) {
+            usedInsightKeys.add(detailKey);
+          }
+        }
+
+        const arrayDetails = Object.entries(insight).filter(
+          ([key, value]) =>
+            !usedInsightKeys.has(key) &&
+            Array.isArray(value) &&
+            normaliseStringArray(value).length > 0
+        );
+        arrayDetails.forEach(([key, value]) => {
+          const items = normaliseStringArray(value);
+          if (items.length === 0) {
+            return;
+          }
+          appendLabeledList(container, formatLabel(key), items);
+          itemContentAdded = true;
+          usedInsightKeys.add(key);
+        });
+
+        const simpleValues = Object.entries(insight).filter(([key, value]) => {
+          if (usedInsightKeys.has(key)) {
+            return false;
+          }
+          if (Array.isArray(value)) {
+            return false;
+          }
+          return value !== null && typeof value !== 'object';
+        });
+        simpleValues.forEach(([key, value]) => {
+          appendLabeledParagraph(container, formatLabel(key), String(value));
+          itemContentAdded = true;
+          usedInsightKeys.add(key);
+        });
+      }
+
+      if (!itemContentAdded) {
+        appendJsonPre(container, insight);
+        itemContentAdded = true;
+      }
+
+      if (itemContentAdded) {
+        listItem.appendChild(container);
+        listElement.appendChild(listItem);
+        insightsAdded = true;
+      }
+    });
+
+    if (insightsAdded) {
+      insightsBlock.appendChild(listElement);
+    } else {
+      appendJsonPre(insightsBlock, insightItems);
+    }
+
+    section.appendChild(insightsBlock);
+  }
+
   const analysisText =
     typeof record?.analysis?.text === 'string' ? record.analysis.text.trim() : '';
   const analysisChunks = Array.isArray(record?.analysis?.chunks)
@@ -2031,6 +2310,7 @@ function renderAnalysisResult(record, cached) {
 
   const outputBlock = document.createElement('div');
   outputBlock.className = 'analysis-output-body';
+  let analysisContentAdded = false;
 
   if (paragraphs.length > 0) {
     const analysisHeading = document.createElement('h5');
@@ -2042,17 +2322,15 @@ function renderAnalysisResult(record, cached) {
       p.textContent = paragraph;
       outputBlock.appendChild(p);
     });
+    analysisContentAdded = true;
   } else if (record?.analysis) {
-    const pre = document.createElement('pre');
-    try {
-      pre.textContent = JSON.stringify(record.analysis, null, 2);
-    } catch (error) {
-      pre.textContent = String(record.analysis);
-    }
-    outputBlock.appendChild(pre);
+    appendJsonPre(outputBlock, record.analysis);
+    analysisContentAdded = true;
   }
 
-  section.appendChild(outputBlock);
+  if (analysisContentAdded) {
+    section.appendChild(outputBlock);
+  }
 
   return section;
 }
