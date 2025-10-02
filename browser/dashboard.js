@@ -381,6 +381,203 @@ const analysisViewState = {
 
 const analysisCache = new Map();
 const embeddingSuccessCache = new Map();
+const EMBEDDING_POLL_INTERVAL_MS = 5000;
+const embeddingMonitorState = new Map();
+
+function extractEmbeddingStatus(record) {
+  if (!record || typeof record !== 'object') {
+    return null;
+  }
+  const status = record.embeddingStatus;
+  if (!status || typeof status !== 'object') {
+    return null;
+  }
+  const stateRaw =
+    typeof status.state === 'string' && status.state.trim().length > 0
+      ? status.state.trim().toLowerCase()
+      : '';
+  if (!stateRaw) {
+    return null;
+  }
+  const message =
+    typeof status.message === 'string' && status.message.trim().length > 0
+      ? status.message.trim()
+      : '';
+  const options = Array.isArray(status.options)
+    ? status.options
+        .map((option) => (typeof option === 'string' ? option.trim() : ''))
+        .filter((option, index, array) => option && array.indexOf(option) === index)
+    : [];
+  const missingOptions = Array.isArray(status.missingOptions)
+    ? status.missingOptions
+        .map((option) => (typeof option === 'string' ? option.trim() : ''))
+        .filter((option, index, array) => option && array.indexOf(option) === index)
+    : [];
+  const updatedAt = status.updatedAt || status.updated_at || null;
+  return {
+    state: stateRaw,
+    message,
+    options,
+    missingOptions,
+    includeTranscription: Boolean(status.includeTranscription),
+    updatedAt,
+  };
+}
+
+function buildPendingEmbeddingMessage(recording, record, statusInfo) {
+  if (statusInfo && statusInfo.message) {
+    return statusInfo.message;
+  }
+  let displayName = '';
+  if (recording && typeof recording.displayName === 'string') {
+    displayName = recording.displayName.trim();
+  }
+  if (!displayName && record && typeof record.fileName === 'string') {
+    displayName = record.fileName.trim();
+  }
+  if (!displayName && record && typeof record.name === 'string') {
+    displayName = record.name.trim();
+  }
+  if (!displayName) {
+    displayName = 'this recording';
+  } else {
+    displayName = `“${displayName}”`;
+  }
+  const optionText =
+    statusInfo && Array.isArray(statusInfo.options) && statusInfo.options.length > 0
+      ? ` (${statusInfo.options.join(', ')})`
+      : '';
+  return `Twelve Labs embeddings${optionText} for ${displayName} are still processing…`;
+}
+
+function resolveAnalysisViewState(recording, record, defaultStatus, baseMessage, cached) {
+  const statusInfo = extractEmbeddingStatus(record);
+  if (statusInfo?.state === 'pending') {
+    return {
+      status: 'embedding',
+      message: buildPendingEmbeddingMessage(recording, record, statusInfo),
+      cached,
+    };
+  }
+  if (statusInfo?.state === 'error') {
+    const errorMessage =
+      statusInfo.message ||
+      baseMessage ||
+      'Failed to retrieve Twelve Labs embeddings for this recording.';
+    return {
+      status: 'error',
+      message: errorMessage,
+      cached,
+    };
+  }
+  let normalisedStatus = defaultStatus || (cached ? 'cached' : 'ready');
+  if (normalisedStatus === 'pending') {
+    normalisedStatus = 'embedding';
+  } else if (normalisedStatus === 'ok') {
+    normalisedStatus = 'cached';
+  }
+  return {
+    status: normalisedStatus,
+    message: baseMessage || defaultAnalysisMessage,
+    cached,
+  };
+}
+
+function updateAnalysisViewWithRecord(recording, record, cached, defaultStatus, baseMessage) {
+  const resolved = resolveAnalysisViewState(recording, record, defaultStatus, baseMessage, cached);
+  setAnalysisView(recording, resolved.status, resolved.message, record, cached);
+}
+
+function stopEmbeddingMonitor(key) {
+  const entry = embeddingMonitorState.get(key);
+  if (!entry) {
+    return;
+  }
+  if (typeof entry.timerId === 'number') {
+    window.clearInterval(entry.timerId);
+  }
+  embeddingMonitorState.delete(key);
+}
+
+async function pollEmbeddingStatus(entry) {
+  if (!entry || entry.active) {
+    return;
+  }
+  entry.active = true;
+  try {
+    const result = await fetchAnalysis(entry.recording, { start: false });
+    const current = embeddingMonitorState.get(entry.key);
+    if (!current || current !== entry) {
+      return;
+    }
+    if (!result.ok) {
+      const statusKey = (result.status || '').toLowerCase();
+      if (['not_found', 'missing', 'empty'].includes(statusKey)) {
+        stopEmbeddingMonitor(entry.key);
+      }
+      return;
+    }
+    if (result.record) {
+      storeAnalysisRecord(entry.recording, result.record, result.cached);
+      if (analysisViewState.recording?.id === entry.recording.id) {
+        const defaultStatus = result.cached ? 'cached' : result.status || 'ok';
+        const combinedMessage = combineAnalysisAndEmbeddingMessages(
+          result.record,
+          result.message || '',
+          result.cached
+        );
+        updateAnalysisViewWithRecord(
+          entry.recording,
+          result.record,
+          result.cached,
+          defaultStatus,
+          combinedMessage
+        );
+      }
+      renderRecordingsList();
+    }
+    const statusInfo = extractEmbeddingStatus(result.record);
+    if (!statusInfo || statusInfo.state !== 'pending') {
+      stopEmbeddingMonitor(entry.key);
+    }
+  } finally {
+    entry.active = false;
+  }
+}
+
+function startEmbeddingMonitor(key, recording) {
+  if (!key) {
+    return;
+  }
+  const existing = embeddingMonitorState.get(key);
+  if (existing) {
+    existing.recording = recording;
+    return;
+  }
+  const entry = {
+    key,
+    timerId: null,
+    active: false,
+    recording,
+  };
+  entry.timerId = window.setInterval(() => {
+    void pollEmbeddingStatus(entry);
+  }, EMBEDDING_POLL_INTERVAL_MS);
+  embeddingMonitorState.set(key, entry);
+  void pollEmbeddingStatus(entry);
+}
+
+function updateEmbeddingMonitor(key, recording, record) {
+  if (!key) {
+    return;
+  }
+  const statusInfo = extractEmbeddingStatus(record) || extractEmbeddingStatus(recording);
+  if (statusInfo?.state === 'pending') {
+    startEmbeddingMonitor(key, recording);
+  } else {
+    stopEmbeddingMonitor(key);
+  }
+}
 
 function getEmbeddingRequestOptions() {
   const includeTranscription = Boolean(embeddingRequestState.includeTranscription);
@@ -470,12 +667,43 @@ function rememberEmbeddingState(recording, record) {
   if (!key) {
     return;
   }
-  const identifier = resolveEmbeddingIdentifier(record);
+
+  const sources = [];
+  if (record && typeof record === 'object') {
+    sources.push(record);
+  }
+  if (recording && typeof recording === 'object' && recording !== record) {
+    sources.push(recording);
+  }
+
+  let identifier = '';
+  for (const source of sources) {
+    identifier = resolveEmbeddingIdentifier(source);
+    if (identifier) {
+      break;
+    }
+  }
+
   if (identifier) {
     embeddingSuccessCache.set(key, identifier);
   } else {
-    embeddingSuccessCache.delete(key);
+    let readyStatus = null;
+    for (const source of sources) {
+      const statusInfo = extractEmbeddingStatus(source);
+      if (statusInfo?.state === 'ready') {
+        readyStatus = statusInfo;
+        break;
+      }
+    }
+    if (readyStatus) {
+      const marker = readyStatus.updatedAt || `ready:${Date.now()}`;
+      embeddingSuccessCache.set(key, marker);
+    } else {
+      embeddingSuccessCache.delete(key);
+    }
   }
+
+  updateEmbeddingMonitor(key, recording, record || recording);
 }
 
 function hasEmbeddingSuccess(recording) {
@@ -486,14 +714,33 @@ function hasEmbeddingSuccess(recording) {
   if (embeddingSuccessCache.has(key)) {
     return true;
   }
+
+  const sources = [];
   const cached = analysisCache.get(key);
   if (cached?.record) {
-    const identifier = resolveEmbeddingIdentifier(cached.record);
+    sources.push(cached.record);
+  }
+  if (recording && typeof recording === 'object') {
+    sources.push(recording);
+  }
+
+  for (const source of sources) {
+    const identifier = resolveEmbeddingIdentifier(source);
     if (identifier) {
       embeddingSuccessCache.set(key, identifier);
       return true;
     }
   }
+
+  for (const source of sources) {
+    const statusInfo = extractEmbeddingStatus(source);
+    if (statusInfo?.state === 'ready') {
+      const marker = statusInfo.updatedAt || `ready:${Date.now()}`;
+      embeddingSuccessCache.set(key, marker);
+      return true;
+    }
+  }
+
   return false;
 }
 let activeAnalysisPromise = null;
@@ -579,6 +826,7 @@ const ANALYSIS_STATUS_CONFIG = {
   ready: { label: 'Ready', tone: 'ready' },
   loading: { label: 'Analyzing…', tone: 'pending' },
   embedding: { label: 'Embedding…', tone: 'pending' },
+  pending: { label: 'Embedding…', tone: 'pending' },
   cached: { label: 'Completed', tone: 'ready' },
   missing: { label: 'No analysis', tone: 'muted' },
   error: { label: 'Error', tone: 'warning' },
@@ -693,6 +941,15 @@ function buildEmbeddingsMessage(record, cached) {
     return cached
       ? 'Showing stored Twelve Labs embeddings.'
       : 'Twelve Labs embeddings retrieved.';
+  }
+  const statusInfo = extractEmbeddingStatus(record);
+  if (statusInfo?.state === 'pending') {
+    return buildPendingEmbeddingMessage(null, record, statusInfo);
+  }
+  if (statusInfo?.state === 'error') {
+    return (
+      statusInfo.message || 'Failed to retrieve Twelve Labs embeddings for this recording.'
+    );
   }
   const embeddings = record.embeddings;
   if (!embeddings || typeof embeddings !== 'object') {
@@ -1131,6 +1388,8 @@ function renderRecordingsList() {
     } else {
       const cached = getCachedAnalysis(recording);
       const hasCachedRecord = Boolean(cached?.record);
+      const statusInfo = extractEmbeddingStatus(cached?.record) || extractEmbeddingStatus(recording);
+      const embeddingPending = statusInfo?.state === 'pending';
       const embeddingReady = hasEmbeddingSuccess(recording);
 
       if (hasCachedRecord) {
@@ -1141,17 +1400,28 @@ function renderRecordingsList() {
         embedButton.textContent = 'View embeddings';
       }
 
-      embedButton.disabled = false;
-      embedButton.title = embeddingReady
-        ? 'Retrieve Twelve Labs embeddings for this recording.'
-        : 'Upload to Twelve Labs and retrieve embeddings for this recording.';
+      if (embeddingPending) {
+        embedButton.disabled = true;
+        embedButton.textContent = 'Embedding…';
+        const pendingMessage =
+          statusInfo?.message ||
+          'Twelve Labs embeddings are still processing for this recording.';
+        embedButton.title = pendingMessage;
+        analyzeButton.disabled = true;
+        analyzeButton.title = pendingMessage;
+      } else {
+        embedButton.disabled = false;
+        embedButton.title = embeddingReady
+          ? 'Retrieve Twelve Labs embeddings for this recording.'
+          : 'Upload to Twelve Labs and retrieve embeddings for this recording.';
 
-      analyzeButton.disabled = !embeddingReady;
-      analyzeButton.title = embeddingReady
-        ? hasCachedRecord
-          ? 'View Twelve Labs analysis for this recording.'
-          : 'Request Twelve Labs analysis for this recording.'
-        : 'Run embeddings before requesting Twelve Labs analysis.';
+        analyzeButton.disabled = !embeddingReady;
+        analyzeButton.title = embeddingReady
+          ? hasCachedRecord
+            ? 'View Twelve Labs analysis for this recording.'
+            : 'Request Twelve Labs analysis for this recording.'
+          : 'Run embeddings before requesting Twelve Labs analysis.';
+      }
     }
 
     actionsContainer.appendChild(embedButton);
@@ -1756,16 +2026,24 @@ async function loadCachedAnalysis(recording) {
       }
       return;
     }
-    storeAnalysisRecord(recording, result.record, true);
+    const cachedResult = Boolean(result.cached);
+    storeAnalysisRecord(recording, result.record, cachedResult);
     if (analysisViewState.recording?.id === recording.id) {
       const baseMessage =
-        result.message || buildAnalysisCompleteMessage(result.record, true);
-      const message = combineAnalysisAndEmbeddingMessages(
+        result.message || buildAnalysisCompleteMessage(result.record, cachedResult);
+      const combinedMessage = combineAnalysisAndEmbeddingMessages(
         result.record,
         baseMessage,
-        true
+        cachedResult
       );
-      setAnalysisView(recording, 'cached', message, result.record, true);
+      const defaultStatus = cachedResult ? 'cached' : result.status || 'ok';
+      updateAnalysisViewWithRecord(
+        recording,
+        result.record,
+        cachedResult,
+        defaultStatus,
+        combinedMessage
+      );
     }
     renderRecordingsList();
   } catch (error) {
@@ -1795,15 +2073,51 @@ function setSelectedRecording(recording) {
 
   const cached = getCachedAnalysis(recording);
   if (cached?.record) {
-    const baseMessage = buildAnalysisCompleteMessage(cached.record, true);
-    const message = combineAnalysisAndEmbeddingMessages(cached.record, baseMessage, true);
-    setAnalysisView(recording, 'cached', message, cached.record, true);
-  } else {
-    setAnalysisView(
-      recording,
-      'ready',
-      `Press “Analyze” to request AI insights for “${recording.displayName}” via Twelve Labs, or choose “Embeddings” to upload and retrieve vectors in one step.`
+    const cachedRecord = cached.record;
+    const cachedResult = Boolean(cached.cached);
+    const baseMessage = buildAnalysisCompleteMessage(cachedRecord, cachedResult);
+    const combinedMessage = combineAnalysisAndEmbeddingMessages(
+      cachedRecord,
+      baseMessage,
+      cachedResult
     );
+    const statusInfo = extractEmbeddingStatus(cachedRecord) || extractEmbeddingStatus(recording);
+    const defaultStatus = statusInfo?.state === 'pending'
+      ? 'pending'
+      : cachedResult
+      ? 'cached'
+      : 'ok';
+    updateAnalysisViewWithRecord(
+      recording,
+      cachedRecord,
+      cachedResult,
+      defaultStatus,
+      combinedMessage
+    );
+  } else {
+    const statusInfo = extractEmbeddingStatus(recording);
+    if (statusInfo?.state === 'pending') {
+      const pendingMessage =
+        statusInfo.message ||
+        `Twelve Labs embeddings are still processing for “${recording.displayName}”.`;
+      setAnalysisView(recording, 'pending', pendingMessage);
+    } else if (statusInfo?.state === 'ready') {
+      const readyMessage =
+        statusInfo.message ||
+        `Twelve Labs embeddings are available for “${recording.displayName}”.`;
+      setAnalysisView(recording, 'ready', readyMessage);
+    } else if (statusInfo?.state === 'error') {
+      const errorMessage =
+        statusInfo.message ||
+        `Twelve Labs embedding request for “${recording.displayName}” failed.`;
+      setAnalysisView(recording, 'error', errorMessage, null, false, 'embedding_failed');
+    } else {
+      setAnalysisView(
+        recording,
+        'ready',
+        `Press “Analyze” to request AI insights for “${recording.displayName}” via Twelve Labs, or choose “Embeddings” to upload and retrieve vectors in one step.`
+      );
+    }
     void loadCachedAnalysis(recording);
   }
   renderRecordingsList();
@@ -1859,17 +2173,18 @@ async function requestRecordingAnalysis(recording) {
     storeAnalysisRecord(recording, result.record, result.cached);
     const baseMessage =
       result.message || buildAnalysisCompleteMessage(result.record, result.cached);
-    const message = combineAnalysisAndEmbeddingMessages(
+    const combinedMessage = combineAnalysisAndEmbeddingMessages(
       result.record,
       baseMessage,
       result.cached
     );
-    setAnalysisView(
+    const defaultStatus = result.cached ? 'cached' : result.status || 'ok';
+    updateAnalysisViewWithRecord(
       recording,
-      'cached',
-      message,
       result.record,
-      result.cached
+      result.cached,
+      defaultStatus,
+      combinedMessage
     );
     renderRecordingsList();
   } catch (error) {
@@ -1955,12 +2270,19 @@ async function requestRecordingEmbeddings(recording) {
     storeAnalysisRecord(recording, result.record, cachedResult);
     const baseMessage =
       result.message || buildAnalysisCompleteMessage(result.record, cachedResult);
-    const message = combineAnalysisAndEmbeddingMessages(
+    const combinedMessage = combineAnalysisAndEmbeddingMessages(
       result.record,
       baseMessage,
       cachedResult
     );
-    setAnalysisView(recording, 'cached', message, result.record, cachedResult);
+    const defaultStatus = cachedResult ? 'cached' : result.status || 'ok';
+    updateAnalysisViewWithRecord(
+      recording,
+      result.record,
+      cachedResult,
+      defaultStatus,
+      combinedMessage
+    );
     renderRecordingsList();
   } catch (error) {
     if (analysisViewState.recording?.id !== recording.id) {
@@ -2103,6 +2425,9 @@ async function refreshRecordingsList() {
       ? rawItems.map(normaliseRecording).filter((item) => item !== null)
       : [];
     recordingsState.items = normalized;
+    normalized.forEach((item) => {
+      rememberEmbeddingState(item, item);
+    });
     recordingsState.lastUpdated = new Date();
     if (selectedRecordingId) {
       const selected = normalized.find((item) => item.id === selectedRecordingId);
