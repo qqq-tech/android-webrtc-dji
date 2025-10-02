@@ -1864,52 +1864,6 @@ function createEmbeddingsBlock(record, cached) {
     section.appendChild(metaGrid);
   }
 
-  if (segments.length > 0) {
-    const segmentsContainer = document.createElement('div');
-    segmentsContainer.className = 'embedding-segments';
-    const limit = Math.min(segments.length, 3);
-    for (let index = 0; index < limit; index += 1) {
-      const segment = segments[index];
-      const segmentBlock = document.createElement('div');
-      segmentBlock.className = 'embedding-segment';
-
-      const header = document.createElement('div');
-      header.className = 'embedding-segment-header';
-      const start = Number.isFinite(segment.start_offset_sec)
-        ? Number(segment.start_offset_sec)
-        : null;
-      const end = Number.isFinite(segment.end_offset_sec) ? Number(segment.end_offset_sec) : null;
-      const scope =
-        typeof segment.embedding_option === 'string' && segment.embedding_option
-          ? segment.embedding_option
-          : '';
-      const rangeParts = [];
-      if (start !== null) {
-        rangeParts.push(`${start.toFixed(1)}s`);
-      }
-      if (end !== null) {
-        rangeParts.push(`${end.toFixed(1)}s`);
-      }
-      const labelParts = [];
-      if (rangeParts.length > 0) {
-        labelParts.push(rangeParts.join(' – '));
-      }
-      header.textContent = labelParts.length > 0 ? labelParts.join(' · ') : `Segment ${index + 1}`;
-      segmentBlock.appendChild(header);
-      segmentsContainer.appendChild(segmentBlock);
-    }
-
-    if (segments.length > limit) {
-      const remainingCount = segments.length - limit;
-      const moreParagraph = document.createElement('p');
-      moreParagraph.className = 'analysis-embedding-note';
-      moreParagraph.textContent = `+${remainingCount} additional segment${remainingCount === 1 ? '' : 's'} available in the stored payload.`;
-      segmentsContainer.appendChild(moreParagraph);
-    }
-
-    section.appendChild(segmentsContainer);
-  }
-
   return section;
 }
 
