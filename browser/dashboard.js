@@ -379,6 +379,14 @@ const analysisViewState = {
   errorCode: null,
 };
 
+const lastRenderedAnalysisContent = {
+  recordingId: null,
+  message: defaultAnalysisMessage,
+  resultRef: null,
+  cached: false,
+  errorCode: null,
+};
+
 const ANALYSIS_STATUS_REFRESH_INTERVAL_MS = 5000;
 const analysisCache = new Map();
 const analysisStatusRequests = new Map();
@@ -691,6 +699,14 @@ function updateWorkflowSyncStateByKey(key, updates) {
 
   persistWorkflowSyncState();
   renderRecordingsList();
+
+  const activeRecording = analysisViewState.recording;
+  if (activeRecording) {
+    const activeKey = getAnalysisCacheKey(activeRecording);
+    if (activeKey && activeKey === key) {
+      updateAnalysisPanelForRecording(activeRecording, { preserveExistingResult: true });
+    }
+  }
 }
 
 function updateWorkflowSyncStateForRecording(recording, updates) {
@@ -2840,11 +2856,7 @@ function renderAnalysisView() {
       ? analysisViewState.recording.metaSummary || 'Metadata pending integration.'
       : 'Choose a recording on the left to see its details.';
   }
-  if (analysisStatusBadge) {
-    const config = ANALYSIS_STATUS_CONFIG[analysisViewState.status] || ANALYSIS_STATUS_CONFIG.idle;
-    analysisStatusBadge.textContent = config.label;
-    analysisStatusBadge.dataset.tone = config.tone;
-  }
+  updateAnalysisStatusBadgeDisplay();
   if (analysisDetailsContainer) {
     analysisDetailsContainer.replaceChildren();
     if (analysisViewState.message) {
@@ -2884,15 +2896,46 @@ function renderAnalysisView() {
       analysisDetailsContainer.appendChild(resultBlock);
     }
   }
+
+  lastRenderedAnalysisContent.recordingId = analysisViewState.recording?.id || null;
+  lastRenderedAnalysisContent.message = analysisViewState.message;
+  lastRenderedAnalysisContent.resultRef = analysisViewState.result;
+  lastRenderedAnalysisContent.cached = Boolean(analysisViewState.cached);
+  lastRenderedAnalysisContent.errorCode = analysisViewState.errorCode;
+}
+
+function updateAnalysisStatusBadgeDisplay() {
+  if (!analysisStatusBadge) {
+    return;
+  }
+  const config = ANALYSIS_STATUS_CONFIG[analysisViewState.status] || ANALYSIS_STATUS_CONFIG.idle;
+  analysisStatusBadge.textContent = config.label;
+  analysisStatusBadge.dataset.tone = config.tone;
 }
 
 function setAnalysisView(recording, status, message, result = null, cached = false, errorCode = null) {
+  const resolvedMessage = message || defaultAnalysisMessage;
+  const resolvedCached = Boolean(cached);
+  const nextRecordingId = recording?.id || null;
+  const statusOnlyChange =
+    lastRenderedAnalysisContent.recordingId === nextRecordingId &&
+    lastRenderedAnalysisContent.message === resolvedMessage &&
+    lastRenderedAnalysisContent.resultRef === result &&
+    lastRenderedAnalysisContent.cached === resolvedCached &&
+    lastRenderedAnalysisContent.errorCode === errorCode;
+
   analysisViewState.recording = recording;
   analysisViewState.status = status;
-  analysisViewState.message = message || defaultAnalysisMessage;
+  analysisViewState.message = resolvedMessage;
   analysisViewState.result = result;
-  analysisViewState.cached = Boolean(cached);
+  analysisViewState.cached = resolvedCached;
   analysisViewState.errorCode = errorCode;
+
+  if (statusOnlyChange) {
+    updateAnalysisStatusBadgeDisplay();
+    return;
+  }
+
   renderAnalysisView();
 }
 
