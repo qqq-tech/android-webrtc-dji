@@ -384,6 +384,32 @@ const embeddingSuccessCache = new Map();
 const EMBEDDING_INITIAL_POLL_DELAY_MS = 30000;
 const EMBEDDING_POLL_INTERVAL_MS = 5000;
 const embeddingMonitorState = new Map();
+const EMBEDDING_PENDING_STATES = ['pending', 'starting', 'processing', 'running'];
+const EMBEDDING_SUCCESS_STATES = ['ready', 'completed', 'done', 'ok', 'success'];
+const EMBEDDING_ERROR_STATES = ['error', 'failed', 'failure'];
+
+function getEmbeddingStateValue(statusInfo) {
+  if (!statusInfo || typeof statusInfo.state !== 'string') {
+    return '';
+  }
+  const value = statusInfo.state.trim().toLowerCase();
+  return value;
+}
+
+function isEmbeddingPendingStatus(statusInfo) {
+  const state = getEmbeddingStateValue(statusInfo);
+  return state ? EMBEDDING_PENDING_STATES.includes(state) : false;
+}
+
+function isEmbeddingReadyStatus(statusInfo) {
+  const state = getEmbeddingStateValue(statusInfo);
+  return state ? EMBEDDING_SUCCESS_STATES.includes(state) : false;
+}
+
+function isEmbeddingErrorStatus(statusInfo) {
+  const state = getEmbeddingStateValue(statusInfo);
+  return state ? EMBEDDING_ERROR_STATES.includes(state) : false;
+}
 
 const ANALYSIS_REQUEST_TYPE_LABELS = {
   status: 'analysis status',
@@ -474,14 +500,14 @@ function buildPendingEmbeddingMessage(recording, record, statusInfo) {
 
 function resolveAnalysisViewState(recording, record, defaultStatus, baseMessage, cached) {
   const statusInfo = extractEmbeddingStatus(record);
-  if (statusInfo?.state === 'pending') {
+  if (isEmbeddingPendingStatus(statusInfo)) {
     return {
       status: 'embedding',
       message: buildPendingEmbeddingMessage(recording, record, statusInfo),
       cached,
     };
   }
-  if (statusInfo?.state === 'error') {
+  if (isEmbeddingErrorStatus(statusInfo)) {
     const errorMessage =
       statusInfo.message ||
       baseMessage ||
@@ -611,7 +637,7 @@ function updateEmbeddingMonitor(key, recording, record) {
     return;
   }
   const statusInfo = extractEmbeddingStatus(record) || extractEmbeddingStatus(recording);
-  if (statusInfo?.state === 'pending') {
+  if (isEmbeddingPendingStatus(statusInfo)) {
     startEmbeddingMonitor(key, recording);
   } else {
     stopEmbeddingMonitor(key);
@@ -761,13 +787,14 @@ function rememberEmbeddingState(recording, record) {
     let readyStatus = null;
     for (const source of sources) {
       const statusInfo = extractEmbeddingStatus(source);
-      if (statusInfo?.state === 'ready') {
+      if (isEmbeddingReadyStatus(statusInfo)) {
         readyStatus = statusInfo;
         break;
       }
     }
     if (readyStatus) {
-      const marker = readyStatus.updatedAt || `ready:${Date.now()}`;
+      const state = getEmbeddingStateValue(readyStatus) || 'ready';
+      const marker = readyStatus.updatedAt || `${state}:${Date.now()}`;
       embeddingSuccessCache.set(key, marker);
     } else {
       embeddingSuccessCache.delete(key);
@@ -805,8 +832,9 @@ function hasEmbeddingSuccess(recording) {
 
   for (const source of sources) {
     const statusInfo = extractEmbeddingStatus(source);
-    if (statusInfo?.state === 'ready') {
-      const marker = statusInfo.updatedAt || `ready:${Date.now()}`;
+    if (isEmbeddingReadyStatus(statusInfo)) {
+      const state = getEmbeddingStateValue(statusInfo) || 'ready';
+      const marker = statusInfo.updatedAt || `${state}:${Date.now()}`;
       embeddingSuccessCache.set(key, marker);
       return true;
     }
@@ -1119,10 +1147,10 @@ function buildEmbeddingsMessage(record, cached) {
       : 'Twelve Labs embeddings retrieved.';
   }
   const statusInfo = extractEmbeddingStatus(record);
-  if (statusInfo?.state === 'pending') {
+  if (isEmbeddingPendingStatus(statusInfo)) {
     return buildPendingEmbeddingMessage(null, record, statusInfo);
   }
-  if (statusInfo?.state === 'error') {
+  if (isEmbeddingErrorStatus(statusInfo)) {
     return (
       statusInfo.message || 'Failed to retrieve Twelve Labs embeddings for this recording.'
     );
@@ -1576,8 +1604,8 @@ function renderRecordingsList() {
       const hasCachedRecord = Boolean(cached?.record);
       const hasAnalysisContent = Boolean(cached?.hasAnalysis);
       const statusInfo = extractEmbeddingStatus(cached?.record) || extractEmbeddingStatus(recording);
-      const embeddingPending = statusInfo?.state === 'pending';
-      const embeddingReady = hasEmbeddingSuccess(recording);
+      const embeddingPending = isEmbeddingPendingStatus(statusInfo);
+      const embeddingReady = hasEmbeddingSuccess(recording) || isEmbeddingReadyStatus(statusInfo);
 
       if (hasCachedRecord && hasAnalysisContent) {
         analyzeButton.textContent = 'View analysis';
@@ -2471,7 +2499,7 @@ function setSelectedRecording(recording) {
       cachedResult
     );
     const statusInfo = extractEmbeddingStatus(cachedRecord) || extractEmbeddingStatus(recording);
-    const defaultStatus = statusInfo?.state === 'pending'
+    const defaultStatus = isEmbeddingPendingStatus(statusInfo)
       ? 'pending'
       : cachedResult
       ? 'cached'
@@ -2485,17 +2513,17 @@ function setSelectedRecording(recording) {
     );
   } else {
     const statusInfo = extractEmbeddingStatus(recording);
-    if (statusInfo?.state === 'pending') {
+    if (isEmbeddingPendingStatus(statusInfo)) {
       const pendingMessage =
         statusInfo.message ||
         `Twelve Labs embeddings are still processing for “${recording.displayName}”.`;
       setAnalysisView(recording, 'pending', pendingMessage);
-    } else if (statusInfo?.state === 'ready') {
+    } else if (isEmbeddingReadyStatus(statusInfo)) {
       const readyMessage =
         statusInfo.message ||
         `Twelve Labs embeddings are available for “${recording.displayName}”.`;
       setAnalysisView(recording, 'ready', readyMessage);
-    } else if (statusInfo?.state === 'error') {
+    } else if (isEmbeddingErrorStatus(statusInfo)) {
       const errorMessage =
         statusInfo.message ||
         `Twelve Labs embedding request for “${recording.displayName}” failed.`;
