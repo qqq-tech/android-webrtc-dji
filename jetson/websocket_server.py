@@ -1133,6 +1133,38 @@ class DetectionBroadcaster:
                         cached_record = None
 
                     if isinstance(cached_record, dict):
+                        analysis_available = self._has_analysis_content(cached_record)
+
+                        status_block = cached_record.get("analysisStatus")
+                        if isinstance(status_block, dict):
+                            stage_value = self._normalise_workflow_stage(
+                                str(status_block.get("state") or ""),
+                                status_block.get("stage"),
+                            )
+                            status_summary: dict[str, Any] = {}
+                            for key in (
+                                "state",
+                                "updatedAt",
+                                "message",
+                                "prompt",
+                                "temperature",
+                                "maxTokens",
+                            ):
+                                if key in status_block and status_block[key] is not None:
+                                    status_summary[key] = status_block[key]
+                            if stage_value:
+                                status_summary["stage"] = stage_value
+                                payload["analysisStage"] = stage_value
+                                if stage_value == "end":
+                                    analysis_available = True
+                            elif isinstance(status_block.get("stage"), str) and status_block["stage"].strip():
+                                status_summary["stage"] = status_block["stage"].strip()
+                            if status_summary:
+                                payload["analysisStatus"] = status_summary
+
+                        if analysis_available:
+                            payload["analysisAvailable"] = True
+
                         status_block = cached_record.get("embeddingStatus")
                         if isinstance(status_block, dict):
                             payload["embeddingStatus"] = status_block
@@ -1175,6 +1207,46 @@ class DetectionBroadcaster:
 
         entries.sort(key=lambda item: item[0], reverse=True)
         return [payload for _, payload in entries]
+
+    @staticmethod
+    def _has_analysis_content(record: Mapping[str, Any]) -> bool:
+        if not isinstance(record, Mapping):
+            return False
+
+        gist_block = record.get("gist")
+        if isinstance(gist_block, Mapping) and gist_block:
+            return True
+
+        analysis_block = record.get("analysis")
+        if isinstance(analysis_block, Mapping):
+            text_value = analysis_block.get("text")
+            if isinstance(text_value, str) and text_value.strip():
+                return True
+            chunks_value = analysis_block.get("chunks")
+            if isinstance(chunks_value, Iterable) and not isinstance(chunks_value, (str, bytes)):
+                for chunk in chunks_value:
+                    if isinstance(chunk, str) and chunk.strip():
+                        return True
+            remaining_keys = [key for key in analysis_block.keys() if key != "prompt"]
+            if remaining_keys:
+                return True
+            prompt_value = analysis_block.get("prompt")
+            if isinstance(prompt_value, str) and prompt_value.strip():
+                return True
+
+        summary_block = record.get("summary")
+        if isinstance(summary_block, Mapping) and summary_block:
+            return True
+
+        insights_block = record.get("insights")
+        if isinstance(insights_block, Iterable) and not isinstance(insights_block, (str, bytes)):
+            for item in insights_block:
+                if isinstance(item, Mapping) and item:
+                    return True
+                if isinstance(item, str) and item.strip():
+                    return True
+
+        return False
 
     def _serve_recording_file(self, relative_path: str):
         base = self._recordings_dir
