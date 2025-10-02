@@ -1645,9 +1645,7 @@ function storeAnalysisRecord(recording, record, cached) {
 
 function buildAnalysisCompleteMessage(record, cached) {
   if (!record || typeof record !== 'object') {
-    return cached
-      ? 'Showing stored Twelve Labs analysis.'
-      : 'Twelve Labs analysis completed.';
+    return 'Twelve Labs analysis completed.';
   }
   if (!recordHasAnalysisContent(record)) {
     return cached
@@ -1662,11 +1660,6 @@ function buildAnalysisCompleteMessage(record, cached) {
       : typeof record.updatedAt === 'string'
       ? record.updatedAt
       : '';
-  if (cached) {
-    return formatted
-      ? `Showing stored Twelve Labs analysis generated on ${formatted}.`
-      : 'Showing stored Twelve Labs analysis.';
-  }
   return formatted
     ? `Twelve Labs analysis completed on ${formatted}.`
     : 'Twelve Labs analysis completed.';
@@ -2117,7 +2110,11 @@ function renderRecordingsList() {
     analyzeButton.textContent = 'Analyze';
     analyzeButton.addEventListener('click', (event) => {
       event.stopPropagation();
-      setSelectedRecording(recording);
+      setSelectedRecording(recording, {
+        triggerLoad: false,
+        preserveExistingResult: true,
+        suppressInitialStatus: true,
+      });
       void requestRecordingAnalysis(recording);
     });
 
@@ -2127,7 +2124,7 @@ function renderRecordingsList() {
     embedButton.textContent = 'Embeddings';
     embedButton.addEventListener('click', async (event) => {
       event.stopPropagation();
-      setSelectedRecording(recording);
+      setSelectedRecording(recording, { suppressInitialStatus: true });
       const latestCached = getCachedAnalysis(recording);
       const latestStatus = getEffectiveEmbeddingStatus(
         recording,
@@ -3174,7 +3171,11 @@ async function preloadRecordingStatuses(recordings) {
 }
 
 function updateAnalysisPanelForRecording(recording, options = {}) {
-  const { triggerLoad = false, preserveExistingResult = false } = options;
+  const {
+    triggerLoad = false,
+    preserveExistingResult = false,
+    suppressInitialStatus = false,
+  } = options;
   if (!recording) {
     setAnalysisView(null, 'idle', defaultAnalysisMessage);
     return;
@@ -3245,6 +3246,58 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
     hasEmbeddingSuccess(recording) ||
     isEmbeddingReadyStatus(statusInfo) ||
     isEmbeddingReadyStatus(sharedEmbeddingStatus);
+
+  const isCurrentRecording = analysisViewState.recording?.id === recording.id;
+  const existingStatus = isCurrentRecording ? analysisViewState.status : null;
+  const existingMessage = isCurrentRecording ? analysisViewState.message : null;
+
+  const shouldMaintainActiveStatus =
+    preserveExistingResult &&
+    isCurrentRecording &&
+    ACTIVE_ANALYSIS_STATUSES.has(existingStatus) &&
+    !pendingStatusInfo &&
+    !isWorkflowPendingStatus(sharedAnalysisStatus) &&
+    !isEmbeddingErrorStatus(statusInfo) &&
+    !embeddingReady &&
+    !recordHasAnalysisContent(recording);
+
+  if (shouldMaintainActiveStatus) {
+    applyView(existingStatus, existingMessage || defaultAnalysisMessage);
+    if (triggerLoad) {
+      void loadCachedAnalysis(recording);
+    }
+    return;
+  }
+
+  const shouldSuppressDefaultReady =
+    suppressInitialStatus &&
+    !cached?.record &&
+    !pendingStatusInfo &&
+    !isWorkflowPendingStatus(sharedAnalysisStatus) &&
+    !isEmbeddingErrorStatus(statusInfo) &&
+    !embeddingReady &&
+    !recordHasAnalysisContent(recording);
+
+  if (shouldSuppressDefaultReady) {
+    const fallbackStatus =
+      isCurrentRecording && existingStatus ? existingStatus : 'idle';
+    const fallbackMessage =
+      isCurrentRecording && existingMessage
+        ? existingMessage
+        : defaultAnalysisMessage;
+    setAnalysisView(
+      recording,
+      fallbackStatus,
+      fallbackMessage,
+      preservedResult,
+      preservedCached,
+      preservedErrorCode
+    );
+    if (triggerLoad) {
+      void loadCachedAnalysis(recording);
+    }
+    return;
+  }
 
   if (pendingStatusInfo) {
     const pendingMessage =
@@ -3358,7 +3411,8 @@ function refreshActiveAnalysisStatus(options = {}) {
   void loadCachedAnalysis(recording);
 }
 
-function setSelectedRecording(recording) {
+function setSelectedRecording(recording, options = {}) {
+  const { triggerLoad = true, ...restOptions } = options;
   activeAnalysisPromise = null;
   if (!recording) {
     selectedRecordingId = null;
@@ -3368,7 +3422,10 @@ function setSelectedRecording(recording) {
   }
   selectedRecordingId = recording.id;
 
-  updateAnalysisPanelForRecording(recording, { triggerLoad: true });
+  updateAnalysisPanelForRecording(recording, {
+    triggerLoad,
+    ...restOptions,
+  });
   renderRecordingsList();
 }
 
@@ -3395,7 +3452,20 @@ async function requestRecordingAnalysis(recording) {
   const pendingMessage = analysisPromptValue
     ? `Requesting Twelve Labs analysis for “${recording.displayName}” with a custom prompt…`
     : `Requesting Twelve Labs analysis for “${recording.displayName}”…`;
-  setAnalysisView(recording, 'loading', pendingMessage);
+  const isCurrentSelection = analysisViewState.recording?.id === recording.id;
+  const preservedResult = isCurrentSelection
+    ? analysisViewState.result
+    : cached?.record || null;
+  const preservedCached = isCurrentSelection ? analysisViewState.cached : Boolean(cached?.cached);
+  const preservedErrorCode = isCurrentSelection ? analysisViewState.errorCode : null;
+  setAnalysisView(
+    recording,
+    'loading',
+    pendingMessage,
+    preservedResult,
+    preservedCached,
+    preservedErrorCode
+  );
   updateWorkflowSyncStateForRecording(recording, {
     analysis: {
       state: 'pending',
