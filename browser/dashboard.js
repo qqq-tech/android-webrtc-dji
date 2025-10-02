@@ -384,31 +384,100 @@ const embeddingSuccessCache = new Map();
 const EMBEDDING_INITIAL_POLL_DELAY_MS = 30000;
 const EMBEDDING_POLL_INTERVAL_MS = 5000;
 const embeddingMonitorState = new Map();
-const EMBEDDING_PENDING_STATES = ['pending', 'starting', 'processing', 'running'];
-const EMBEDDING_SUCCESS_STATES = ['ready', 'completed', 'done', 'ok', 'success'];
-const EMBEDDING_ERROR_STATES = ['error', 'failed', 'failure'];
+const WORKFLOW_PENDING_STATES = new Set([
+  'pending',
+  'starting',
+  'processing',
+  'running',
+  'queued',
+  'queue',
+  'start',
+]);
+const WORKFLOW_SUCCESS_STATES = new Set(['ready', 'completed', 'done', 'ok', 'success', 'cached', 'end']);
+const WORKFLOW_ERROR_STATES = new Set(['error', 'failed', 'failure']);
 
-function getEmbeddingStateValue(statusInfo) {
-  if (!statusInfo || typeof statusInfo.state !== 'string') {
+function getWorkflowStateValue(statusInfo) {
+  if (!statusInfo || typeof statusInfo !== 'object') {
     return '';
   }
-  const value = statusInfo.state.trim().toLowerCase();
-  return value;
+  if (typeof statusInfo.state === 'string' && statusInfo.state.trim().length > 0) {
+    return statusInfo.state.trim().toLowerCase();
+  }
+  if (typeof statusInfo.status === 'string' && statusInfo.status.trim().length > 0) {
+    return statusInfo.status.trim().toLowerCase();
+  }
+  return '';
+}
+
+function getWorkflowStageValue(statusInfo) {
+  if (!statusInfo || typeof statusInfo !== 'object') {
+    return '';
+  }
+  if (typeof statusInfo.stage === 'string' && statusInfo.stage.trim().length > 0) {
+    const stageCandidate = statusInfo.stage.trim().toLowerCase();
+    if (stageCandidate === 'start' || stageCandidate === 'end' || stageCandidate === 'error') {
+      return stageCandidate;
+    }
+  }
+  const state = getWorkflowStateValue(statusInfo);
+  if (!state) {
+    return '';
+  }
+  if (WORKFLOW_PENDING_STATES.has(state)) {
+    return 'start';
+  }
+  if (WORKFLOW_SUCCESS_STATES.has(state)) {
+    return 'end';
+  }
+  if (WORKFLOW_ERROR_STATES.has(state)) {
+    return 'error';
+  }
+  return '';
+}
+
+function isWorkflowPendingStatus(statusInfo) {
+  if (!statusInfo || typeof statusInfo !== 'object') {
+    return false;
+  }
+  const state = getWorkflowStateValue(statusInfo);
+  if (state && WORKFLOW_PENDING_STATES.has(state)) {
+    return true;
+  }
+  return getWorkflowStageValue(statusInfo) === 'start';
+}
+
+function isWorkflowReadyStatus(statusInfo) {
+  if (!statusInfo || typeof statusInfo !== 'object') {
+    return false;
+  }
+  const state = getWorkflowStateValue(statusInfo);
+  if (state && WORKFLOW_SUCCESS_STATES.has(state)) {
+    return true;
+  }
+  return getWorkflowStageValue(statusInfo) === 'end';
+}
+
+function isWorkflowErrorStatus(statusInfo) {
+  if (!statusInfo || typeof statusInfo !== 'object') {
+    return false;
+  }
+  const state = getWorkflowStateValue(statusInfo);
+  if (state && WORKFLOW_ERROR_STATES.has(state)) {
+    return true;
+  }
+  return getWorkflowStageValue(statusInfo) === 'error';
 }
 
 function isEmbeddingPendingStatus(statusInfo) {
-  const state = getEmbeddingStateValue(statusInfo);
-  return state ? EMBEDDING_PENDING_STATES.includes(state) : false;
+  return isWorkflowPendingStatus(statusInfo);
 }
 
 function isEmbeddingReadyStatus(statusInfo) {
-  const state = getEmbeddingStateValue(statusInfo);
-  return state ? EMBEDDING_SUCCESS_STATES.includes(state) : false;
+  return isWorkflowReadyStatus(statusInfo);
 }
 
 function isEmbeddingErrorStatus(statusInfo) {
-  const state = getEmbeddingStateValue(statusInfo);
-  return state ? EMBEDDING_ERROR_STATES.includes(state) : false;
+  return isWorkflowErrorStatus(statusInfo);
 }
 
 const ANALYSIS_REQUEST_TYPE_LABELS = {
@@ -793,7 +862,7 @@ function rememberEmbeddingState(recording, record) {
       }
     }
     if (readyStatus) {
-      const state = getEmbeddingStateValue(readyStatus) || 'ready';
+      const state = getWorkflowStateValue(readyStatus) || 'ready';
       const marker = readyStatus.updatedAt || `${state}:${Date.now()}`;
       embeddingSuccessCache.set(key, marker);
     } else {
@@ -833,7 +902,7 @@ function hasEmbeddingSuccess(recording) {
   for (const source of sources) {
     const statusInfo = extractEmbeddingStatus(source);
     if (isEmbeddingReadyStatus(statusInfo)) {
-      const state = getEmbeddingStateValue(statusInfo) || 'ready';
+      const state = getWorkflowStateValue(statusInfo) || 'ready';
       const marker = statusInfo.updatedAt || `${state}:${Date.now()}`;
       embeddingSuccessCache.set(key, marker);
       return true;
@@ -1051,6 +1120,26 @@ function getCachedAnalysis(recording) {
 function recordHasAnalysisContent(record) {
   if (!record || typeof record !== 'object') {
     return false;
+  }
+
+  if (record.analysisAvailable === true) {
+    return true;
+  }
+
+  const stageCandidate =
+    typeof record.analysisStage === 'string' && record.analysisStage.trim().length > 0
+      ? record.analysisStage.trim().toLowerCase()
+      : '';
+  if (stageCandidate === 'end') {
+    return true;
+  }
+
+  const analysisStatus =
+    record.analysisStatus && typeof record.analysisStatus === 'object'
+      ? record.analysisStatus
+      : null;
+  if (analysisStatus && isWorkflowReadyStatus(analysisStatus)) {
+    return true;
   }
 
   const gist = record?.gist;
@@ -1602,12 +1691,14 @@ function renderRecordingsList() {
     } else {
       const cached = getCachedAnalysis(recording);
       const hasCachedRecord = Boolean(cached?.record);
-      const hasAnalysisContent = Boolean(cached?.hasAnalysis);
+      const hasCachedAnalysis = Boolean(cached?.hasAnalysis);
+      const hasInlineAnalysis = recordHasAnalysisContent(recording);
+      const hasAnalysisAvailable = hasCachedAnalysis || hasInlineAnalysis;
       const statusInfo = extractEmbeddingStatus(cached?.record) || extractEmbeddingStatus(recording);
       const embeddingPending = isEmbeddingPendingStatus(statusInfo);
       const embeddingReady = hasEmbeddingSuccess(recording) || isEmbeddingReadyStatus(statusInfo);
 
-      if (hasCachedRecord && hasAnalysisContent) {
+      if (hasAnalysisAvailable) {
         analyzeButton.textContent = 'View analysis';
       }
 
@@ -1632,7 +1723,7 @@ function renderRecordingsList() {
 
         analyzeButton.disabled = !embeddingReady;
         analyzeButton.title = embeddingReady
-          ? hasCachedRecord
+          ? hasAnalysisAvailable || hasCachedRecord
             ? 'View Twelve Labs analysis for this recording.'
             : 'Request Twelve Labs analysis for this recording.'
           : 'Run embeddings before requesting Twelve Labs analysis.';
@@ -2528,6 +2619,12 @@ function setSelectedRecording(recording) {
         statusInfo.message ||
         `Twelve Labs embedding request for “${recording.displayName}” failed.`;
       setAnalysisView(recording, 'error', errorMessage, null, false, 'embedding_failed');
+    } else if (recordHasAnalysisContent(recording)) {
+      setAnalysisView(
+        recording,
+        'loading',
+        `Loading stored Twelve Labs analysis for “${recording.displayName}”…`
+      );
     } else {
       setAnalysisView(
         recording,
