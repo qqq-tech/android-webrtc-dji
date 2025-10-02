@@ -123,9 +123,9 @@ class TwelveLabsClient:
         if not index_name:
             raise ValueError("index_name must be provided")
 
-        cached = self._index_cache.get(index_name)
-        if cached:
-            return cached
+        # cached = self._index_cache.get(index_name)
+        # if cached:
+        #     return cached
 
         # List existing indexes and reuse one that matches ``index_name``.
         for entry in self._sdk.indexes.list():

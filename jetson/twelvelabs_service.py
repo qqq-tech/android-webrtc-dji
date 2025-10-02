@@ -193,6 +193,47 @@ class TwelveLabsAnalysisService:
     # ------------------------------------------------------------------
     # Cache helpers
     # ------------------------------------------------------------------
+    def _set_embedding_status(
+        self,
+        key: str,
+        *,
+        state: str,
+        message: Optional[str] = None,
+        options: Optional[Iterable[str]] = None,
+        include_transcription: Optional[bool] = None,
+        timestamp: Optional[str] = None,
+    ) -> None:
+        """Persist the latest embedding workflow state for a cached record."""
+
+        state_value = str(state or "").strip().lower()
+        if not state_value:
+            return
+
+        cleaned_options: list[str] = []
+        if options is not None:
+            for option in options:
+                candidate = str(option).strip()
+                if candidate and candidate not in cleaned_options:
+                    cleaned_options.append(candidate)
+
+        status_payload: Dict[str, Any] = {
+            "state": state_value,
+            "updatedAt": timestamp or _utc_now(),
+        }
+        if message:
+            status_payload["message"] = message
+        if cleaned_options:
+            status_payload["options"] = cleaned_options
+        if include_transcription is not None:
+            status_payload["includeTranscription"] = bool(include_transcription)
+
+        with self._lock:
+            record = self._records.get(key)
+            if not record:
+                return
+            record["embeddingStatus"] = status_payload
+            self._save_cache()
+
     def _load_cache(self) -> None:
         if not self._storage_path.exists():
             return
@@ -313,8 +354,8 @@ class TwelveLabsAnalysisService:
     # Index helpers
     # ------------------------------------------------------------------
     def _ensure_index(self) -> str:
-        if self._index_id:
-            return self._index_id
+        # if self._index_id:
+        #     return self._index_id
         payload = self._client.ensure_index(self._index_name)
         index_id = self._client.get_index_id(self._index_name)
         if not index_id:
@@ -576,8 +617,24 @@ class TwelveLabsAnalysisService:
             else:
                 missing_set = set()
             if cached_set == requested_set or cached_set | missing_set == requested_set:
+                self._set_embedding_status(
+                    key,
+                    state="ready",
+                    message="Stored Twelve Labs embeddings are available.",
+                    options=cached_embeddings.get("options"),
+                    include_transcription=bool(include_transcription),
+                )
                 return EmbeddingResult(record=_clone(existing), cached=True)
 
+        pending_message = "Retrieving Twelve Labs embeddings…"
+        self._set_embedding_status(
+            key,
+            state="pending",
+            message=pending_message,
+            options=options,
+            include_transcription=bool(include_transcription),
+        )
+        current_options: list[str] = list(options)
         try:
             metadata, retrieved_options, failed_options = _retrieve_embeddings_with_fallback(
                 client=self._client,
@@ -588,39 +645,76 @@ class TwelveLabsAnalysisService:
             )
         except Exception as exc:  # pragma: no cover - diagnostics only
             LOGGER.exception("Failed to retrieve Twelve Labs video embeddings")
+            self._set_embedding_status(
+                key,
+                state="error",
+                message=str(exc) or "Failed to retrieve Twelve Labs embeddings.",
+                options=current_options,
+                include_transcription=bool(include_transcription),
+            )
             raise AnalysisServiceError(str(exc)) from exc
 
+        current_options = [str(item).strip() for item in retrieved_options if str(item).strip()]
         timestamp = _utc_now()
         embedding_payload = metadata.get("embedding") if isinstance(metadata, dict) else None
         transcription_payload = metadata.get("transcription") if isinstance(metadata, dict) else None
         hls_url = _extract_hls_url(metadata if isinstance(metadata, dict) else None)
 
+        error: Optional[Exception] = None
+        updated: Optional[Dict[str, Any]] = None
         with self._lock:
-            record = self._records.get(key)
-            if not record:
-                raise AnalysisServiceError(
-                    "Recording cache was removed while retrieving embeddings"
-                )
-            video_block = {}
-            if isinstance(record.get("video"), dict):
-                video_block.update(record["video"])
-            video_block["metadata"] = metadata
-            if hls_url:
-                video_block["hlsUrl"] = hls_url
-            video_block["syncedAt"] = timestamp
-            record["video"] = video_block
-            record["embeddings"] = {
-                "options": list(retrieved_options),
-                "response": embedding_payload,
-                "retrievedAt": timestamp,
-            }
-            if failed_options:
-                record["embeddings"]["missingOptions"] = list(failed_options)
-            if transcription_payload is not None:
-                record["embeddings"]["transcription"] = transcription_payload
-            self._save_cache()
-            updated = _clone(record)
+            try:
+                record = self._records.get(key)
+                if not record:
+                    raise AnalysisServiceError(
+                        "Recording cache was removed while retrieving embeddings"
+                    )
+                video_block = {}
+                if isinstance(record.get("video"), dict):
+                    video_block.update(record["video"])
+                video_block["metadata"] = metadata
+                if hls_url:
+                    video_block["hlsUrl"] = hls_url
+                video_block["syncedAt"] = timestamp
+                record["video"] = video_block
+                record["embeddings"] = {
+                    "options": list(retrieved_options),
+                    "response": embedding_payload,
+                    "retrievedAt": timestamp,
+                }
+                if failed_options:
+                    record["embeddings"]["missingOptions"] = list(failed_options)
+                if transcription_payload is not None:
+                    record["embeddings"]["transcription"] = transcription_payload
+                status_block: Dict[str, Any] = {
+                    "state": "ready",
+                    "updatedAt": timestamp,
+                    "message": "Twelve Labs embeddings retrieved.",
+                    "options": list(retrieved_options),
+                    "includeTranscription": bool(include_transcription),
+                }
+                if failed_options:
+                    status_block["missingOptions"] = list(failed_options)
+                record["embeddingStatus"] = status_block
+                self._save_cache()
+                updated = _clone(record)
+            except Exception as exc:
+                error = exc
 
+        if error is not None:
+            self._set_embedding_status(
+                key,
+                state="error",
+                message=str(error) or "Failed to store Twelve Labs embeddings.",
+                options=current_options or options,
+                include_transcription=bool(include_transcription),
+                timestamp=timestamp,
+            )
+            if isinstance(error, AnalysisServiceError):
+                raise error
+            raise AnalysisServiceError(str(error)) from error
+
+        assert updated is not None
         return EmbeddingResult(record=updated, cached=False)
 
 

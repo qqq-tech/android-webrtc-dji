@@ -906,6 +906,7 @@ class DetectionBroadcaster:
                 "record": result.record,
                 "message": message,
             }
+            self._merge_embedding_status(payload)
             return self._json_response(payload)
 
         existing = self._analysis_service.get_cached_record(stream_id, file_name)
@@ -924,7 +925,31 @@ class DetectionBroadcaster:
             "record": existing,
             "message": self._format_analysis_message(existing, True),
         }
+        self._merge_embedding_status(payload)
         return self._json_response(payload)
+
+    @staticmethod
+    def _merge_embedding_status(payload: Dict[str, Any]) -> None:
+        record = payload.get("record") if isinstance(payload, dict) else None
+        if not isinstance(record, dict):
+            return
+        status_block = record.get("embeddingStatus")
+        if not isinstance(status_block, dict):
+            return
+        state_value = str(status_block.get("state") or "").strip().lower()
+        if not state_value:
+            return
+        if state_value == "pending":
+            payload["status"] = "pending"
+        message_value = status_block.get("message")
+        if isinstance(message_value, str) and message_value.strip():
+            combined = message_value.strip()
+            existing_message = payload.get("message")
+            if isinstance(existing_message, str) and existing_message.strip():
+                if combined in existing_message:
+                    return
+                combined = f"{existing_message.strip()} {combined}"
+            payload["message"] = combined
 
     @staticmethod
     def _format_analysis_message(record: Dict[str, Any], cached: bool) -> str:
@@ -1012,6 +1037,57 @@ class DetectionBroadcaster:
                     "modified": modified.isoformat().replace("+00:00", "Z"),
                     "URL": f"{self._recordings_mount_path}/{quote(stream)}/{quote(file_path.name)}",
                 }
+
+                if self._analysis_service is not None:
+                    try:
+                        cached_record = self._analysis_service.get_cached_record(stream, file_path.name)
+                    except Exception:  # pragma: no cover - defensive logging
+                        logging.exception(
+                            "Failed to load cached Twelve Labs state for recording %s/%s",
+                            stream,
+                            file_path.name,
+                        )
+                        cached_record = None
+
+                    if isinstance(cached_record, dict):
+                        status_block = cached_record.get("embeddingStatus")
+                        if isinstance(status_block, dict):
+                            payload["embeddingStatus"] = status_block
+
+                        embeddings_block = cached_record.get("embeddings")
+                        if isinstance(embeddings_block, dict):
+                            summary: dict[str, Any] = {}
+                            for key in (
+                                "options",
+                                "retrievedAt",
+                                "missingOptions",
+                                "includeTranscription",
+                                "transcription",
+                            ):
+                                value = embeddings_block.get(key)
+                                if value is not None:
+                                    summary[key] = value
+
+                            response_block = embeddings_block.get("response")
+                            if isinstance(response_block, dict):
+                                identifiers: dict[str, Any] = {}
+                                for field in (
+                                    "id",
+                                    "videoId",
+                                    "video_id",
+                                    "vectorId",
+                                    "vector_id",
+                                    "model_name",
+                                ):
+                                    value = response_block.get(field)
+                                    if value:
+                                        identifiers[field] = value
+                                if identifiers:
+                                    summary["response"] = identifiers
+
+                            if summary:
+                                payload["embeddings"] = summary
+
                 entries.append((modified.timestamp(), payload))
 
         entries.sort(key=lambda item: item[0], reverse=True)
