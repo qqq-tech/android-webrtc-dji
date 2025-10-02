@@ -415,7 +415,6 @@ function updateAnalysisCacheEntry(recording, updates = {}) {
 }
 const analysisStatusRequests = new Map();
 const embeddingSuccessCache = new Map();
-const EMBEDDING_INITIAL_POLL_DELAY_MS = 30000;
 const EMBEDDING_POLL_INTERVAL_MS = 5000;
 const embeddingMonitorState = new Map();
 const WORKFLOW_SYNC_CHANNEL_NAME = 'dji-dashboard-workflow';
@@ -1071,10 +1070,6 @@ function stopEmbeddingMonitor(key) {
   if (!entry) {
     return;
   }
-  if (typeof entry.timerId === 'number') {
-    window.clearTimeout(entry.timerId);
-    entry.timerId = null;
-  }
   if (typeof entry.intervalId === 'number') {
     window.clearInterval(entry.intervalId);
     entry.intervalId = null;
@@ -1143,30 +1138,39 @@ function startEmbeddingMonitor(key, recording) {
   const existing = embeddingMonitorState.get(key);
   if (existing) {
     existing.recording = recording;
+    if (typeof existing.intervalId !== 'number') {
+      existing.intervalId = window.setInterval(() => {
+        void pollEmbeddingStatus(existing);
+      }, EMBEDDING_POLL_INTERVAL_MS);
+      void pollEmbeddingStatus(existing);
+    }
     return;
   }
   const entry = {
     key,
-    timerId: null,
     intervalId: null,
     active: false,
     recording,
   };
-  entry.timerId = window.setTimeout(() => {
-    entry.timerId = null;
-    void pollEmbeddingStatus(entry);
-    entry.intervalId = window.setInterval(() => {
-      void pollEmbeddingStatus(entry);
-    }, EMBEDDING_POLL_INTERVAL_MS);
-  }, EMBEDDING_INITIAL_POLL_DELAY_MS);
   embeddingMonitorState.set(key, entry);
+  void pollEmbeddingStatus(entry);
+  entry.intervalId = window.setInterval(() => {
+    void pollEmbeddingStatus(entry);
+  }, EMBEDDING_POLL_INTERVAL_MS);
 }
 
 function updateEmbeddingMonitor(key, recording, record) {
   if (!key) {
     return;
   }
-  const statusInfo = getEffectiveEmbeddingStatus(recording, record, recording);
+  const cachedEntry = getCachedAnalysis(recording);
+  const statusInfo = getEffectiveEmbeddingStatus(
+    recording,
+    record,
+    cachedEntry?.record,
+    cachedEntry,
+    recording
+  );
   if (isEmbeddingPendingStatus(statusInfo)) {
     startEmbeddingMonitor(key, recording);
   } else {
@@ -2314,6 +2318,7 @@ function renderRecordingsList() {
       const latestStatus = getEffectiveEmbeddingStatus(
         recording,
         latestCached?.record,
+        latestCached,
         recording
       );
       if (isEmbeddingPendingStatus(latestStatus)) {
@@ -2335,6 +2340,7 @@ function renderRecordingsList() {
         const refreshedStatus = getEffectiveEmbeddingStatus(
           recording,
           refreshedCached?.record,
+          refreshedCached,
           recording
         );
         if (isEmbeddingPendingStatus(refreshedStatus)) {
@@ -2360,7 +2366,12 @@ function renderRecordingsList() {
       const hasCachedAnalysis = Boolean(cached?.hasAnalysis);
       const hasInlineAnalysis = recordHasAnalysisContent(recording);
       const hasAnalysisAvailable = hasCachedAnalysis || hasInlineAnalysis;
-      const statusInfo = getEffectiveEmbeddingStatus(recording, cached?.record, recording);
+      const statusInfo = getEffectiveEmbeddingStatus(
+        recording,
+        cached?.record,
+        cached,
+        recording
+      );
       const sharedEmbeddingStatus = getSharedEmbeddingStatus(recording);
       const pendingStatusInfo = isEmbeddingPendingStatus(statusInfo)
         ? statusInfo
@@ -3448,7 +3459,12 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
       baseMessage,
       cachedResult
     );
-    const statusInfo = getEffectiveEmbeddingStatus(recording, cachedRecord, recording);
+    const statusInfo = getEffectiveEmbeddingStatus(
+      recording,
+      cachedRecord,
+      cached,
+      recording
+    );
     const defaultStatus = isEmbeddingPendingStatus(statusInfo)
       ? 'pending'
       : cachedResult
@@ -3467,7 +3483,12 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
     return;
   }
 
-  const statusInfo = getEffectiveEmbeddingStatus(recording, cached?.record, recording);
+  const statusInfo = getEffectiveEmbeddingStatus(
+    recording,
+    cached?.record,
+    cached,
+    recording
+  );
   const sharedEmbeddingStatus = getSharedEmbeddingStatus(recording);
   const pendingStatusInfo = isEmbeddingPendingStatus(statusInfo)
     ? statusInfo
@@ -3620,6 +3641,7 @@ function shouldPollAnalysisStatus(recording) {
     recording,
     analysisViewState.result,
     cached?.record,
+    cached,
     recording
   );
   return isEmbeddingPendingStatus(effectiveStatus);
