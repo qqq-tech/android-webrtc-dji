@@ -7,4 +7,5 @@
     <color name="colorSurface">#FFFFFFFF</color>
     <color name="colorOnSurface">#1C1C1E</color>
     <color name="colorHandle">#D1D1D6</color>
+    <color name="pastelBlue">#7DB8FF</color>
 </resources>

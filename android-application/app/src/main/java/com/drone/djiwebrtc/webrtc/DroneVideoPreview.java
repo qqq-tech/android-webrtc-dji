@@ -55,6 +55,8 @@ public class DroneVideoPreview {
                 .createPeerConnectionFactory();
 
         surfaceViewRenderer.init(eglBase.getEglBaseContext(), null);
+        surfaceViewRenderer.setZOrderOnTop(true);
+        surfaceViewRenderer.setZOrderMediaOverlay(true);
         surfaceViewRenderer.setEnableHardwareScaler(true);
         surfaceViewRenderer.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL);
         surfaceViewRenderer.setMirror(false);

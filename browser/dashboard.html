@@ -9,9 +9,10 @@
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-sA+e2atLYS4YdQ+gJ2z3S8so0m+GSO1r3gGIk5F0Xpw="
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
       crossorigin=""
     />
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
     <style>
       :root {
         color-scheme: dark;
@@ -28,17 +29,86 @@
     }
 
     header {
-      padding: 1rem 2rem;
+      padding: 1rem 2rem 0;
       background: rgba(15, 23, 42, 0.9);
       border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .header-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .header-text h1 {
+      margin: 0;
+    }
+
+    .header-text p {
+      margin: 0;
+      color: #cbd5f5;
+      max-width: 720px;
+    }
+
+    .tab-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    }
+
+    .tab-button {
+      background: rgba(15, 23, 42, 0.45);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      color: #e2e8f0;
+      border-radius: 999px;
+      padding: 0.55rem 1.25rem;
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 150ms ease, border-color 150ms ease, color 150ms ease,
+        box-shadow 150ms ease;
+    }
+
+    .tab-button:hover,
+    .tab-button:focus-visible {
+      border-color: rgba(129, 140, 248, 0.65);
+      color: #c7d2fe;
+      outline: none;
+    }
+
+    .tab-button.active {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.85), rgba(14, 116, 144, 0.85));
+      border-color: rgba(56, 189, 248, 0.65);
+      color: #f8fafc;
+      box-shadow: 0 12px 24px rgba(14, 116, 144, 0.35);
     }
 
     main {
+      flex: 1;
+      padding: 1.5rem 2rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    .panels-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
       gap: 1.5rem;
-      padding: 1.5rem 2rem;
-      flex: 1;
     }
 
     .panel {
@@ -60,19 +130,424 @@
       color: #a5b4fc;
     }
 
+    .panel .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+
+    .panel .panel-header button {
+      background: transparent;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      color: #f8fafc;
+      border-radius: 999px;
+      padding: 0.4rem 0.9rem;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+
+    .panel .panel-header button:hover {
+      background: rgba(148, 163, 184, 0.18);
+    }
+
+    .panel-subtitle {
+      margin: 0;
+      font-size: 0.85rem;
+      color: #94a3b8;
+    }
+
+    .panel-hint {
+      margin: 0.75rem 0 0;
+      font-size: 0.75rem;
+      color: #64748b;
+    }
+
+    .recordings-layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 1.4fr);
+      gap: 1.5rem;
+      align-items: stretch;
+    }
+
+    .recordings-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin: 0.5rem 0 1rem;
+      flex-wrap: wrap;
+    }
+
+    .recordings-summary {
+      margin: 0;
+      font-size: 0.8rem;
+      color: #cbd5f5;
+    }
+
+    .recordings-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .recordings-placeholder {
+      padding: 1rem;
+      border-radius: 12px;
+      border: 1px dashed rgba(148, 163, 184, 0.3);
+      background: rgba(15, 23, 42, 0.35);
+      color: #94a3b8;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+
+    .recording-item {
+      display: flex;
+      align-items: stretch;
+      gap: 0.75rem;
+    }
+
+    .recording-item .recording-select {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      text-align: left;
+      background: rgba(30, 41, 59, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 12px;
+      padding: 0.85rem 1rem;
+      color: #e2e8f0;
+      cursor: pointer;
+      transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+    }
+
+    .recording-item .recording-select:hover,
+    .recording-item .recording-select:focus-visible {
+      border-color: rgba(129, 140, 248, 0.65);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+      outline: none;
+    }
+
+    .recording-item.active .recording-select {
+      border-color: rgba(129, 140, 248, 0.85);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.35);
+      transform: translateY(-1px);
+    }
+
+    .recording-name {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: #f8fafc;
+    }
+
+    .recording-meta {
+      font-size: 0.8rem;
+      color: #94a3b8;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+
+    .recording-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+
+    .recording-tag {
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      background: rgba(59, 130, 246, 0.2);
+      color: #bfdbfe;
+    }
+
+    .recording-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      align-items: center;
+    }
+
+    .recording-action-button {
+      align-self: center;
+      border: none;
+      border-radius: 999px;
+      padding: 0.55rem 1.1rem;
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: transform 150ms ease, box-shadow 150ms ease, opacity 150ms ease;
+    }
+
+    .recording-action-button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .analyze-button {
+      background: linear-gradient(135deg, #818cf8, #22d3ee);
+      color: #0f172a;
+      box-shadow: 0 12px 20px rgba(34, 211, 238, 0.25);
+    }
+
+    .analyze-button:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 14px 24px rgba(34, 211, 238, 0.35);
+    }
+
+    .embed-button {
+      background: rgba(45, 212, 191, 0.2);
+      border: 1px solid rgba(45, 212, 191, 0.45);
+      color: #5eead4;
+    }
+
+    .embed-button:hover:not(:disabled) {
+      background: rgba(45, 212, 191, 0.35);
+      border-color: rgba(45, 212, 191, 0.6);
+      transform: translateY(-1px);
+    }
+
+    @media (max-width: 720px) {
+      .recording-actions {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .recording-action-button {
+        width: 100%;
+      }
+    }
+
+    .analysis-summary {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .analysis-overview {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+
+    .analysis-overview h3 {
+      margin: 0;
+      font-size: 1rem;
+      color: #e2e8f0;
+    }
+
+    .analysis-status {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .analysis-status[data-tone='muted'] {
+      background: rgba(148, 163, 184, 0.2);
+      color: #cbd5f5;
+    }
+
+    .analysis-status[data-tone='ready'] {
+      background: rgba(129, 140, 248, 0.25);
+      color: #c7d2fe;
+    }
+
+    .analysis-status[data-tone='pending'] {
+      background: rgba(250, 204, 21, 0.2);
+      color: #fde68a;
+    }
+
+    .analysis-status[data-tone='warning'] {
+      background: rgba(248, 113, 113, 0.2);
+      color: #fecaca;
+    }
+
+    .analysis-meta {
+      margin: 0;
+      font-size: 0.85rem;
+      color: #cbd5f5;
+    }
+
+    .analysis-output {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding: 1rem;
+      border-radius: 12px;
+      border: 1px dashed rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.45);
+      min-height: 220px;
+    }
+
+    .analysis-output p {
+      margin: 0;
+      color: #e2e8f0;
+    }
+
+    .analysis-result-block {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid rgba(148, 163, 184, 0.18);
+    }
+
+    .analysis-result-block h4 {
+      margin: 0;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #cbd5f5;
+    }
+
+    .analysis-output-body {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      background: rgba(15, 23, 42, 0.55);
+      padding: 0.75rem;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.15);
+      color: #e2e8f0;
+      font-size: 0.9rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .analysis-output-body pre {
+      margin: 0;
+      padding: 0.5rem;
+      border-radius: 6px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      overflow: auto;
+      font-family: 'Fira Code', 'SFMono-Regular', Consolas, monospace;
+      font-size: 0.85rem;
+    }
+
+    .analysis-output-body ul {
+      margin: 0;
+      padding-left: 1.1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .analysis-output-body li {
+      margin: 0;
+    }
+
+    .analysis-output-label {
+      font-weight: 600;
+      color: #cbd5f5;
+    }
+
+    .analysis-insight-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .analysis-insight-item-title {
+      font-weight: 600;
+      color: #cbd5f5;
+    }
+
+    .analysis-meta-grid {
+      display: grid;
+      grid-template-columns: minmax(120px, 0.4fr) minmax(180px, 1fr);
+      gap: 0.5rem 1.25rem;
+    }
+
+    .analysis-meta-grid dt {
+      margin: 0;
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #94a3b8;
+    }
+
+    .analysis-meta-grid dd {
+      margin: 0;
+      font-size: 0.85rem;
+      color: #f8fafc;
+    }
+
+    .analysis-video-block,
+    .analysis-embedding-block {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .analysis-video-player {
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      background: rgba(15, 23, 42, 0.6);
+    }
+
+    .analysis-video-player video {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .analysis-video-note,
+    .analysis-embedding-note {
+      margin: 0;
+      font-size: 0.8rem;
+      color: #94a3b8;
+    }
+
+    .analysis-video-note a,
+    .analysis-embedding-note a {
+      color: #5eead4;
+    }
+
     video,
     canvas {
       width: 100%;
       height: auto;
-      background: #000;
       border-radius: 8px;
+      display: block;
     }
 
-    .overlay-container {
+    .video-container {
       position: relative;
       display: flex;
       justify-content: center;
       align-items: center;
+      background: #020617;
+      border-radius: 8px;
+      overflow: hidden;
+      min-height: 220px;
+    }
+
+    .overlay-container {
+      position: relative;
     }
 
     .overlay-container video {
@@ -85,6 +560,149 @@
       inset: 0;
       z-index: 2;
       pointer-events: none;
+    }
+
+    .video-status {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: #e2e8f0;
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.05), rgba(15, 23, 42, 0.78));
+      border-top: 1px solid rgba(148, 163, 184, 0.25);
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      pointer-events: none;
+      z-index: 4;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    .video-status span {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      min-width: 0;
+    }
+
+    .video-status span:last-child {
+      margin-left: auto;
+    }
+
+    .video-status[data-state='live'] {
+      color: #86efac;
+    }
+
+    .video-status[data-state='offline'] {
+      color: #fca5a5;
+    }
+
+    .video-status[data-state='idle'] {
+      color: #facc15;
+    }
+
+    .control-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .command-buttons {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .command-buttons button {
+      padding: 0.6rem 1rem;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(30, 41, 59, 0.7);
+      color: #e2e8f0;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 120ms ease, transform 120ms ease;
+    }
+
+    .command-buttons button:hover {
+      background: rgba(59, 130, 246, 0.35);
+      transform: translateY(-1px);
+    }
+
+    .control-form {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding: 0.85rem 1rem;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      background: rgba(15, 23, 42, 0.6);
+    }
+
+    .control-form h3 {
+      margin: 0;
+      font-size: 0.95rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #a5b4fc;
+    }
+
+    .control-form .field-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .control-form label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      font-size: 0.8rem;
+      color: #cbd5f5;
+    }
+
+    .control-form input[type='number'] {
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      color: #e2e8f0;
+      border-radius: 8px;
+      padding: 0.45rem 0.55rem;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .control-form button {
+      align-self: flex-start;
+      padding: 0.55rem 1.25rem;
+      border-radius: 999px;
+      border: none;
+      background: linear-gradient(135deg, #818cf8, #22d3ee);
+      color: #0f172a;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      cursor: pointer;
+      box-shadow: 0 14px 24px rgba(34, 211, 238, 0.35);
+    }
+
+    .control-hint {
+      margin: -0.5rem 0 0;
+      font-size: 0.75rem;
+      color: #94a3b8;
+    }
+
+    .gcs-status {
+      font-size: 0.85rem;
+      color: #f8fafc;
     }
 
       footer {
@@ -103,26 +721,44 @@
         margin-right: 0.35rem;
       }
 
-      .route-toggle {
-        position: fixed;
-        right: 1.5rem;
-        bottom: 1.5rem;
-        z-index: 30;
-        background: linear-gradient(135deg, #6366f1, #22d3ee);
-        color: #0f172a;
-        border: none;
-        border-radius: 999px;
-        padding: 0.9rem 1.4rem;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        cursor: pointer;
-        box-shadow: 0 20px 35px rgba(14, 116, 144, 0.35);
-      }
+    .flight-controls-toggle,
+    .route-toggle {
+      position: fixed;
+      right: 1.5rem;
+      border: none;
+      border-radius: 999px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
 
-      .route-toggle:focus {
-        outline: 3px solid rgba(34, 211, 238, 0.6);
-        outline-offset: 3px;
+    .flight-controls-toggle {
+      bottom: 5.5rem;
+      z-index: 31;
+      background: linear-gradient(135deg, #8b5cf6, #6366f1);
+      color: #f8fafc;
+      padding: 0.85rem 1.35rem;
+      box-shadow: 0 18px 30px rgba(99, 102, 241, 0.35);
+    }
+
+    .flight-controls-toggle:focus {
+      outline: 3px solid rgba(129, 140, 248, 0.55);
+      outline-offset: 3px;
+    }
+
+    .route-toggle {
+      bottom: 1.5rem;
+      z-index: 30;
+      background: linear-gradient(135deg, #6366f1, #22d3ee);
+      color: #0f172a;
+      padding: 0.9rem 1.4rem;
+      box-shadow: 0 20px 35px rgba(14, 116, 144, 0.35);
+    }
+
+    .route-toggle:focus {
+      outline: 3px solid rgba(34, 211, 238, 0.6);
+      outline-offset: 3px;
       }
 
       .route-panel {
@@ -143,6 +779,97 @@
         flex-direction: column;
         gap: 1rem;
         z-index: 25;
+      }
+
+      .drone-location {
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        background: rgba(15, 23, 42, 0.65);
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        display: grid;
+        gap: 0.35rem;
+      }
+
+      .drone-location .label {
+        font-size: 0.75rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #38bdf8;
+      }
+
+      .drone-location .coords {
+        font-family: 'Segoe UI Mono', 'Menlo', 'Consolas', monospace;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #e2e8f0;
+      }
+
+      .drone-location .meta {
+        font-size: 0.85rem;
+        color: #cbd5f5;
+      }
+
+      .drone-location[data-state='live'] .meta {
+        color: #bae6fd;
+      }
+
+      .drone-location[data-state='waiting'] {
+        border-color: rgba(250, 204, 21, 0.35);
+      }
+
+      .drone-location[data-state='waiting'] .coords,
+      .drone-location[data-state='waiting'] .meta {
+        color: #fde68a;
+      }
+
+      .drone-location[data-state='stale'] {
+        border-color: rgba(248, 113, 113, 0.35);
+      }
+
+      .drone-location[data-state='stale'] .coords,
+      .drone-location[data-state='stale'] .meta {
+        color: #fca5a5;
+      }
+
+      .drone-location-marker {
+        position: relative;
+        width: 24px;
+        height: 24px;
+      }
+
+      .drone-location-marker .pulse {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        background: rgba(56, 189, 248, 0.25);
+        animation: dronePulse 2.4s ease-out infinite;
+      }
+
+      .drone-location-marker .dot {
+        position: absolute;
+        top: 6px;
+        left: 6px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #38bdf8;
+        border: 2px solid #0f172a;
+        box-shadow: 0 0 12px rgba(56, 189, 248, 0.7);
+      }
+
+      @keyframes dronePulse {
+        0% {
+          transform: scale(0.5);
+          opacity: 0.8;
+        }
+        70% {
+          transform: scale(1.35);
+          opacity: 0;
+        }
+        100% {
+          transform: scale(1.35);
+          opacity: 0;
+        }
       }
 
       .route-panel.open {
@@ -247,7 +974,53 @@
         color: #f8fafc;
       }
 
+      body[data-active-tab='recordingsTab'] .flight-controls-toggle,
+      body[data-active-tab='recordingsTab'] .route-toggle,
+      body[data-active-tab='recordingsTab'] .route-panel {
+        display: none !important;
+      }
+
+      @media (max-width: 960px) {
+        .recordings-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .analysis-overview {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        .analysis-status {
+          align-self: flex-start;
+        }
+      }
+
       @media (max-width: 720px) {
+        header {
+          padding: 1rem 1.25rem 0;
+        }
+
+        main {
+          padding: 1rem 1.25rem 1.5rem;
+        }
+
+        .tab-nav {
+          padding-bottom: 0.75rem;
+        }
+
+        .recordings-layout {
+          gap: 1rem;
+        }
+
+        .analysis-output {
+          padding: 0.85rem;
+        }
+
+        .flight-controls-toggle {
+          right: 1rem;
+          bottom: 4.75rem;
+        }
+
         .route-toggle {
           right: 1rem;
           bottom: 1rem;
@@ -261,28 +1034,182 @@
   </head>
   <body>
     <header>
-      <h1>Drone Operations Dashboard</h1>
-      <p>Left: real-time camera feed. Right: YOLO overlay rendered from Jetson analysis.</p>
+      <div class="header-text">
+        <h1>Drone Operations Dashboard</h1>
+        <p>Left: real-time camera feed. Right: YOLO overlay rendered from Jetson analysis.</p>
+      </div>
+      <nav class="tab-nav" role="tablist" aria-label="Dashboard views">
+        <button
+          type="button"
+          class="tab-button active"
+          data-tab-target="liveTab"
+          id="tab-live"
+          role="tab"
+          aria-selected="true"
+          aria-controls="liveTab"
+        >
+          Live Operations
+        </button>
+        <button
+          type="button"
+          class="tab-button"
+          data-tab-target="recordingsTab"
+          id="tab-recordings"
+          role="tab"
+          aria-selected="false"
+          aria-controls="recordingsTab"
+          tabindex="-1"
+        >
+          Recordings &amp; Analysis
+        </button>
+      </nav>
     </header>
-    <main>
+    <main data-active-tab="liveTab">
+      <section class="tab-panel active" id="liveTab" role="tabpanel" aria-labelledby="tab-live">
+        <div class="panels-grid">
       <section class="panel">
         <h2>Camera Feed</h2>
-        <video id="rawVideo" autoplay playsinline muted></video>
+        <div class="video-container">
+          <video id="rawVideo" autoplay playsinline muted></video>
+          <div
+            class="video-status"
+            id="rawVideoStatus"
+            role="status"
+            aria-live="polite"
+            data-state="idle"
+          >
+            <span id="rawVideoMessage">Awaiting video…</span>
+            <span id="rawVideoDelay">—</span>
+          </div>
+        </div>
       </section>
-    <section class="panel">
-      <h2>YOLO Overlay</h2>
-      <div class="overlay-container">
-        <video id="overlayVideo" autoplay playsinline muted></video>
-        <canvas id="overlayCanvas"></canvas>
-      </div>
-    </section>
-  </main>
+      <section class="panel">
+        <h2>YOLO Overlay</h2>
+        <div class="video-container overlay-container">
+          <video id="overlayVideo" autoplay playsinline muted></video>
+          <canvas id="overlayCanvas"></canvas>
+          <div
+            class="video-status"
+            id="overlayVideoStatus"
+            role="status"
+            aria-live="polite"
+            data-state="idle"
+          >
+            <span id="overlayVideoMessage">Awaiting overlay…</span>
+            <span id="overlayVideoDelay">—</span>
+          </div>
+        </div>
+      </section>
+      <section class="panel" id="flightControlsPanel" hidden aria-hidden="true">
+        <div class="panel-header">
+          <h2>Flight Controls</h2>
+          <button type="button" id="closeFlightControls">Close</button>
+        </div>
+        <div class="control-panel">
+          <div class="command-buttons">
+            <button id="commandTakeoff" type="button">Takeoff</button>
+            <button id="commandLand" type="button">Land</button>
+            <button id="commandReturnHome" type="button">Return Home</button>
+            <button id="commandCancelReturn" type="button">Cancel Return</button>
+          </div>
+          <form id="virtualStickForm" class="control-form" autocomplete="off">
+            <h3>Virtual Stick</h3>
+            <div class="field-grid">
+              <label>
+                <span>Pitch (m/s)</span>
+                <input type="number" step="0.1" name="pitch" value="0" />
+              </label>
+              <label>
+                <span>Roll (m/s)</span>
+                <input type="number" step="0.1" name="roll" value="0" />
+              </label>
+              <label>
+                <span>Yaw (°/s)</span>
+                <input type="number" step="0.1" name="yaw" value="0" />
+              </label>
+              <label>
+                <span>Throttle (m/s)</span>
+                <input type="number" step="0.1" name="throttle" value="0" />
+              </label>
+            </div>
+            <button type="submit">Send Virtual Stick</button>
+            <p class="control-hint">Values represent desired velocities in the drone body frame.</p>
+          </form>
+          <form id="gimbalForm" class="control-form" autocomplete="off">
+            <h3>Gimbal Rotation</h3>
+            <div class="field-grid">
+              <label>
+                <span>Pitch (°)</span>
+                <input type="number" step="1" name="pitch" value="0" />
+              </label>
+              <label>
+                <span>Roll (°)</span>
+                <input type="number" step="1" name="roll" value="0" />
+              </label>
+              <label>
+                <span>Yaw (°)</span>
+                <input type="number" step="1" name="yaw" value="0" />
+              </label>
+              <label>
+                <span>Duration (s)</span>
+                <input type="number" min="1" max="30" step="1" name="duration" value="2" />
+              </label>
+            </div>
+            <button type="submit">Rotate Gimbal</button>
+            <p class="control-hint">Applies an absolute gimbal rotation over the specified duration.</p>
+          </form>
+          <div class="gcs-status" data-role="gcs-status">GCS: disconnected</div>
+        </div>
+      </section>
+        </div>
+      </section>
+      <section class="tab-panel" id="recordingsTab" role="tabpanel" aria-labelledby="tab-recordings" hidden>
+        <div class="recordings-layout">
+          <section class="panel recordings-list-panel">
+            <div class="panel-header">
+              <h2>Recorded Sessions</h2>
+              <button type="button" id="refreshRecordings">Refresh</button>
+            </div>
+            <p class="panel-subtitle">Browse synced missions and send them for AI analysis.</p>
+            <div class="recordings-toolbar">
+              <p class="recordings-summary" id="recordingsSummary">No recordings loaded.</p>
+            </div>
+            <ul class="recordings-list" id="recordingsList"></ul>
+            <p class="panel-hint">Analysis requests are staged locally until the AI server integration is configured.</p>
+          </section>
+          <section class="panel analysis-panel" aria-live="polite">
+            <div class="panel-header">
+              <h2>Analysis Results</h2>
+            </div>
+            <div class="analysis-summary">
+              <div class="analysis-overview">
+                <h3 id="analysisRecordingTitle">No recording selected</h3>
+                <span class="analysis-status" id="analysisStatusBadge" data-tone="muted">Idle</span>
+              </div>
+              <p class="analysis-meta" id="analysisRecordingMeta">Choose a recording on the left to see its details.</p>
+            </div>
+            <div class="analysis-output" id="analysisDetails">
+              <p>Select a recording and choose “Analyze” to run the Twelve Labs analysis or “Embeddings” to stream the indexed video and review stored vectors when the server integration is configured.</p>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
     <footer>
       <div><span class="status-label">Stream ID:</span> <span id="streamId"></span></div>
       <div><span class="status-label">Connection:</span> <span id="connectionStatus">disconnected</span></div>
       <div><span class="status-label">Detections:</span> <span id="detectionStatus">0</span></div>
       <div><span class="status-label">Last update:</span> <span id="detectionTimestamp">-</span></div>
     </footer>
+    <button
+      class="flight-controls-toggle"
+      id="toggleFlightControls"
+      type="button"
+      aria-expanded="false"
+      aria-controls="flightControlsPanel"
+    >
+      Flight Controls
+    </button>
     <button class="route-toggle" id="toggleRoutePanel" aria-expanded="false" aria-controls="routePlanner">
       Flight Path
     </button>
@@ -297,6 +1224,11 @@
         <button class="secondary" id="undoWaypoint" type="button">Undo</button>
         <button class="secondary" id="clearRoute" type="button">Clear</button>
       </div>
+      <div class="drone-location" id="droneLocation" data-state="waiting" aria-live="polite">
+        <div class="label">Live location</div>
+        <div class="coords" id="droneLocationCoords">—</div>
+        <div class="meta" id="droneLocationMeta">Awaiting telemetry…</div>
+      </div>
       <div id="routeMap" role="presentation"></div>
       <div class="route-summary">
         <div>Waypoints: <strong id="waypointCount">0</strong></div>
@@ -304,17 +1236,12 @@
       </div>
       <div class="route-actions">
         <button class="primary" id="startRoute" type="button">Send Flight Path</button>
-        <div class="route-status" id="gcsStatus">GCS: disconnected</div>
+        <div class="route-status" id="gcsStatus" data-role="gcs-status">GCS: disconnected</div>
       </div>
     </section>
     <script
-      src="https://cdn.socket.io/4.7.5/socket.io.min.js"
-      integrity="sha384-/iF2zraFMpNqivSpog6dy87SJM7QVRPSnx+HgFxKeEcRrwi+F2xy/XeexJ6RDigw"
-      crossorigin="anonymous"
-    ></script>
-    <script
       src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-      integrity="sha256-o9N1j7kGEC4zEA18gi3RL0tYSmEB5GdB4yjF0CI0h3s="
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
       crossorigin=""
     ></script>
     <script type="module" src="dashboard.js"></script>

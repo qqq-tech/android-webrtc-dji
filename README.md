@@ -68,13 +68,13 @@ This fork adds an end-to-end workflow tailored for DJI Mavic drones using Mobile
 To start the complete flow:
 
 1. Launch the Go relay (`go run pion-server/main.go --addr :8080`).
-2. Run the Jetson consumer (`python jetson/webrtc_receiver.py <streamId> --signaling-host <relay-host>`).
+2. Run the Jetson consumer (`python jetson/webrtc_receiver.py <streamId> --signaling-url ws://<relay-host>:8080/ws`).
 3. Open `browser/dashboard.html?streamId=<streamId>&signalingHost=<relay-host>` in your browser to view both feeds.
-4. Send GCS commands or raw streaming requests to the Android app via the Socket.IO channel:
+4. Send GCS commands or raw streaming requests to the Android app through the relay control channel (the dashboard issues these automatically when you use the route planner):
    ```json
-   {"action":"takeoff"}
-   {"action":"virtual_stick","pitch":0.2,"roll":0.0,"yaw":0.0,"throttle":0.1}
-   {"action":"start","host":"<jetson-ip>","port":9000}
+   {"type":"gcs_command","payload":{"action":"takeoff"}}
+   {"type":"gcs_command","payload":{"action":"virtual_stick","pitch":0.2,"roll":0.0,"yaw":0.0,"throttle":0.1}}
+   {"type":"raw_stream","payload":{"action":"start","host":"<jetson-ip>","port":9000}}
    ```
 
 All control/data messages are UTF-8 encoded JSON to keep the interfaces consistent across Android, Jetson, Go and browser components.
@@ -82,11 +82,12 @@ All control/data messages are UTF-8 encoded JSON to keep the interfaces consiste
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Prerequisites
-I used Socket.IO throughout all my projects, and you'll need the following at hand to proceed:
+Make sure you have the following pieces ready before wiring everything together:
 
-* Android application (tested on 'minSdkVersion 24', 'targetSdkVersion 30') 
-* Any server that can act as the signaling server
-* A website or just any barebone HTML file with a video tag and some Javascript code to invoke the call functions.
+* An Android application (tested on `minSdkVersion 24`, `targetSdkVersion 30`) bundled with the sources under [`android-application/`](android-application).
+* The Go relay in [`pion-server/`](pion-server) running to broker SDP/ICE, telemetry and control messages between peers.
+* The optional Jetson pipeline (`jetson/webrtc_receiver.py`) if you want real-time object detection overlays.
+* A browser environment that can load [`browser/dashboard.html`](browser/dashboard.html) or your own UI powered by the same JSON protocol.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -109,16 +110,17 @@ Follow the component-specific notes below to compile and launch each part of the
    ```
 2. **Configure DJI keys** – register your application on the DJI developer portal, download the `DJISDKLIB` AAR if required, and add your `dji.sdk.key` to `AndroidManifest.xml` together with the required permissions (USB, internet, location, etc.).
 3. **Build** – run `./gradlew assembleDebug` (or use the Android Studio *Build > Make Project* action) to produce an APK that contains the GCS logic plus the WebRTC/raw H.264 streamers.
-4. **Run** – deploy the app to a DJI-supported device, connect the drone, and launch the activity that instantiates `DJIStreamer`. Confirm your signaling server URL, drone ID, and optional raw TCP streaming targets are set before requesting a stream from the browser dashboard.
+4. **Configure Pion relay** – launch the ground control app, swipe in from the right edge, and choose **Pion 릴레이 설정** to update the signaling URL/stream ID. The values are persisted in shared preferences and applied by the embedded publisher. Legacy Socket.IO endpoints are rewritten to the `/ws` path automatically, so existing field configurations continue to function. If you want to change the shipped defaults before installing the APK, edit `android-application/app/src/main/res/values/strings.xml` (`pion_signaling_url_default`, `pion_stream_id_default`).
+5. **Run** – deploy the app to a DJI-supported device, connect the drone, and launch the activity that instantiates `DJIStreamer`. Confirm your signaling server URL, drone ID, and optional raw TCP streaming targets are set before requesting a stream from the browser dashboard.
 
 ### Browser dashboard
 
-1. **Install dependencies** – the dashboard uses vanilla HTML/JS; no build step is required. To simplify local testing you can serve the `browser/` directory with any static file server, e.g.:
+1. **Install dependencies** – the dashboard uses vanilla HTML/JS; no build step is required. If you already have the Jetson detection broadcaster running (see below) it will now serve the `browser/` directory automatically, so you can simply open `http://<JETSON_HOST>:8765/` and the updated `dashboard.html` will be delivered with all static assets. For standalone testing you can still serve the files with any static file server, e.g.:
    ```bash
    cd browser
    python -m http.server 8081
    ```
-2. **Run** – open `http://localhost:8081/dashboard.html?streamId=<STREAM_ID>&signalingHost=<RELAY_HOST>` in Chrome/Firefox. Replace `STREAM_ID` with the identifier used by the Android peer and `RELAY_HOST` with the reachable hostname/IP (including `ws://`/`wss://` if applicable) of the Pion relay.
+2. **Run** – open `http://localhost:8081/dashboard.html?streamId=<STREAM_ID>&signalingHost=<RELAY_HOST>` in Chrome/Firefox. Replace `STREAM_ID` with the identifier used by the Android peer and `RELAY_HOST` with the reachable hostname/IP (including `ws://`/`wss://` if applicable) of the Pion relay. If you already bookmarked an older Socket.IO style endpoint (for example `http://host:8080/socket.io`), pass it via `signalingUrl=` or `signalingHost=` and the dashboard will automatically translate it to the relay's `/ws` endpoint.
 3. **Operate** – the left pane displays the raw WebRTC track while the right canvas renders YOLO overlays as soon as the Jetson WebSocket publishes detection JSON. Any `{ "error": "...", "code": "..." }` messages received from the relay will surface in the UI console.
 
 ### Jetson analytics service
@@ -135,16 +137,130 @@ Follow the component-specific notes below to compile and launch each part of the
 2. **Provision YOLO weights** – download or copy the desired YOLOv8 model (e.g., `yolov8n.pt`) into the `jetson/` directory or adjust `yolo_processor.py` to point at your custom weights.
 3. **Run** – start the WebSocket broadcast service and WebRTC receiver:
    ```bash
-   # Terminal 1 – WebSocket hub for browser overlays
+   # Terminal 1 – WebSocket hub for browser overlays and static dashboard assets
    python websocket_server.py --host 0.0.0.0 --port 8765
 
    # Terminal 2 – subscribe to the Android stream via the Pion relay
    python webrtc_receiver.py <STREAM_ID> \
-       --signaling-host ws://<RELAY_HOST>:8080 \
+       --signaling-url ws://<RELAY_HOST>:8080/ws \
        --overlay-ws ws://<JETSON_HOST>:8765 \
        --model yolov8n.pt
-   ```
-   The receiver relays detection metadata that matches the agreed JSON format, enabling the dashboard to render overlays in real time.
+  ```
+  The receiver relays detection metadata that matches the agreed JSON format, enabling the dashboard to render overlays in real time. With the bundled static file handler you can load the dashboard directly from the broadcaster at `http://<JETSON_HOST>:8765/dashboard.html?streamId=<STREAM_ID>&signalingHost=<RELAY_HOST>`, which already reflects the latest compatibility fixes for serving HTML alongside WebSocket upgrades.
+  If you prefer to specify the relay host/port separately, continue using `--signaling-host` and `--signaling-port` (provide them without the `ws://` prefix).
+
+   > ℹ️ **Note** – `jetson/webrtc_receiver.py`는 브라우저 화면을 렌더링하지 않습니다. 이 모듈은 Pion 릴레이에서 비디오를 구독하고 YOLO 추론 결과를 `websocket_server.py`로 전달해 줄 뿐이며, 대시보드 HTML은 오직 WebSocket 브로드캐스터가 제공하는 정적 자산에 의해 표시됩니다.
+
+#### Stack automation script
+
+When you want to start or stop the relay, Jetson broadcaster, and WebRTC receiver together, use [`scripts/manage_stack.sh`](scripts/manage_stack.sh):
+
+```bash
+STREAM_ID=demo \
+SIGNALING_URL=ws://127.0.0.1:8080/ws \
+OVERLAY_WS=ws://127.0.0.1:8765 \
+MODEL_PATH=yolov8n.pt \
+PION_ADDR=:8080 \
+PION_TLS_CERT=./scripts/certs/server.crt \
+PION_TLS_KEY=./scripts/certs/server.key \
+WS_PORT=8765 \
+WS_INSECURE_PORT=8081 \
+WS_CERTFILE=./scripts/certs/server.crt \
+WS_KEYFILE=./scripts/certs/server.key \
+./scripts/manage_stack.sh start
+```
+
+The helper keeps track of the spawned processes under `.run/webrtc_stack.pids`. Stop them (from any shell) with `./scripts/manage_stack.sh stop`, or check their status via `./scripts/manage_stack.sh status`. The example above expects a shared certificate/key pair at `scripts/certs/server.crt` and `scripts/certs/server.key` so both the relay and broadcaster terminate TLS with the same assets. Supply `PION_HTTPS_ADDR`, `PION_TLS_CERT`, `PION_TLS_KEY`, `WS_CERTFILE`, and `WS_KEYFILE` when you need dual HTTP/HTTPS listeners, and override `GO_BIN`/`PYTHON_BIN` if your toolchains live in non-default paths.
+
+`manage_stack.sh` also respects the `TWELVE_LABS_API_KEY` and `TWELVE_LABS_BASE_URL` environment variables and forwards them to `websocket_server.py`, so you can configure the analysis integration once before launching the full stack.
+
+### Twelve Labs video analysis client
+
+[`jetson/twelvelabs_client.py`](jetson/twelvelabs_client.py) mirrors the public Twelve Labs quick-start notebooks in plain Python. The helper ensures a managed `test-webrtc` index exists with both `marengo2.7` and `pegasus1.2` configured for visual and audio modalities, uploads a video, waits for ingestion to finish, retrieves gist metadata (title/topic/hashtags), and streams analysis text using the default prompt “이 영상을 분석해줘.”. The streamed output is normalised into paragraphs so the caller can persist the response directly.
+
+```python
+import os
+
+from jetson.twelvelabs_client import DEFAULT_PROMPT, TwelveLabsClient
+
+client = TwelveLabsClient(api_key=os.environ["TWELVE_LABS_API_KEY"])
+index_payload = client.ensure_index()
+index_id = client.get_index_id()
+
+with open("recordings/sample/mission.mp4", "rb") as recording:
+    task = client.create_indexing_task(index_id=index_id, video_file=recording)
+
+status = client.wait_for_task(task_id=task["id"])
+video_id = status["video_id"]
+
+gist = client.fetch_gist(video_id=video_id)
+analysis = client.collect_analysis(video_id=video_id, prompt=DEFAULT_PROMPT)
+
+print(gist["title"], gist["topics"], gist["hashtags"])
+print(analysis.text)
+```
+
+The `analysis.text` field contains the combined paragraphs returned by `analyze_stream`, while `analysis.chunks` keeps the individual snippets if you prefer to render them separately. Because the client caches the resolved index identifier, subsequent runs reuse the same `test-webrtc` index without hitting the management API again.
+
+When the broadcaster is running you can trigger a cached-analysis check (without uploading a new video) via:
+
+```bash
+curl -G "http://127.0.0.1:8765/analysis" --data-urlencode "action=list"
+```
+
+and start a new analysis for a specific recording with:
+
+```bash
+curl -G "http://127.0.0.1:8765/analysis" \
+     --data-urlencode "action=run" \
+     --data-urlencode "streamId=<STREAM_ID>" \
+     --data-urlencode "fileName=<FILENAME.mp4>"
+```
+
+Both commands reuse the internally cached Twelve Labs index identifier and persist the API responses so follow-up calls reuse stored metadata when available.
+
+To retrieve the stored embeddings and Twelve Labs hosted stream URL for a processed recording run:
+
+```bash
+curl -G "http://127.0.0.1:8765/analysis" \
+     --data-urlencode "action=embed" \
+     --data-urlencode "streamId=<STREAM_ID>" \
+     --data-urlencode "fileName=<FILENAME.mp4>"
+```
+
+The response includes any cached embedding vectors, optional transcription snippets, and the HLS playback URL exposed by Twelve Labs for the uploaded video.
+
+### Dashboard analysis workflow
+
+The detection broadcaster (`jetson/websocket_server.py`) exposes a REST endpoint at `/analysis` that reuses the helper library to upload recordings, wait for embeddings, and persist Twelve Labs analysis responses. Results are cached in `recordings/twelvelabs_analysis.json` so a given recording is analysed only once; subsequent requests return the stored payload immediately and the UI shows the cached timestamp.
+
+Configure the integration with the following environment variables before launching the Jetson server:
+
+| Variable | Description |
+| --- | --- |
+| `TWELVE_LABS_API_KEY` | **Required.** Twelve Labs API key used for all requests. |
+| `TWELVE_LABS_BASE_URL` | Optional API base URL override (defaults to the public Twelve Labs endpoint). |
+| `TWELVE_LABS_DEFAULT_PROMPT` | Prompt sent when the dashboard does not override it (defaults to `이 영상을 분석해줘.`). |
+| `TWELVE_LABS_POLL_INTERVAL` | Poll interval (in seconds) used while waiting for indexing to complete (defaults to `5`). |
+| `TWELVE_LABS_GIST_TYPES` | Comma-separated gist fields (defaults to `title,topic,hashtag`). |
+| `TWELVE_LABS_CACHE_PATH` | Override the cache file location (defaults to `recordings/twelvelabs_analysis.json`). |
+
+You can also pass the Twelve Labs connection details directly to the WebSocket server via `--twelvelabs-api-key` and `--twelvelabs-base-url` when launching `jetson/websocket_server.py`, which is handy for local testing without exporting environment variables:
+
+```bash
+cd jetson
+python websocket_server.py \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --twelvelabs-api-key "$TWELVE_LABS_API_KEY" \
+  --twelvelabs-base-url "https://api.twelvelabs.io"
+```
+
+The flags override the environment variables for that invocation only, making it easy to test against alternative Twelve Labs deployments.
+
+When the environment is configured the “Analyze” button in `browser/dashboard.html` invokes `/analysis?action=start` with the selected recording identifiers. Existing results are surfaced without re-running the pipeline, and the UI reports the stored completion time alongside the generated gist summary and analysis paragraphs.
+
+The dashboard also exposes an “Embeddings” button next to each recording once a Twelve Labs analysis has been stored. Selecting it fetches the cached embedding vectors, refreshes the remote video metadata, and enables inline playback of the HLS stream returned by Twelve Labs. The embeddings panel summarises the retrieved model, segment windows, and a truncated preview of the vector contents for quick inspection.
 
 ### Pion relay server
 
@@ -160,6 +276,45 @@ Follow the component-specific notes below to compile and launch each part of the
    go run main.go --addr :8080
    ```
    The server exposes WebSocket endpoints for publishers/subscribers, forwarding SDP/ICE JSON, RTP packets, and propagating structured error responses.
+   * To enable HTTPS alongside HTTP, supply both `--tls-cert`/`--tls-key` and an additional bind using `--https-addr :8443`. The relay continues serving insecure WebSockets on `--addr` while the secure listener answers on the TLS port.
+   * For quick testing you can generate a self-signed certificate with `scripts/generate-self-signed-cert.sh`. The script writes `certs/server.crt` and `certs/server.key`, which map to the relay flags above and the Jetson WebSocket broadcaster (`--certfile`/`--keyfile`).
+
+#### Example: Run HTTP and HTTPS side-by-side
+
+The following terminal sessions demonstrate how to expose both insecure and TLS-secured endpoints for the Pion relay and the browser dashboard at the same time.
+
+1. **Generate certificates (optional)** – if you do not already have a trusted certificate/key pair, create one for local testing:
+   ```bash
+   ./scripts/generate-self-signed-cert.sh
+   ```
+   This command produces `certs/server.crt` and `certs/server.key` which will be reused in the next steps.
+2. **Start the Pion relay with dual listeners** – run the relay with both `--addr` (HTTP/WebSocket) and `--https-addr` (HTTPS/WSS):
+   ```bash
+   cd pion-server
+   go run main.go \
+       --addr :8080 \
+       --https-addr :8443 \
+       --tls-cert ../certs/server.crt \
+       --tls-key ../certs/server.key
+   ```
+   Clients that need plain WebSockets can continue to use `ws://<host>:8080/ws`, while browsers that require secure contexts (for example when loaded from an `https://` origin) connect via `wss://<host>:8443/ws`.
+3. **Serve the dashboard with the bundled Python server** – the detection broadcaster in [`jetson/websocket_server.py`](jetson/websocket_server.py) already exposes both the WebSocket API and static assets. Launch it once with TLS enabled and request an additional insecure listener for backwards compatibility:
+   ```bash
+   cd jetson
+   python websocket_server.py \
+       --host 0.0.0.0 \
+       --port 8765 \
+       --certfile ../certs/server.crt \
+       --keyfile ../certs/server.key \
+       --insecure-port 8081 \
+       --static-dir ../browser
+   ```
+   This single process now serves:
+   * `https://<host>:8765/dashboard.html` and `wss://<host>:8765/detections` with the provided certificate.
+   * `http://<host>:8081/dashboard.html` and `ws://<host>:8081/detections` for devices that still need plain HTTP.
+   Adjust `--path` when you want to expose the WebSocket on a custom route, and point `--recordings-dir` to a folder that should be downloadable via `/recordings`.
+
+> 💡 **Tip (KOR)** – 위 순서를 따르면 Pion 릴레이와 대시보드를 `http://`와 `https://` 모드로 동시에 노출할 수 있습니다. HTTPS로 접속해야 하는 브라우저(예: 보안 맥락이 필요한 모바일 기기)와 기존 HTTP 장비를 한 번에 테스트할 때 유용합니다.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -177,36 +332,22 @@ and in your android alter your gradle files. Add ```jcenter()``` as a repository
 implementation 'org.webrtc:google-webrtc:1.0.+'
 ```
 
-Once you have your Node.JS server with a socket running, add the listener function for the event ```webrtc_msg```. 
-```
-socket.on("webrtc_msg", (receivee: string, msg: object) => {
-    let from_id = socket.id;
-    socket.to(receivee).emit('webrtc_msg', from_id, msg);
-});
-```
-
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- SETUP -->
 ### Setup
 
-Copy the folder containing the Java files to your android application and alter the package name to fit your solution. You will notice that ```SocketConnection``` occurs a few places so modify that to use your own Socket handle. I will not include code for setting up sockets on android either.
-Once the code has been merged with your own project you only need to instantiate the ```DJIStreamer``` somewhere it will persist in your application as such:
+Copy the folder containing the Java files to your Android application and align the package name with your solution. Instantiate the `DJIStreamer` somewhere it can live for the duration of the flight session:
 ```
 DJIStreamer streamer = new DJIStreamer(this);
-``` 
-That is it for the android part. You will not need to interact anymore with the instance of ```DJIStreamer```. All calls will be initiated from the browser window, and the android application will automatically accept any incoming calls.
+```
+The streamer now connects directly to the Go relay, so you no longer need to provision a separate Socket.IO backend. The relay delivers SDP/ICE, telemetry and control messages between the dashboard and the drone. When the web UI emits `{ "type": "gcs_command", "payload": { ... } }`, the relay forwards it to the Android device where `GCSCommandHandler` executes the request and responds with `{ "type": "gcs_command_ack", ... }`.
 
-Now the last thing is to include ```WebRTCManager.js``` in your HTML and before attempting to start any videofeed call the setup of socket events:
-```
-DroneStreamManager.setupSocketEvent(socket);
-```
- and once you wish to call a drone in order to get its videofeed you invoke the function as such:
-```
-const ds = DroneStreamManager.createDroneStream(droneSocketId, videoTagID);
-ds.startDroneStream();
-```
-We let the ```DroneStreamManager``` instantiate an instance of ```DroneStream``` for us and invoke the ```startDroneStream()``` afterwards. Please notice the arguments for creating a drone stream; the socket ID and the video tag ID. The socket ID will be the ID belonging to the android application that is assigned when connecting to our signaling server. This is to let our signaling server know where to pass the message when it receives it. We also provide the function with the ID of the HTML video tag, so the drone stream object knows which DOM element to render the video to once it has it.
+On the browser side you can either reuse [`browser/dashboard.js`](browser/dashboard.js) or follow the same pattern: send JSON envelopes through the relay WebSocket and listen for acknowledgements and telemetry updates.
+
+### TwelveLabs Index Integration
+
+To generate AI video indexes without relying on PyPI, follow the instructions in [`docs/TwelveLabsIndexSetup.md`](docs/TwelveLabsIndexSetup.md). The guide explains how to download the TwelveLabs Python SDK directly from GitHub, where to place the SDK files within this repository, and how to run the accompanying helper script.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

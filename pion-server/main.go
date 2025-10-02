@@ -5,10 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/example/android-webrtc-dji/pion-server/recording"
 	"github.com/gorilla/websocket"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v3"
@@ -30,12 +34,19 @@ var upgrader = websocket.Upgrader{
 }
 
 type signalMessage struct {
-	Type          string  `json:"type"`
-	SDP           string  `json:"sdp,omitempty"`
-	SDPType       string  `json:"sdpType,omitempty"`
-	Candidate     string  `json:"candidate,omitempty"`
-	SDPMid        string  `json:"sdpMid,omitempty"`
-	SDPMLineIndex *uint16 `json:"sdpMLineIndex,omitempty"`
+	Type          string          `json:"type"`
+	SDP           string          `json:"sdp,omitempty"`
+	SDPType       string          `json:"sdpType,omitempty"`
+	Candidate     string          `json:"candidate,omitempty"`
+	SDPMid        string          `json:"sdpMid,omitempty"`
+	SDPMLineIndex *uint16         `json:"sdpMLineIndex,omitempty"`
+	Latitude      *float64        `json:"latitude,omitempty"`
+	Longitude     *float64        `json:"longitude,omitempty"`
+	Altitude      *float64        `json:"altitude,omitempty"`
+	Accuracy      *float64        `json:"accuracy,omitempty"`
+	Timestamp     *int64          `json:"timestamp,omitempty"`
+	Source        string          `json:"source,omitempty"`
+	Payload       json.RawMessage `json:"payload,omitempty"`
 }
 
 type client struct {
@@ -55,6 +66,17 @@ type stream struct {
 	pending     []*client
 	videoTrack  *webrtc.TrackLocalStaticRTP
 	remoteTrack *webrtc.TrackRemote
+	telemetry   *telemetryData
+	recorder    recording.Recorder
+}
+
+type telemetryData struct {
+	Latitude  float64
+	Longitude float64
+	Altitude  *float64
+	Accuracy  *float64
+	Timestamp int64
+	Source    string
 }
 
 type streamManager struct {
@@ -220,17 +242,78 @@ func (c *client) handleSignal(msg signalMessage) error {
 			return c.sendSignal(signalMessage{Type: "sdp", SDP: answer.SDP, SDPType: answer.Type.String()})
 		}
 	case "ice":
-		if msg.Candidate == "" {
-			return fmt.Errorf("missing ICE candidate")
-		}
-		candidate := webrtc.ICECandidateInit{
-			Candidate:     msg.Candidate,
-			SDPMid:        &msg.SDPMid,
-			SDPMLineIndex: msg.SDPMLineIndex,
+		candidate := webrtc.ICECandidateInit{}
+		if msg.Candidate != "" {
+			candidate.Candidate = msg.Candidate
+			if msg.SDPMid != "" {
+				candidate.SDPMid = &msg.SDPMid
+			}
+			candidate.SDPMLineIndex = msg.SDPMLineIndex
 		}
 		if err := c.peer.AddICECandidate(candidate); err != nil {
 			return err
 		}
+	case "telemetry":
+		if c.role != "publisher" {
+			return fmt.Errorf("telemetry messages only accepted from publishers")
+		}
+		if msg.Latitude == nil || msg.Longitude == nil {
+			return fmt.Errorf("telemetry message missing coordinates")
+		}
+		lat := *msg.Latitude
+		lng := *msg.Longitude
+		if !isValidLatitude(lat) || !isValidLongitude(lng) {
+			return fmt.Errorf("invalid telemetry coordinates")
+		}
+		data := telemetryData{
+			Latitude:  lat,
+			Longitude: lng,
+			Source:    msg.Source,
+		}
+		if msg.Altitude != nil && !math.IsNaN(*msg.Altitude) && !math.IsInf(*msg.Altitude, 0) {
+			data.Altitude = float64Ptr(*msg.Altitude)
+		}
+		if msg.Accuracy != nil && !math.IsNaN(*msg.Accuracy) && !math.IsInf(*msg.Accuracy, 0) && *msg.Accuracy >= 0 {
+			data.Accuracy = float64Ptr(*msg.Accuracy)
+		}
+		if msg.Timestamp != nil && *msg.Timestamp > 0 {
+			data.Timestamp = *msg.Timestamp
+		} else {
+			data.Timestamp = time.Now().UnixMilli()
+		}
+		c.stream.updateTelemetry(data)
+	case "gcs_command":
+		if c.role != "subscriber" {
+			return fmt.Errorf("gcs_command messages only accepted from subscribers")
+		}
+		if len(msg.Payload) == 0 {
+			return fmt.Errorf("gcs_command message missing payload")
+		}
+		return c.stream.forwardToPublisher(msg, c)
+	case "raw_stream":
+		if c.role != "subscriber" {
+			return fmt.Errorf("raw_stream messages only accepted from subscribers")
+		}
+		if len(msg.Payload) == 0 {
+			return fmt.Errorf("raw_stream message missing payload")
+		}
+		return c.stream.forwardToPublisher(msg, c)
+	case "gcs_command_ack":
+		if c.role != "publisher" {
+			return fmt.Errorf("gcs_command_ack messages only accepted from publishers")
+		}
+		return c.stream.broadcastToSubscribers(msg, c)
+	case "raw_stream_ack":
+		if c.role != "publisher" {
+			return fmt.Errorf("raw_stream_ack messages only accepted from publishers")
+		}
+		return c.stream.broadcastToSubscribers(msg, c)
+	case "register":
+		// Legacy clients may send a register signal even though the server already
+		// associates the role/stream via query parameters. Treat it as a no-op so
+		// they do not receive an unsupported signal error.
+		log.Printf("received legacy register message for stream %s from %s", c.stream.id, c.role)
+		return nil
 	default:
 		return fmt.Errorf("unsupported signal type: %s", msg.Type)
 	}
@@ -311,27 +394,52 @@ func (s *stream) registerSubscriber(c *client) error {
 
 	s.mu.Lock()
 	s.subscribers[c] = struct{}{}
-	if s.videoTrack != nil {
-		if _, err := pc.AddTrack(s.videoTrack); err != nil {
+	track := s.videoTrack
+	if track != nil {
+		sender, err := pc.AddTrack(track)
+		if err != nil {
 			s.mu.Unlock()
 			return err
 		}
-		s.mu.Unlock()
-		return c.sendOffer()
+		if err := preferH264VideoCodec(pc, sender); err != nil {
+			log.Printf("failed to set codec preference: %v", err)
+		}
 	}
-	s.pending = append(s.pending, c)
+	if track == nil {
+		s.pending = append(s.pending, c)
+	}
+	telemetry := s.telemetry
 	s.mu.Unlock()
+	if track != nil {
+		if err := c.sendOffer(); err != nil {
+			return err
+		}
+	}
+	if telemetry != nil {
+		if err := c.sendSignal(telemetry.toSignalMessage()); err != nil {
+			log.Printf("failed to send telemetry to subscriber: %v", err)
+		}
+	}
 	return nil
 }
 
 func (s *stream) removeClient(c *client) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var recorder recording.Recorder
+	defer func() {
+		s.mu.Unlock()
+		if recorder != nil {
+			recorder.Close()
+		}
+	}()
 
 	if s.publisher == c {
 		s.publisher = nil
 		s.videoTrack = nil
 		s.remoteTrack = nil
+		s.telemetry = nil
+		recorder = s.recorder
+		s.recorder = nil
 	}
 
 	delete(s.subscribers, c)
@@ -362,10 +470,14 @@ func (s *stream) createPeerConnection(c *client) (*webrtc.PeerConnection, error)
 			v := uint16(*init.SDPMLineIndex)
 			lineIndex = &v
 		}
+		var sdpMid string
+		if init.SDPMid != nil {
+			sdpMid = *init.SDPMid
+		}
 		msg := signalMessage{
 			Type:          "ice",
 			Candidate:     init.Candidate,
-			SDPMid:        init.SDPMid,
+			SDPMid:        sdpMid,
 			SDPMLineIndex: lineIndex,
 		}
 		if err := c.sendSignal(msg); err != nil {
@@ -383,27 +495,77 @@ func (s *stream) createPeerConnection(c *client) (*webrtc.PeerConnection, error)
 	return pc, nil
 }
 
+func preferH264VideoCodec(pc *webrtc.PeerConnection, sender *webrtc.RTPSender) error {
+	if pc == nil || sender == nil {
+		return nil
+	}
+
+	var transceiver *webrtc.RTPTransceiver
+	for _, t := range pc.GetTransceivers() {
+		if t.Sender() == sender {
+			transceiver = t
+			break
+		}
+	}
+	if transceiver == nil || transceiver.Kind() != webrtc.RTPCodecTypeVideo {
+		return nil
+	}
+
+	params := sender.GetParameters()
+	if len(params.Codecs) == 0 {
+		return nil
+	}
+
+	var preferred []webrtc.RTPCodecParameters
+	var fallback []webrtc.RTPCodecParameters
+	for _, codec := range params.Codecs {
+		if strings.EqualFold(codec.MimeType, webrtc.MimeTypeH264) {
+			preferred = append(preferred, codec)
+		} else {
+			fallback = append(fallback, codec)
+		}
+	}
+	if len(preferred) == 0 {
+		return nil
+	}
+
+	preferred = append(preferred, fallback...)
+	return transceiver.SetCodecPreferences(preferred)
+}
+
 func (s *stream) setRemoteTrack(remoteTrack *webrtc.TrackRemote) {
 	s.mu.Lock()
+	oldRecorder := s.recorder
 	s.remoteTrack = remoteTrack
 	localTrack, err := webrtc.NewTrackLocalStaticRTP(remoteTrack.Codec().RTPCodecCapability, remoteTrack.ID(), fmt.Sprintf("%s-video", s.id))
 	if err != nil {
 		s.mu.Unlock()
+		if oldRecorder != nil {
+			oldRecorder.Close()
+		}
 		log.Printf("failed to create local track: %v", err)
 		return
 	}
 	s.videoTrack = localTrack
+	s.recorder = recording.NewRecorder(s.id, remoteTrack)
 	pending := append([]*client(nil), s.pending...)
 	s.pending = nil
 	s.mu.Unlock()
+	if oldRecorder != nil {
+		oldRecorder.Close()
+	}
 
 	for _, subscriber := range pending {
 		if subscriber.peer == nil {
 			continue
 		}
-		if _, err := subscriber.peer.AddTrack(localTrack); err != nil {
+		sender, err := subscriber.peer.AddTrack(localTrack)
+		if err != nil {
 			log.Printf("failed to add track to subscriber: %v", err)
 			continue
+		}
+		if err := preferH264VideoCodec(subscriber.peer, sender); err != nil {
+			log.Printf("failed to set codec preference: %v", err)
 		}
 		if err := subscriber.sendOffer(); err != nil {
 			log.Printf("failed to send offer to subscriber: %v", err)
@@ -423,12 +585,16 @@ func (s *stream) forwardRTP(remoteTrack *webrtc.TrackRemote) {
 		}
 		s.mu.Lock()
 		track := s.videoTrack
+		recorder := s.recorder
 		s.mu.Unlock()
 		if track != nil {
 			if err := track.WriteRTP(packet); err != nil {
 				log.Printf("failed to forward RTP packet: %v", err)
 				return
 			}
+		}
+		if recorder != nil {
+			recorder.Push(packet.Clone())
 		}
 	}
 }
@@ -465,15 +631,185 @@ func (c *client) sendOffer() error {
 	return c.sendSignal(signalMessage{Type: "sdp", SDP: offer.SDP, SDPType: offer.Type.String()})
 }
 
+func (s *stream) updateTelemetry(data telemetryData) {
+	signal := data.toSignalMessage()
+	s.mu.Lock()
+	s.telemetry = &data
+	recipients := make([]*client, 0, len(s.subscribers)+len(s.pending))
+	for subscriber := range s.subscribers {
+		recipients = append(recipients, subscriber)
+	}
+	recipients = append(recipients, s.pending...)
+	s.mu.Unlock()
+
+	for _, subscriber := range recipients {
+		if err := subscriber.sendSignal(signal); err != nil {
+			log.Printf("failed to deliver telemetry to subscriber: %v", err)
+		}
+	}
+}
+
+func (s *stream) forwardToPublisher(msg signalMessage, sender *client) error {
+	if msg.Source == "" && sender != nil {
+		msg.Source = sender.role
+	}
+	s.mu.Lock()
+	publisher := s.publisher
+	s.mu.Unlock()
+	if publisher == nil {
+		return fmt.Errorf("publisher not connected")
+	}
+	return publisher.sendSignal(msg)
+}
+
+func (s *stream) broadcastToSubscribers(msg signalMessage, sender *client) error {
+	if msg.Source == "" && sender != nil {
+		msg.Source = sender.role
+	}
+	s.mu.Lock()
+	recipients := make([]*client, 0, len(s.subscribers)+len(s.pending))
+	for subscriber := range s.subscribers {
+		if subscriber != sender {
+			recipients = append(recipients, subscriber)
+		}
+	}
+	for _, pending := range s.pending {
+		if pending != sender {
+			recipients = append(recipients, pending)
+		}
+	}
+	s.mu.Unlock()
+
+	if len(recipients) == 0 {
+		return nil
+	}
+
+	var firstErr error
+	for _, subscriber := range recipients {
+		if err := subscriber.sendSignal(msg); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			log.Printf("failed to deliver control message to subscriber: %v", err)
+		}
+	}
+	return firstErr
+}
+
+func (data telemetryData) toSignalMessage() signalMessage {
+	msg := signalMessage{Type: "telemetry", Source: data.Source}
+	msg.Latitude = float64Ptr(data.Latitude)
+	msg.Longitude = float64Ptr(data.Longitude)
+	if data.Altitude != nil {
+		msg.Altitude = data.Altitude
+	}
+	if data.Accuracy != nil {
+		msg.Accuracy = data.Accuracy
+	}
+	if data.Timestamp > 0 {
+		msg.Timestamp = int64Ptr(data.Timestamp)
+	}
+	return msg
+}
+
+func isValidLatitude(lat float64) bool {
+	if math.IsNaN(lat) || math.IsInf(lat, 0) {
+		return false
+	}
+	return lat >= -90 && lat <= 90
+}
+
+func isValidLongitude(lng float64) bool {
+	if math.IsNaN(lng) || math.IsInf(lng, 0) {
+		return false
+	}
+	return lng >= -180 && lng <= 180
+}
+
+func float64Ptr(v float64) *float64 {
+	return &v
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
+}
+
 func main() {
-	addr := flag.String("addr", ":8080", "http service address")
+	addr := flag.String("addr", ":8080", "HTTP service address (empty to disable HTTP)")
+	httpsAddr := flag.String("https-addr", "", "HTTPS service address (requires TLS flags; empty disables HTTPS)")
+	certFile := flag.String("tls-cert", "", "Path to a TLS certificate in PEM format")
+	keyFile := flag.String("tls-key", "", "Path to the TLS private key in PEM format")
 	flag.Parse()
+
+	if (*certFile == "") != (*keyFile == "") {
+		log.Fatal("both --tls-cert and --tls-key must be provided to enable TLS")
+	}
+	if *httpsAddr != "" && *certFile == "" {
+		log.Fatal("--https-addr requires both --tls-cert and --tls-key")
+	}
 
 	manager := newStreamManager()
 	http.HandleFunc("/ws", manager.handleWebsocket)
-
-	log.Printf("Pion WebRTC relay listening on %s", *addr)
-	if err := http.ListenAndServe(*addr, nil); err != nil {
-		log.Fatalf("server failed: %v", err)
+	if err := os.MkdirAll(recording.DirName, 0o755); err != nil {
+		log.Fatalf("failed to create recording directory: %v", err)
 	}
+
+	type listener struct {
+		addr     string
+		protocol string
+		serve    func() error
+	}
+
+	var listeners []listener
+	if *addr != "" {
+		listeners = append(listeners, listener{
+			addr:     *addr,
+			protocol: "HTTP",
+			serve: func() error {
+				log.Printf("Pion WebRTC relay listening on %s (HTTP)", *addr)
+				return http.ListenAndServe(*addr, nil)
+			},
+		})
+	}
+
+	if *httpsAddr != "" {
+		addrCopy := *httpsAddr
+		listeners = append(listeners, listener{
+			addr:     addrCopy,
+			protocol: "HTTPS",
+			serve: func() error {
+				log.Printf("Pion WebRTC relay listening on %s (HTTPS)", addrCopy)
+				return http.ListenAndServeTLS(addrCopy, *certFile, *keyFile, nil)
+			},
+		})
+	} else if *certFile != "" {
+		log.Printf("Pion WebRTC relay listening on %s (HTTPS)", *addr)
+		if err := http.ListenAndServeTLS(*addr, *certFile, *keyFile, nil); err != nil {
+			log.Fatalf("server failed: %v", err)
+		}
+		return
+	}
+
+	if len(listeners) == 0 {
+		log.Fatal("no listeners configured: provide --addr, --https-addr, or TLS flags")
+	}
+
+	if len(listeners) == 1 {
+		if err := listeners[0].serve(); err != nil {
+			log.Fatalf("%s server failed: %v", listeners[0].protocol, err)
+		}
+		return
+	}
+
+	errCh := make(chan error, len(listeners))
+	for i := range listeners {
+		go func(l listener) {
+			if err := l.serve(); err != nil {
+				errCh <- fmt.Errorf("%s server failed: %w", l.protocol, err)
+			}
+		}(listeners[i])
+	}
+
+	err := <-errCh
+	log.Fatal(err)
 }

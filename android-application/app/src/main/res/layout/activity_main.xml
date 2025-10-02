@@ -1,133 +1,275 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.drawerlayout.widget.DrawerLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/drawer_layout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:fitsSystemWindows="true"
     tools:context=".MainActivity">
 
-    <com.google.android.material.appbar.MaterialToolbar
-        android:id="@+id/toolbar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="?attr/colorSurface"
-        android:elevation="4dp"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        app:title="@string/app_name"
-        app:titleCentered="false"
-        app:layout_scrollFlags="scroll|enterAlways"
-        app:titleTextAppearance="@style/TextAppearance.MaterialComponents.Headline6" />
-
-    <androidx.constraintlayout.widget.ConstraintLayout
-        android:id="@+id/main_content_constraint_layout"
+    <androidx.coordinatorlayout.widget.CoordinatorLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+        android:fitsSystemWindows="true">
 
-        <org.webrtc.SurfaceViewRenderer
-            android:id="@+id/videoRenderer"
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:background="@android:color/black"
-            app:layout_constraintTop_toTopOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintHeight_percent="0.4" />
-
-        <org.osmdroid.views.MapView
-            android:id="@+id/mapView"
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:contentDescription="@string/flight_map_content_description"
-            app:layout_constraintTop_toBottomOf="@+id/videoRenderer"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintEnd_toEndOf="parent" />
-
-        <!-- togglePathButton는 CoordinatorLayout의 자식으로 이동됩니다. -->
-
-    </androidx.constraintlayout.widget.ConstraintLayout>
-
-    <!-- flightPathSheet는 이제 CoordinatorLayout의 직접적인 자식입니다. -->
-    <LinearLayout
-        android:id="@+id/flightPathSheet"
-        android:layout_width="match_parent"
-        android:layout_height="360dp" 
-        android:background="@drawable/bg_bottom_sheet"
-        android:orientation="vertical"
-        android:padding="16dp"
-        app:behavior_hideable="true"
-        app:behavior_peekHeight="64dp"
-        app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
-
-        <View
-            android:layout_width="40dp"
-            android:layout_height="4dp"
-            android:layout_gravity="center_horizontal"
-            android:background="@drawable/bg_bottom_sheet_handle"
-            android:contentDescription="@string/bottom_sheet_handle" />
-
-        <TextView
-            android:id="@+id/flightPathTitle"
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:paddingTop="12dp"
-            android:text="@string/flight_path_overview"
-            android:textAppearance="@style/TextAppearance.MaterialComponents.Subtitle1"
-            android:textStyle="bold" />
+            android:background="?attr/colorSurface"
+            android:elevation="4dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            app:layout_scrollFlags="scroll|enterAlways"
+            app:title="@string/app_name"
+            app:titleCentered="false"
+            app:titleTextAppearance="@style/TextAppearance.MaterialComponents.Headline6" />
 
-        <TextView
-            android:id="@+id/pathSummary"
+        <androidx.constraintlayout.widget.ConstraintLayout
+            android:id="@+id/main_content_constraint_layout"
             android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            app:layout_behavior="@string/appbar_scrolling_view_behavior">
+
+            <org.webrtc.SurfaceViewRenderer
+                android:id="@+id/videoRenderer"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintHeight_percent="0.4"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <org.osmdroid.views.MapView
+                android:id="@+id/mapView"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:contentDescription="@string/flight_map_content_description"
+                android:layout_marginTop="12dp"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/videoRenderer" />
+
+        </androidx.constraintlayout.widget.ConstraintLayout>
+
+        <LinearLayout
+            android:id="@+id/flightPathSheet"
+            android:layout_width="match_parent"
+            android:layout_height="360dp"
+            android:background="@drawable/bg_bottom_sheet"
+            android:orientation="vertical"
+            android:padding="16dp"
+            app:behavior_hideable="true"
+            app:behavior_peekHeight="0dp"
+            app:behavior_skipCollapsed="true"
+            app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
+
+            <View
+                android:layout_width="40dp"
+                android:layout_height="4dp"
+                android:layout_gravity="center_horizontal"
+                android:background="@drawable/bg_bottom_sheet_handle"
+                android:contentDescription="@string/bottom_sheet_handle" />
+
+            <TextView
+                android:id="@+id/flightPathTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="12dp"
+                android:text="@string/flight_path_overview"
+                android:textAppearance="@style/TextAppearance.MaterialComponents.Subtitle1"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/pathSummary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingBottom="8dp"
+                android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
+                tools:text="3 waypoints • 1.5 km planned" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/waypointList"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:clipToPadding="false"
+                android:paddingBottom="8dp"
+                tools:listitem="@layout/item_waypoint" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/nextWaypointLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/next_waypoint"
+                    android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/nextWaypointValue"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
+                    tools:text="WP-2" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
+            android:id="@+id/togglePathButton"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:paddingBottom="8dp"
-            android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
-            tools:text="3 waypoints • 1.5 km planned" />
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="80dp"
+            android:text="@string/toggle_path_panel"
+            app:backgroundTint="@color/pastelBlue"
+            app:icon="@drawable/ic_route" />
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/waypointList"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:clipToPadding="false"
-            android:paddingBottom="8dp"
-            tools:listitem="@layout/item_waypoint" />
+    </androidx.coordinatorlayout.widget.CoordinatorLayout>
+
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/streamingDrawer"
+        android:layout_width="320dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="?attr/colorSurface"
+        android:fitsSystemWindows="true"
+        android:padding="16dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:orientation="vertical">
 
             <TextView
-                android:id="@+id/nextWaypointLabel"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="@string/next_waypoint"
-                android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
+                android:text="@string/streaming_drawer_title"
+                android:textAppearance="@style/TextAppearance.MaterialComponents.Headline6"
                 android:textStyle="bold" />
 
             <TextView
-                android:id="@+id/nextWaypointValue"
-                android:layout_width="0dp"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:textAppearance="@style/TextAppearance.MaterialComponents.Body2"
-                tools:text="WP-2" />
+                android:layout_marginTop="4dp"
+                android:text="@string/streaming_drawer_subtitle"
+                android:textAppearance="@style/TextAppearance.MaterialComponents.Body2" />
+
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/streamingControlCard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                app:cardElevation="2dp"
+                app:cardUseCompatPadding="false">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:id="@+id/streamingControlTitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/streaming_options_title"
+                        android:textAppearance="@style/TextAppearance.MaterialComponents.Subtitle1"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/streamingControlDescription"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/streaming_options_description"
+                        android:textAppearance="@style/TextAppearance.MaterialComponents.Body2" />
+
+                    <com.google.android.material.button.MaterialButtonToggleGroup
+                        android:id="@+id/streamingSourceToggle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        app:checkedButton="@id/streamSourceDrone"
+                        app:singleSelection="true">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/streamSourceDrone"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/streaming_source_drone" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/streamSourceMobile"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/streaming_source_mobile" />
+
+                    </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                    <com.google.android.material.switchmaterial.SwitchMaterial
+                        android:id="@+id/includeGpsSwitch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:checked="true"
+                        android:text="@string/streaming_option_include_gps"
+                        android:textAppearance="@style/TextAppearance.MaterialComponents.Body1" />
+
+                    <com.google.android.material.switchmaterial.SwitchMaterial
+                        android:id="@+id/includeAudioSwitch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/streaming_option_include_audio"
+                        android:textAppearance="@style/TextAppearance.MaterialComponents.Body1" />
+
+                    <TextView
+                        android:id="@+id/streamingSummaryText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:textAppearance="@style/TextAppearance.MaterialComponents.Caption"
+                        tools:text="드론 카메라 • GPS 사용 • 오디오 미사용" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/startStreamingButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/streaming_action_drone"
+                        app:icon="@drawable/ic_videocam"
+                        app:iconGravity="textStart"
+                        app:iconPadding="8dp" />
+
+                </LinearLayout>
+
+            </com.google.android.material.card.MaterialCardView>
+
         </LinearLayout>
-    </LinearLayout>
 
-    <!-- togglePathButton는 이제 CoordinatorLayout의 직접적인 자식입니다. -->
-    <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
-        android:id="@+id/togglePathButton"
+    </androidx.core.widget.NestedScrollView>
+
+    <com.google.android.material.navigation.NavigationView
+        android:id="@+id/settingsNavigationView"
         android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="80dp"  
-        android:text="@string/toggle_path_panel"
-        app:icon="@drawable/ic_route" />
+        android:layout_height="match_parent"
+        android:layout_gravity="end"
+        android:background="?attr/colorSurface"
+        android:fitsSystemWindows="true"
+        app:menu="@menu/menu_settings_drawer" />
 
-</androidx.coordinatorlayout.widget.CoordinatorLayout>
+</androidx.drawerlayout.widget.DrawerLayout>
