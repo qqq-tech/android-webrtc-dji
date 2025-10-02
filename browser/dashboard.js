@@ -490,13 +490,13 @@ function normaliseWorkflowStatus(status) {
       : '';
   const options = Array.isArray(status.options)
     ? status.options
-        .map((option) => (typeof option === 'string' ? option.trim() : ''))
-        .filter((option, index, array) => option && array.indexOf(option) === index)
+      .map((option) => (typeof option === 'string' ? option.trim() : ''))
+      .filter((option, index, array) => option && array.indexOf(option) === index)
     : [];
   const missingOptions = Array.isArray(status.missingOptions)
     ? status.missingOptions
-        .map((option) => (typeof option === 'string' ? option.trim() : ''))
-        .filter((option, index, array) => option && array.indexOf(option) === index)
+      .map((option) => (typeof option === 'string' ? option.trim() : ''))
+      .filter((option, index, array) => option && array.indexOf(option) === index)
     : [];
   const includeTranscription = Object.prototype.hasOwnProperty.call(status, 'includeTranscription')
     ? Boolean(status.includeTranscription)
@@ -838,13 +838,13 @@ function extractEmbeddingStatus(record) {
       : '';
   const options = Array.isArray(status.options)
     ? status.options
-        .map((option) => (typeof option === 'string' ? option.trim() : ''))
-        .filter((option, index, array) => option && array.indexOf(option) === index)
+      .map((option) => (typeof option === 'string' ? option.trim() : ''))
+      .filter((option, index, array) => option && array.indexOf(option) === index)
     : [];
   const missingOptions = Array.isArray(status.missingOptions)
     ? status.missingOptions
-        .map((option) => (typeof option === 'string' ? option.trim() : ''))
-        .filter((option, index, array) => option && array.indexOf(option) === index)
+      .map((option) => (typeof option === 'string' ? option.trim() : ''))
+      .filter((option, index, array) => option && array.indexOf(option) === index)
     : [];
   const updatedAt = status.updatedAt || status.updated_at || null;
   const stage = getWorkflowStageValue({
@@ -1214,11 +1214,11 @@ function resolveEmbeddingIdentifier(record) {
 
   const metadataEmbedding =
     record.video &&
-    typeof record.video === 'object' &&
-    record.video.metadata &&
-    typeof record.video.metadata === 'object' &&
-    record.video.metadata.embedding &&
-    typeof record.video.metadata.embedding === 'object'
+      typeof record.video === 'object' &&
+      record.video.metadata &&
+      typeof record.video.metadata === 'object' &&
+      record.video.metadata.embedding &&
+      typeof record.video.metadata.embedding === 'object'
       ? record.video.metadata.embedding
       : null;
   if (metadataEmbedding) {
@@ -1239,9 +1239,9 @@ function rememberEmbeddingState(recording, record) {
 
   const rawStatus =
     record &&
-    typeof record === 'object' &&
-    record.embeddingStatus &&
-    typeof record.embeddingStatus === 'object'
+      typeof record === 'object' &&
+      record.embeddingStatus &&
+      typeof record.embeddingStatus === 'object'
       ? record.embeddingStatus
       : null;
   const statusInfo = rawStatus ? extractEmbeddingStatus(record) : null;
@@ -1391,8 +1391,8 @@ function resolveIntegrationErrorMessage(result, fallbackMessage) {
     (requestType === 'embed'
       ? 'Failed to request Twelve Labs embeddings.'
       : requestType === 'start'
-      ? 'Failed to request Twelve Labs analysis.'
-      : 'Failed to retrieve the Twelve Labs analysis status.');
+        ? 'Failed to request Twelve Labs analysis.'
+        : 'Failed to retrieve the Twelve Labs analysis status.');
   const fallback =
     fallbackBase || 'Failed to obtain a response from the Twelve Labs service.';
   if (!result || typeof result !== 'object') {
@@ -1505,14 +1505,14 @@ function getAnalysisIdentifiers(recording) {
     typeof recording.streamId === 'string' && recording.streamId.trim().length > 0
       ? recording.streamId.trim()
       : typeof recording.StreamID === 'string' && recording.StreamID.trim().length > 0
-      ? recording.StreamID.trim()
-      : '';
+        ? recording.StreamID.trim()
+        : '';
   let fileNameValue =
     typeof recording.fileName === 'string' && recording.fileName.trim().length > 0
       ? recording.fileName.trim()
       : typeof recording.FileName === 'string' && recording.FileName.trim().length > 0
-      ? recording.FileName.trim()
-      : '';
+        ? recording.FileName.trim()
+        : '';
   if (!fileNameValue) {
     const urlValue =
       (typeof recording.url === 'string' && recording.url.trim()) ||
@@ -1659,8 +1659,8 @@ function buildAnalysisCompleteMessage(record, cached) {
     updatedAt && !Number.isNaN(updatedAt.valueOf())
       ? updatedAt.toLocaleString()
       : typeof record.updatedAt === 'string'
-      ? record.updatedAt
-      : '';
+        ? record.updatedAt
+        : '';
   return formatted
     ? `Twelve Labs analysis completed on ${formatted}.`
     : 'Twelve Labs analysis completed.';
@@ -1698,8 +1698,8 @@ function buildEmbeddingsMessage(record, cached) {
     retrievedAt && !Number.isNaN(retrievedAt.valueOf())
       ? retrievedAt.toLocaleString()
       : typeof embeddings.retrievedAt === 'string'
-      ? embeddings.retrievedAt
-      : '';
+        ? embeddings.retrievedAt
+        : '';
   if (cached) {
     return formatted
       ? `Showing stored Twelve Labs embeddings (${options}) from ${formatted}.`
@@ -1955,10 +1955,10 @@ function normaliseRecording(recording) {
   const durationSeconds = Number.isFinite(recording.durationSeconds)
     ? recording.durationSeconds
     : Number.isFinite(recording.duration)
-    ? recording.duration
-    : Number.isFinite(recording.lengthSeconds)
-    ? recording.lengthSeconds
-    : null;
+      ? recording.duration
+      : Number.isFinite(recording.lengthSeconds)
+        ? recording.lengthSeconds
+        : null;
   const formattedDuration = formatRecordingDuration(durationSeconds);
   const durationText =
     typeof recording.durationText === 'string' && recording.durationText.trim().length > 0
@@ -1968,24 +1968,24 @@ function normaliseRecording(recording) {
   const sizeBytes = Number.isFinite(recording.sizeBytes)
     ? recording.sizeBytes
     : Number.isFinite(recording.size)
-    ? recording.size
-    : Number.isFinite(recording.fileSize)
-    ? recording.fileSize
-    : null;
+      ? recording.size
+      : Number.isFinite(recording.fileSize)
+        ? recording.fileSize
+        : null;
   const formattedSize = formatFileSize(sizeBytes);
   const sizeText =
     typeof recording.sizeText === 'string' && recording.sizeText.trim().length > 0
       ? recording.sizeText.trim()
       : typeof recording.size === 'string' && recording.size.trim().length > 0
-      ? recording.size.trim()
-      : formattedSize;
+        ? recording.size.trim()
+        : formattedSize;
 
   const location = typeof recording.location === 'string' ? recording.location.trim() : '';
   const notes = typeof recording.notes === 'string' ? recording.notes.trim() : '';
   const tags = Array.isArray(recording.tags)
     ? recording.tags
-        .map((tag) => (typeof tag === 'string' ? tag.trim() : ''))
-        .filter((tag) => tag.length > 0)
+      .map((tag) => (typeof tag === 'string' ? tag.trim() : ''))
+      .filter((tag) => tag.length > 0)
     : [];
 
   const metaParts = [];
@@ -2181,8 +2181,8 @@ function renderRecordingsList() {
       const pendingStatusInfo = isEmbeddingPendingStatus(statusInfo)
         ? statusInfo
         : isWorkflowPendingStatus(sharedEmbeddingStatus)
-        ? sharedEmbeddingStatus
-        : null;
+          ? sharedEmbeddingStatus
+          : null;
       const embeddingPending = Boolean(pendingStatusInfo);
       const embeddingReady =
         hasEmbeddingSuccess(recording) ||
@@ -2512,8 +2512,8 @@ function renderAnalysisResult(record, cached) {
     updatedAt && !Number.isNaN(updatedAt.valueOf())
       ? updatedAt.toLocaleString()
       : typeof record?.updatedAt === 'string'
-      ? record.updatedAt
-      : '';
+        ? record.updatedAt
+        : '';
 
   if (record?.videoId) {
     appendAnalysisMeta(metaGrid, 'Video ID', record.videoId);
@@ -2638,18 +2638,18 @@ function renderAnalysisResult(record, cached) {
       typeof gistResponse.title === 'string'
         ? gistResponse.title
         : typeof gistResponse.Title === 'string'
-        ? gistResponse.Title
-        : '';
+          ? gistResponse.Title
+          : '';
     const gistTopics = Array.isArray(gistResponse.topics)
       ? gistResponse.topics
       : Array.isArray(gistResponse.Topics)
-      ? gistResponse.Topics
-      : [];
+        ? gistResponse.Topics
+        : [];
     const gistHashtags = Array.isArray(gistResponse.hashtags)
       ? gistResponse.hashtags
       : Array.isArray(gistResponse.Hashtags)
-      ? gistResponse.Hashtags
-      : [];
+        ? gistResponse.Hashtags
+        : [];
 
     if (gistTitle || gistTopics.length > 0 || gistHashtags.length > 0) {
       const gistBlock = document.createElement('div');
@@ -2881,9 +2881,9 @@ function renderAnalysisResult(record, cached) {
 
   const textParagraphs = analysisText
     ? analysisText
-        .split(/\n{2,}/)
-        .map((paragraph) => paragraph.trim())
-        .filter((paragraph) => paragraph.length > 0)
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.trim())
+      .filter((paragraph) => paragraph.length > 0)
     : [];
 
   const paragraphs = textParagraphs.length > 0 ? textParagraphs : analysisChunks;
@@ -3253,8 +3253,8 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
     const defaultStatus = isEmbeddingPendingStatus(statusInfo)
       ? 'pending'
       : cachedResult
-      ? 'cached'
-      : 'ok';
+        ? 'cached'
+        : 'ok';
     updateAnalysisViewWithRecord(
       recording,
       cachedRecord,
@@ -3273,8 +3273,8 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
   const pendingStatusInfo = isEmbeddingPendingStatus(statusInfo)
     ? statusInfo
     : isWorkflowPendingStatus(sharedEmbeddingStatus)
-    ? sharedEmbeddingStatus
-    : null;
+      ? sharedEmbeddingStatus
+      : null;
   const sharedAnalysisStatus = getSharedAnalysisStatus(recording);
   const embeddingReady =
     hasEmbeddingSuccess(recording) ||
@@ -3444,7 +3444,7 @@ function refreshActiveAnalysisStatus(options = {}) {
   }
 
   updateAnalysisPanelForRecording(recording, { preserveExistingResult: true });
-  void loadCachedAnalysis(recording, { force });
+  //void loadCachedAnalysis(recording, { force });
 }
 
 function setSelectedRecording(recording, options = {}) {
@@ -3827,16 +3827,16 @@ function adaptServerRecording(recording) {
       typeof recording.streamId === 'string' && recording.streamId.trim().length > 0
         ? recording.streamId.trim()
         : typeof recording.StreamID === 'string' && recording.StreamID.trim().length > 0
-        ? recording.StreamID.trim()
-        : '';
+          ? recording.StreamID.trim()
+          : '';
     const namePart =
       typeof adapted.name === 'string' && adapted.name.trim().length > 0
         ? adapted.name.trim()
         : typeof recording.fileName === 'string' && recording.fileName.trim().length > 0
-        ? recording.fileName.trim()
-        : typeof recording.FileName === 'string' && recording.FileName.trim().length > 0
-        ? recording.FileName.trim()
-        : '';
+          ? recording.fileName.trim()
+          : typeof recording.FileName === 'string' && recording.FileName.trim().length > 0
+            ? recording.FileName.trim()
+            : '';
     if (streamPart && namePart) {
       adapted.id = `${streamPart}/${namePart}`;
     } else if (namePart) {
@@ -4311,18 +4311,18 @@ establishStreamConnection();
 const detectionSocket = new WebSocket(detectionUrl);
 
 detectionSocket.addEventListener('message', (event) => {
-    try {
-      const message = JSON.parse(event.data);
-      latestDetections = message;
-      detectionStatus.textContent = message.detections?.length ?? 0;
-      if (message.timestamp) {
-        const date = new Date(message.timestamp);
-        detectionTimestamp.textContent = date.toLocaleTimeString();
-      }
-      maybeNotifyDetections(message);
-    } catch (error) {
-      console.error('Invalid detection payload', error);
+  try {
+    const message = JSON.parse(event.data);
+    latestDetections = message;
+    detectionStatus.textContent = message.detections?.length ?? 0;
+    if (message.timestamp) {
+      const date = new Date(message.timestamp);
+      detectionTimestamp.textContent = date.toLocaleTimeString();
     }
+    maybeNotifyDetections(message);
+  } catch (error) {
+    console.error('Invalid detection payload', error);
+  }
 });
 
 detectionSocket.addEventListener('close', () => {
