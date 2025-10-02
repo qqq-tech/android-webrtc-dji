@@ -1831,18 +1831,16 @@ function createVideoPlaybackBlock(record) {
     section.appendChild(videoWrapper);
 
     const initialised = initialiseHlsPlayback(videoElement, hlsUrl);
-    const linkParagraph = document.createElement('p');
-    linkParagraph.className = 'analysis-video-note';
-    const link = document.createElement('a');
-    link.href = hlsUrl;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.textContent = 'Open HLS stream in a new tab';
     if (initialised) {
-      linkParagraph.textContent = 'Having playback issues? ';
-      linkParagraph.appendChild(link);
-      section.appendChild(linkParagraph);
+      // When the browser can play HLS directly, avoid rendering the fallback note/link.
     } else {
+      const linkParagraph = document.createElement('p');
+      linkParagraph.className = 'analysis-video-note';
+      const link = document.createElement('a');
+      link.href = hlsUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = 'Open HLS stream in a new tab';
       linkParagraph.textContent = '';
       linkParagraph.append(
         'This browser cannot play the Twelve Labs HLS stream directly. '
