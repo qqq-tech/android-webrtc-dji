@@ -567,7 +567,7 @@ class TwelveLabsAnalysisService:
                 chunk_texts.append(cleaned.strip())
 
             analysis_chunks = [chunk for chunk in chunk_texts if chunk]
-            combined_text = " ".join(analysis_chunks)
+            combined_text = "".join(analysis_chunks)
             analysis_text = AnalysisText(text=combined_text, chunks=analysis_chunks)
 
             timestamp = _utc_now()
