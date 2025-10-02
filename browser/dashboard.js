@@ -1681,6 +1681,10 @@ function storeAnalysisRecord(
     cached: Boolean(cached),
     hasAnalysis: recordHasAnalysisContent(record),
     checkedAt: timestamp,
+    errorStatus: null,
+    errorMessage: null,
+    errorCode: null,
+    errorDetails: null,
   };
 
   if (extras && typeof extras === 'object') {
@@ -1702,6 +1706,10 @@ function storeAnalysisStatusSnapshot(recording, result, timestamp = Date.now()) 
 
   const updates = {
     checkedAt: timestamp,
+    errorStatus: null,
+    errorMessage: null,
+    errorCode: null,
+    errorDetails: null,
   };
 
   const statusValue = result && typeof result.status === 'string' ? result.status : null;
@@ -3192,6 +3200,28 @@ function updateAnalysisStatusBadgeDisplay() {
   analysisStatusBadge.dataset.tone = config.tone;
 }
 
+function refreshAnalysisViewFromCache(recording, options = {}) {
+  const { preserveExistingResult = true, refreshList = true } = options;
+
+  if (refreshList) {
+    renderRecordingsList();
+  }
+
+  if (!recording) {
+    return;
+  }
+
+  const activeRecording = analysisViewState.recording;
+  if (!activeRecording || activeRecording.id !== recording.id) {
+    return;
+  }
+
+  updateAnalysisPanelForRecording(recording, {
+    preserveExistingResult,
+    triggerLoad: false,
+  });
+}
+
 function setAnalysisView(recording, status, message, result = null, cached = false, errorCode = null) {
   const resolvedMessage = message || defaultAnalysisMessage;
   const resolvedCached = Boolean(cached);
@@ -3265,12 +3295,13 @@ async function loadCachedAnalysis(recording, options = {}) {
           result,
           'Failed to check the Twelve Labs analysis status.'
         );
-        if (analysisViewState.recording?.id === recording.id) {
-          setAnalysisView(recording, 'error', errorMessage, null, false, result.code || result.status);
-        }
         updateAnalysisCacheEntry(recording, {
           checkedAt: timestamp,
+          errorStatus: result.status || 'error',
+          errorMessage,
+          errorCode: result.code || null,
         });
+        refreshAnalysisViewFromCache(recording, { preserveExistingResult: false });
         return null;
       }
 
@@ -3283,53 +3314,33 @@ async function loadCachedAnalysis(recording, options = {}) {
           if (!hasEmbeddingStatus) {
             rememberEmbeddingState(recording, null);
           }
-          if (analysisViewState.recording?.id === recording.id) {
-            const displayName =
-              (recording && typeof recording.displayName === 'string' && recording.displayName) ||
-              'this recording';
-            const fallbackMessage =
-              result.message ||
-              `No stored Twelve Labs analysis found for “${displayName}” yet. Press “Analyze” to generate insights.`;
-            setAnalysisView(recording, 'missing', fallbackMessage, null, false, result.code || result.status);
-          }
         } else {
           storeAnalysisStatusSnapshot(recording, result, timestamp);
         }
+        refreshAnalysisViewFromCache(recording);
         return null;
       }
 
       const cachedResult = Boolean(result.cached);
       const metadataUpdates = extractAnalysisCacheMetadata(result);
       storeAnalysisRecord(recording, result.record, cachedResult, timestamp, metadataUpdates);
-      if (analysisViewState.recording?.id === recording.id) {
-        const baseMessage =
-          result.message || buildAnalysisCompleteMessage(result.record, cachedResult);
-        const combinedMessage = combineAnalysisAndEmbeddingMessages(
-          result.record,
-          baseMessage,
-          cachedResult
-        );
-        const defaultStatus = cachedResult ? 'cached' : result.status || 'ok';
-        updateAnalysisViewWithRecord(
-          recording,
-          result.record,
-          cachedResult,
-          defaultStatus,
-          combinedMessage,
-          {
-            embeddingStage: result.embeddingStage,
-            embeddingStatus: result.embeddingStatus,
-          }
-        );
-      }
-      renderRecordingsList();
+      refreshAnalysisViewFromCache(recording);
       return result;
     } catch (error) {
       console.error('Failed to load stored Twelve Labs analysis', error);
       const timestamp = Date.now();
+      const fallbackMessage =
+        error instanceof Error
+          ? error.message || 'Failed to load stored Twelve Labs analysis.'
+          : 'Failed to load stored Twelve Labs analysis.';
       updateAnalysisCacheEntry(recording, {
         checkedAt: timestamp,
+        errorStatus: 'error',
+        errorMessage: 'Failed to load stored Twelve Labs analysis. Please try again.',
+        errorCode: 'load_failed',
+        errorDetails: fallbackMessage,
       });
+      refreshAnalysisViewFromCache(recording, { preserveExistingResult: false });
       return null;
     } finally {
       analysisStatusRequests.delete(key);
@@ -3389,6 +3400,45 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
   }
 
   const cached = getCachedAnalysis(recording);
+  const cachedStatusValue =
+    cached && typeof cached.status === 'string' ? cached.status.trim().toLowerCase() : '';
+  const cachedStatusMessage =
+    cached && typeof cached.message === 'string' && cached.message.trim().length > 0
+      ? cached.message.trim()
+      : null;
+  const cachedErrorStatus =
+    cached && typeof cached.errorStatus === 'string' && cached.errorStatus.trim().length > 0
+      ? cached.errorStatus.trim()
+      : '';
+  const cachedErrorMessage =
+    cached && typeof cached.errorMessage === 'string' && cached.errorMessage.trim().length > 0
+      ? cached.errorMessage.trim()
+      : null;
+  const cachedErrorCode =
+    cached && typeof cached.errorCode === 'string' && cached.errorCode.trim().length > 0
+      ? cached.errorCode.trim()
+      : cachedErrorStatus || null;
+
+  if (cachedErrorStatus) {
+    const fallbackErrorMessage =
+      cachedErrorMessage || 'Failed to retrieve the Twelve Labs analysis status. Please try again.';
+    setAnalysisView(recording, 'error', fallbackErrorMessage, null, false, cachedErrorCode);
+    return;
+  }
+
+  if (!cached?.record && cachedStatusValue && ['missing', 'not_found', 'empty'].includes(cachedStatusValue)) {
+    const fallbackMessage =
+      cachedStatusMessage ||
+      `No stored Twelve Labs analysis found for “${displayName}” yet. Press “Analyze” to generate insights.`;
+    setAnalysisView(recording, 'missing', fallbackMessage, null, false, cachedStatusValue);
+    if (triggerLoad) {
+      void loadCachedAnalysis(recording).then(() => {
+        refreshAnalysisViewFromCache(recording, { preserveExistingResult: false });
+      });
+    }
+    return;
+  }
+
   if (cached?.record) {
     const cachedRecord = cached.record;
     const cachedResult = Boolean(cached.cached);
@@ -3447,7 +3497,9 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
   if (shouldMaintainActiveStatus) {
     applyView(existingStatus, existingMessage || defaultAnalysisMessage);
     if (triggerLoad) {
-      void loadCachedAnalysis(recording);
+      void loadCachedAnalysis(recording).then(() => {
+        refreshAnalysisViewFromCache(recording);
+      });
     }
     return;
   }
@@ -3477,7 +3529,9 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
       preservedErrorCode
     );
     if (triggerLoad) {
-      void loadCachedAnalysis(recording);
+      void loadCachedAnalysis(recording).then(() => {
+        refreshAnalysisViewFromCache(recording);
+      });
     }
     return;
   }
@@ -3518,7 +3572,9 @@ function updateAnalysisPanelForRecording(recording, options = {}) {
   }
 
   if (triggerLoad) {
-    void loadCachedAnalysis(recording);
+    void loadCachedAnalysis(recording).then(() => {
+      refreshAnalysisViewFromCache(recording);
+    });
   }
 }
 
@@ -3593,7 +3649,9 @@ function refreshActiveAnalysisStatus(options = {}) {
   }
 
   updateAnalysisPanelForRecording(recording, { preserveExistingResult: true });
-  void loadCachedAnalysis(recording, { force });
+  void loadCachedAnalysis(recording, { force }).then(() => {
+    refreshAnalysisViewFromCache(recording);
+  });
 }
 
 function setSelectedRecording(recording, options = {}) {
@@ -4095,7 +4153,9 @@ async function refreshRecordingsList() {
             'ready',
             `Press “Analyze” to request AI insights for “${selected.displayName}” via Twelve Labs.`
           );
-          void loadCachedAnalysis(selected);
+          void loadCachedAnalysis(selected).then(() => {
+            refreshAnalysisViewFromCache(selected);
+          });
         }
       } else {
         selectedRecordingId = null;
