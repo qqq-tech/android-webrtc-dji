@@ -379,18 +379,18 @@ const analysisViewState = {
   errorCode: null,
 };
 
+const ANALYSIS_STATUS_REFRESH_INTERVAL_MS = 5000;
 const analysisCache = new Map();
+const analysisStatusRequests = new Map();
 const embeddingSuccessCache = new Map();
 const EMBEDDING_INITIAL_POLL_DELAY_MS = 30000;
 const EMBEDDING_POLL_INTERVAL_MS = 5000;
 const embeddingMonitorState = new Map();
-const WORKFLOW_SYNC_STORAGE_KEY = 'djiDashboardWorkflowState';
 const WORKFLOW_SYNC_CHANNEL_NAME = 'dji-dashboard-workflow';
 const WORKFLOW_SYNC_TTL_MS = 60 * 60 * 1000;
 const workflowSyncState = new Map();
 const workflowSyncClientId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let workflowSyncChannel = null;
-let workflowSyncStorageAvailable = null;
 const WORKFLOW_PENDING_STATES = new Set([
   'pending',
   'starting',
@@ -443,18 +443,7 @@ function getWorkflowStageValue(statusInfo) {
 }
 
 function isWorkflowSyncStorageSupported() {
-  if (workflowSyncStorageAvailable !== null) {
-    return workflowSyncStorageAvailable;
-  }
-  try {
-    const testKey = `${WORKFLOW_SYNC_STORAGE_KEY}:${workflowSyncClientId}`;
-    window.localStorage.setItem(testKey, '1');
-    window.localStorage.removeItem(testKey);
-    workflowSyncStorageAvailable = true;
-  } catch (error) {
-    workflowSyncStorageAvailable = false;
-  }
-  return workflowSyncStorageAvailable;
+  return false;
 }
 
 function getWorkflowStatusTimestamp(status) {
@@ -655,18 +644,6 @@ function persistWorkflowSyncState() {
       console.warn('Failed to broadcast workflow sync update', error);
     }
   }
-  if (!isWorkflowSyncStorageSupported()) {
-    return;
-  }
-  try {
-    if (payload.entries.length === 0) {
-      window.localStorage.removeItem(WORKFLOW_SYNC_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(WORKFLOW_SYNC_STORAGE_KEY, JSON.stringify(payload));
-    }
-  } catch (error) {
-    console.warn('Failed to persist workflow sync state', error);
-  }
 }
 
 function updateWorkflowSyncStateByKey(key, updates) {
@@ -753,34 +730,6 @@ function initialiseWorkflowSync() {
   } catch (error) {
     workflowSyncChannel = null;
     console.warn('BroadcastChannel unavailable for workflow sync', error);
-  }
-
-  if (isWorkflowSyncStorageSupported()) {
-    try {
-      const stored = window.localStorage.getItem(WORKFLOW_SYNC_STORAGE_KEY);
-      if (stored) {
-        const payload = JSON.parse(stored);
-        applyWorkflowSyncPayload(payload);
-      }
-    } catch (error) {
-      console.warn('Failed to restore workflow sync state from storage', error);
-    }
-    window.addEventListener('storage', (event) => {
-      if (event.key !== WORKFLOW_SYNC_STORAGE_KEY) {
-        return;
-      }
-      if (!event.newValue) {
-        workflowSyncState.clear();
-        renderRecordingsList();
-        return;
-      }
-      try {
-        const payload = JSON.parse(event.newValue);
-        applyWorkflowSyncPayload(payload);
-      } catch (error) {
-        console.warn('Failed to parse workflow sync update from storage', error);
-      }
-    });
   }
 }
 
@@ -1611,6 +1560,7 @@ function storeAnalysisRecord(recording, record, cached) {
     record,
     cached: Boolean(cached),
     hasAnalysis: recordHasAnalysisContent(record),
+    checkedAt: Date.now(),
   });
   rememberEmbeddingState(recording, record);
 }
@@ -2946,83 +2896,162 @@ function setAnalysisView(recording, status, message, result = null, cached = fal
   renderAnalysisView();
 }
 
-async function loadCachedAnalysis(recording) {
+async function loadCachedAnalysis(recording, options = {}) {
   if (!analysisEndpoint || !analysisIntegrationAvailable) {
-    return;
+    return null;
   }
+  const { force = false } = options;
   const key = getAnalysisCacheKey(recording);
-  if (!key || analysisCache.has(key)) {
-    return;
+  if (!key) {
+    return null;
   }
-  try {
-    const result = await fetchAnalysis(recording, { start: false });
-    if (!result.ok) {
-      if (isAnalysisIntegrationError(result)) {
-        disableAnalysisIntegration(
-          recording,
-          result.error || 'Twelve Labs analysis is not configured on the server.',
-          result.code || result.status
-        );
-        return;
-      }
-      const errorMessage = resolveIntegrationErrorMessage(
-        result,
-        'Failed to check the Twelve Labs analysis status.'
-      );
-      if (analysisViewState.recording?.id === recording.id) {
-        setAnalysisView(recording, 'error', errorMessage, null, false, result.code || result.status);
-      }
-      return;
-    }
 
-    if (!result.record) {
-      const statusKey = (result.status || '').toLowerCase();
-      if (['not_found', 'missing', 'empty'].includes(statusKey)) {
-        const cacheKey = getAnalysisCacheKey(recording);
-        if (cacheKey && !analysisCache.has(cacheKey)) {
-          analysisCache.set(cacheKey, { record: null, cached: false, hasAnalysis: false });
-          const hasEmbeddingStatus =
-            Boolean(extractEmbeddingStatus(recording)) ||
-            Boolean(getSharedEmbeddingStatus(recording));
-          if (!hasEmbeddingStatus) {
-            rememberEmbeddingState(recording, null);
+  const existingEntry = analysisCache.get(key);
+  const now = Date.now();
+  if (!force && existingEntry) {
+    const hasAnalysisRecord = Boolean(existingEntry.hasAnalysis) && Boolean(existingEntry.record);
+    const lastChecked =
+      typeof existingEntry.checkedAt === 'number' && Number.isFinite(existingEntry.checkedAt)
+        ? existingEntry.checkedAt
+        : 0;
+    if (hasAnalysisRecord) {
+      return existingEntry;
+    }
+    if (now - lastChecked < ANALYSIS_STATUS_REFRESH_INTERVAL_MS) {
+      return existingEntry;
+    }
+  }
+
+  if (analysisStatusRequests.has(key)) {
+    return analysisStatusRequests.get(key);
+  }
+
+  const loadPromise = (async () => {
+    try {
+      const result = await fetchAnalysis(recording, { start: false });
+      const timestamp = Date.now();
+      if (!result.ok) {
+        if (isAnalysisIntegrationError(result)) {
+          disableAnalysisIntegration(
+            recording,
+            result.error || 'Twelve Labs analysis is not configured on the server.',
+            result.code || result.status
+          );
+          return null;
+        }
+        const errorMessage = resolveIntegrationErrorMessage(
+          result,
+          'Failed to check the Twelve Labs analysis status.'
+        );
+        if (analysisViewState.recording?.id === recording.id) {
+          setAnalysisView(recording, 'error', errorMessage, null, false, result.code || result.status);
+        }
+        const previousEntry = analysisCache.get(key);
+        if (previousEntry) {
+          analysisCache.set(key, { ...previousEntry, checkedAt: timestamp });
+        } else {
+          analysisCache.set(key, {
+            record: null,
+            cached: false,
+            hasAnalysis: false,
+            checkedAt: timestamp,
+          });
+        }
+        return null;
+      }
+
+      if (!result.record) {
+        const statusKey = (result.status || '').toLowerCase();
+        if (['not_found', 'missing', 'empty'].includes(statusKey)) {
+          const cacheKey = getAnalysisCacheKey(recording);
+          if (cacheKey) {
+            const previousEntry = analysisCache.get(cacheKey);
+            const hasEmbeddingStatus =
+              Boolean(extractEmbeddingStatus(recording)) || Boolean(getSharedEmbeddingStatus(recording));
+            const nextEntry = {
+              record: null,
+              cached: false,
+              hasAnalysis: false,
+              checkedAt: timestamp,
+            };
+            analysisCache.set(cacheKey, previousEntry ? { ...previousEntry, ...nextEntry } : nextEntry);
+            if (!hasEmbeddingStatus) {
+              rememberEmbeddingState(recording, null);
+            }
+          }
+          if (analysisViewState.recording?.id === recording.id) {
+            const displayName =
+              (recording && typeof recording.displayName === 'string' && recording.displayName) ||
+              'this recording';
+            const fallbackMessage =
+              result.message ||
+              `No stored Twelve Labs analysis found for “${displayName}” yet. Press “Analyze” to generate insights.`;
+            setAnalysisView(recording, 'missing', fallbackMessage, null, false, result.code || result.status);
           }
         }
-        if (analysisViewState.recording?.id === recording.id) {
-          const displayName =
-            (recording && typeof recording.displayName === 'string' && recording.displayName) ||
-            'this recording';
-          const fallbackMessage =
-            result.message ||
-            `No stored Twelve Labs analysis found for “${displayName}” yet. Press “Analyze” to generate insights.`;
-          setAnalysisView(recording, 'missing', fallbackMessage, null, false, result.code || result.status);
-        }
+        return null;
       }
-      return;
+
+      const cachedResult = Boolean(result.cached);
+      storeAnalysisRecord(recording, result.record, cachedResult);
+      const updatedEntry = analysisCache.get(key);
+      if (updatedEntry) {
+        analysisCache.set(key, { ...updatedEntry, checkedAt: timestamp });
+      }
+      if (analysisViewState.recording?.id === recording.id) {
+        const baseMessage =
+          result.message || buildAnalysisCompleteMessage(result.record, cachedResult);
+        const combinedMessage = combineAnalysisAndEmbeddingMessages(
+          result.record,
+          baseMessage,
+          cachedResult
+        );
+        const defaultStatus = cachedResult ? 'cached' : result.status || 'ok';
+        updateAnalysisViewWithRecord(
+          recording,
+          result.record,
+          cachedResult,
+          defaultStatus,
+          combinedMessage
+        );
+      }
+      renderRecordingsList();
+      return result;
+    } catch (error) {
+      console.error('Failed to load stored Twelve Labs analysis', error);
+      const previousEntry = analysisCache.get(key);
+      const timestamp = Date.now();
+      if (previousEntry) {
+        analysisCache.set(key, { ...previousEntry, checkedAt: timestamp });
+      } else {
+        analysisCache.set(key, {
+          record: null,
+          cached: false,
+          hasAnalysis: false,
+          checkedAt: timestamp,
+        });
+      }
+      return null;
+    } finally {
+      analysisStatusRequests.delete(key);
     }
-    const cachedResult = Boolean(result.cached);
-    storeAnalysisRecord(recording, result.record, cachedResult);
-    if (analysisViewState.recording?.id === recording.id) {
-      const baseMessage =
-        result.message || buildAnalysisCompleteMessage(result.record, cachedResult);
-      const combinedMessage = combineAnalysisAndEmbeddingMessages(
-        result.record,
-        baseMessage,
-        cachedResult
-      );
-      const defaultStatus = cachedResult ? 'cached' : result.status || 'ok';
-      updateAnalysisViewWithRecord(
-        recording,
-        result.record,
-        cachedResult,
-        defaultStatus,
-        combinedMessage
-      );
-    }
-    renderRecordingsList();
-  } catch (error) {
-    console.error('Failed to load stored Twelve Labs analysis', error);
+  })();
+
+  analysisStatusRequests.set(key, loadPromise);
+  return loadPromise;
+}
+
+async function preloadRecordingStatuses(recordings) {
+  if (!analysisIntegrationAvailable || !analysisEndpoint) {
+    return;
   }
+  const items = Array.isArray(recordings)
+    ? recordings.filter((item) => item && typeof item === 'object')
+    : [];
+  if (items.length === 0) {
+    return;
+  }
+  await Promise.all(items.map((recording) => loadCachedAnalysis(recording)));
 }
 
 function updateAnalysisPanelForRecording(recording, options = {}) {
@@ -3156,6 +3185,27 @@ function syncActiveAnalysisView() {
     return;
   }
   updateAnalysisPanelForRecording(active, { preserveExistingResult: true });
+}
+
+function refreshActiveAnalysisStatus() {
+  if (!analysisIntegrationAvailable || !analysisEndpoint) {
+    return;
+  }
+  if (recordingsState.isLoading) {
+    return;
+  }
+  if (document?.body?.dataset?.activeTab && document.body.dataset.activeTab !== 'recordingsTab') {
+    return;
+  }
+  const recording = analysisViewState.recording;
+  if (!recording) {
+    return;
+  }
+  if (activeAnalysisPromise) {
+    return;
+  }
+  updateAnalysisPanelForRecording(recording, { preserveExistingResult: true });
+  void loadCachedAnalysis(recording);
 }
 
 function setSelectedRecording(recording) {
@@ -3590,6 +3640,11 @@ async function refreshRecordingsList() {
     normalized.forEach((item) => {
       rememberEmbeddingState(item, item);
     });
+    try {
+      await preloadRecordingStatuses(normalized);
+    } catch (error) {
+      console.warn('Failed to preload analysis statuses for recordings', error);
+    }
     recordingsState.lastUpdated = new Date();
     if (selectedRecordingId) {
       const selected = normalized.find((item) => item.id === selectedRecordingId);
@@ -3724,6 +3779,7 @@ let streamReconnectTimerId = null;
 let streamReconnectAttempts = 0;
 let pc = null;
 let signalingSocket = null;
+let analysisStatusRefreshTimerId = null;
 
 markTelemetryWaiting();
 
@@ -4853,6 +4909,18 @@ initialiseWorkflowSync();
 attachTabNavigation();
 renderAnalysisView();
 renderRecordingsList();
+
+refreshActiveAnalysisStatus();
+if (analysisStatusRefreshTimerId !== null) {
+  window.clearInterval(analysisStatusRefreshTimerId);
+}
+analysisStatusRefreshTimerId = window.setInterval(() => {
+  try {
+    refreshActiveAnalysisStatus();
+  } catch (error) {
+    console.warn('Failed to refresh analysis status', error);
+  }
+}, ANALYSIS_STATUS_REFRESH_INTERVAL_MS);
 
 if (refreshRecordingsButton) {
   refreshRecordingsButton.addEventListener('click', () => {
