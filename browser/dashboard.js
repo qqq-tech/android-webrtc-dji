@@ -1831,24 +1831,21 @@ function createVideoPlaybackBlock(record) {
     section.appendChild(videoWrapper);
 
     const initialised = initialiseHlsPlayback(videoElement, hlsUrl);
-    const linkParagraph = document.createElement('p');
-    linkParagraph.className = 'analysis-video-note';
-    const link = document.createElement('a');
-    link.href = hlsUrl;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.textContent = 'Open HLS stream in a new tab';
-    if (initialised) {
-      linkParagraph.textContent = 'Having playback issues? ';
-      linkParagraph.appendChild(link);
-      section.appendChild(linkParagraph);
-    } else {
-      linkParagraph.textContent = '';
+    if (!initialised) {
+      const linkParagraph = document.createElement('p');
+      linkParagraph.className = 'analysis-video-note';
+      const link = document.createElement('a');
+      link.href = hlsUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = 'Open HLS stream in a new tab';
       linkParagraph.append(
         'This browser cannot play the Twelve Labs HLS stream directly. '
       );
       linkParagraph.appendChild(link);
-      linkParagraph.append('. Use an HLS-compatible player to view the recording.');
+      linkParagraph.append(
+        '. Use an HLS-compatible player to view the recording.'
+      );
       section.appendChild(linkParagraph);
     }
   } else {
