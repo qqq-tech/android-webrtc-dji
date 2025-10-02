@@ -2116,7 +2116,14 @@ function renderRecordingsList() {
         preserveExistingResult: true,
         suppressInitialStatus: true,
       });
-      void requestRecordingAnalysis(recording);
+      const cached = getCachedAnalysis(recording);
+      const pendingState = buildAnalysisPendingState(recording, cached);
+      applyAnalysisPendingState(recording, pendingState);
+      void requestRecordingAnalysis(recording, {
+        skipPendingState: true,
+        cachedOverride: cached,
+        pendingStateOverride: pendingState,
+      });
     });
 
     const embedButton = document.createElement('button');
@@ -3465,7 +3472,67 @@ function setSelectedRecording(recording, options = {}) {
   renderRecordingsList();
 }
 
-async function requestRecordingAnalysis(recording) {
+function buildAnalysisPendingState(recording, cached = undefined) {
+  if (!recording) {
+    return null;
+  }
+  const cacheEntry = cached !== undefined ? cached : getCachedAnalysis(recording);
+  const displayName =
+    typeof recording.displayName === 'string' && recording.displayName.trim().length > 0
+      ? recording.displayName.trim()
+      : 'this recording';
+  const pendingMessage = analysisPromptValue
+    ? `Requesting Twelve Labs analysis for “${displayName}” with a custom prompt…`
+    : `Requesting Twelve Labs analysis for “${displayName}”…`;
+  const isCurrentSelection = analysisViewState.recording?.id === recording.id;
+  const preservedResult = isCurrentSelection
+    ? analysisViewState.result
+    : cacheEntry?.record || null;
+  const preservedCached = isCurrentSelection
+    ? analysisViewState.cached
+    : Boolean(cacheEntry?.cached);
+  const preservedErrorCode = isCurrentSelection ? analysisViewState.errorCode : null;
+  return {
+    message: pendingMessage,
+    result: preservedResult,
+    cached: preservedCached,
+    errorCode: preservedErrorCode,
+  };
+}
+
+function applyAnalysisPendingState(recording, pendingState, options = {}) {
+  if (!recording || !pendingState) {
+    return;
+  }
+  const { skipWorkflowUpdate = false } = options;
+  const message = pendingState.message || defaultAnalysisMessage;
+  setAnalysisView(
+    recording,
+    'loading',
+    message,
+    pendingState.result,
+    Boolean(pendingState.cached),
+    pendingState.errorCode || null
+  );
+  if (skipWorkflowUpdate) {
+    return;
+  }
+  updateWorkflowSyncStateForRecording(recording, {
+    analysis: {
+      state: 'pending',
+      message,
+      updatedAt: new Date().toISOString(),
+      __timestamp: Date.now(),
+    },
+  });
+}
+
+async function requestRecordingAnalysis(recording, options = {}) {
+  const {
+    skipPendingState = false,
+    cachedOverride,
+    pendingStateOverride = null,
+  } = options;
   if (!recording) {
     return;
   }
@@ -3478,38 +3545,17 @@ async function requestRecordingAnalysis(recording) {
     return;
   }
 
-  const cached = getCachedAnalysis(recording);
+  const cached = cachedOverride !== undefined ? cachedOverride : getCachedAnalysis(recording);
   if (cached?.record && recordHasAnalysisContent(cached.record)) {
     const message = buildAnalysisCompleteMessage(cached.record, true);
     setAnalysisView(recording, 'cached', message, cached.record, true);
     return;
   }
 
-  const pendingMessage = analysisPromptValue
-    ? `Requesting Twelve Labs analysis for “${recording.displayName}” with a custom prompt…`
-    : `Requesting Twelve Labs analysis for “${recording.displayName}”…`;
-  const isCurrentSelection = analysisViewState.recording?.id === recording.id;
-  const preservedResult = isCurrentSelection
-    ? analysisViewState.result
-    : cached?.record || null;
-  const preservedCached = isCurrentSelection ? analysisViewState.cached : Boolean(cached?.cached);
-  const preservedErrorCode = isCurrentSelection ? analysisViewState.errorCode : null;
-  setAnalysisView(
-    recording,
-    'loading',
-    pendingMessage,
-    preservedResult,
-    preservedCached,
-    preservedErrorCode
-  );
-  updateWorkflowSyncStateForRecording(recording, {
-    analysis: {
-      state: 'pending',
-      message: pendingMessage,
-      updatedAt: new Date().toISOString(),
-      __timestamp: Date.now(),
-    },
-  });
+  const pendingState = pendingStateOverride || buildAnalysisPendingState(recording, cached);
+  if (!skipPendingState) {
+    applyAnalysisPendingState(recording, pendingState);
+  }
 
   try {
     activeAnalysisPromise = fetchAnalysis(recording, { start: true });
