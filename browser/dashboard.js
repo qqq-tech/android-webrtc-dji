@@ -388,6 +388,7 @@ const lastRenderedAnalysisContent = {
 };
 
 const ANALYSIS_STATUS_REFRESH_INTERVAL_MS = 5000;
+const ACTIVE_ANALYSIS_STATUSES = new Set(['loading', 'pending', 'embedding']);
 const analysisCache = new Map();
 const analysisStatusRequests = new Map();
 const embeddingSuccessCache = new Map();
@@ -3230,7 +3231,32 @@ function syncActiveAnalysisView() {
   updateAnalysisPanelForRecording(active, { preserveExistingResult: true });
 }
 
-function refreshActiveAnalysisStatus() {
+function shouldPollAnalysisStatus(recording) {
+  if (!recording) {
+    return false;
+  }
+
+  if (ACTIVE_ANALYSIS_STATUSES.has(analysisViewState.status)) {
+    return true;
+  }
+
+  const sharedAnalysisStatus = getSharedAnalysisStatus(recording);
+  if (isWorkflowPendingStatus(sharedAnalysisStatus)) {
+    return true;
+  }
+
+  const cached = getCachedAnalysis(recording);
+  const effectiveStatus = getEffectiveEmbeddingStatus(
+    recording,
+    analysisViewState.result,
+    cached?.record,
+    recording
+  );
+  return isEmbeddingPendingStatus(effectiveStatus);
+}
+
+function refreshActiveAnalysisStatus(options = {}) {
+  const { force = false } = options;
   if (!analysisIntegrationAvailable || !analysisEndpoint) {
     return;
   }
@@ -3248,6 +3274,9 @@ function refreshActiveAnalysisStatus() {
     return;
   }
   updateAnalysisPanelForRecording(recording, { preserveExistingResult: true });
+  if (!force && !shouldPollAnalysisStatus(recording)) {
+    return;
+  }
   void loadCachedAnalysis(recording);
 }
 
@@ -4953,7 +4982,7 @@ attachTabNavigation();
 renderAnalysisView();
 renderRecordingsList();
 
-refreshActiveAnalysisStatus();
+refreshActiveAnalysisStatus({ force: true });
 if (analysisStatusRefreshTimerId !== null) {
   window.clearInterval(analysisStatusRefreshTimerId);
 }
