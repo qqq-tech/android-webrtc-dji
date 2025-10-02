@@ -446,9 +446,9 @@ class TwelveLabsAnalysisService:
         if not prompt_value:
             prompt_value = self._default_prompt
 
-        gist_payload = self._client.gist(
+        gist_payload = self._client.fetch_gist(
             video_id=video_id,
-            types=self._gist_types,
+            gist_types=self._gist_types,
         )
 
         if isinstance(gist_payload, dict):
