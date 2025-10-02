@@ -391,6 +391,28 @@ const lastRenderedAnalysisContent = {
 const ANALYSIS_STATUS_REFRESH_INTERVAL_MS = 5000;
 const ACTIVE_ANALYSIS_STATUSES = new Set(['loading', 'pending', 'embedding']);
 const analysisCache = new Map();
+
+function updateAnalysisCacheEntry(recording, updates = {}) {
+  const key = getAnalysisCacheKey(recording);
+  if (!key) {
+    return null;
+  }
+
+  const previousEntry = analysisCache.get(key);
+  const nextEntry = previousEntry
+    ? { ...previousEntry }
+    : { record: null, cached: false, hasAnalysis: false };
+
+  Object.entries(updates).forEach(([field, value]) => {
+    if (value === undefined) {
+      return;
+    }
+    nextEntry[field] = value;
+  });
+
+  analysisCache.set(key, nextEntry);
+  return nextEntry;
+}
 const analysisStatusRequests = new Map();
 const embeddingSuccessCache = new Map();
 const EMBEDDING_INITIAL_POLL_DELAY_MS = 30000;
@@ -1079,7 +1101,8 @@ async function pollEmbeddingStatus(entry) {
       return;
     }
     if (result.record) {
-      storeAnalysisRecord(entry.recording, result.record, result.cached);
+      const metadataUpdates = extractAnalysisCacheMetadata(result);
+      storeAnalysisRecord(entry.recording, result.record, result.cached, Date.now(), metadataUpdates);
       if (analysisViewState.recording?.id === entry.recording.id) {
         const defaultStatus = result.cached ? 'cached' : result.status || 'ok';
         const combinedMessage = combineAnalysisAndEmbeddingMessages(
@@ -1099,6 +1122,9 @@ async function pollEmbeddingStatus(entry) {
           }
         );
       }
+      renderRecordingsList();
+    } else {
+      storeAnalysisStatusSnapshot(entry.recording, result);
       renderRecordingsList();
     }
     const statusInfo = result.embeddingStatus || extractEmbeddingStatus(result.record);
@@ -1629,19 +1655,111 @@ function recordHasAnalysisContent(record) {
   return false;
 }
 
-function storeAnalysisRecord(recording, record, cached) {
+function storeAnalysisRecord(
+  recording,
+  record,
+  cached,
+  timestamp = Date.now(),
+  extras = null
+) {
   const key = getAnalysisCacheKey(recording);
   if (!key || !record) {
+    if (key) {
+      updateAnalysisCacheEntry(recording, {
+        record: null,
+        cached: false,
+        hasAnalysis: false,
+        checkedAt: timestamp,
+      });
+    }
     rememberEmbeddingState(recording, null);
     return;
   }
-  analysisCache.set(key, {
+
+  const updates = {
     record,
     cached: Boolean(cached),
     hasAnalysis: recordHasAnalysisContent(record),
-    checkedAt: Date.now(),
-  });
+    checkedAt: timestamp,
+  };
+
+  if (extras && typeof extras === 'object') {
+    Object.entries(extras).forEach(([field, value]) => {
+      if (value !== undefined) {
+        updates[field] = value;
+      }
+    });
+  }
+
+  updateAnalysisCacheEntry(recording, updates);
   rememberEmbeddingState(recording, record);
+}
+
+function storeAnalysisStatusSnapshot(recording, result, timestamp = Date.now()) {
+  if (!recording) {
+    return;
+  }
+
+  const updates = {
+    checkedAt: timestamp,
+  };
+
+  const statusValue = result && typeof result.status === 'string' ? result.status : null;
+  if (statusValue) {
+    updates.status = statusValue;
+  }
+
+  const messageValue = result && typeof result.message === 'string' ? result.message : null;
+  if (messageValue) {
+    updates.message = messageValue;
+  }
+
+  if (!result || !result.record) {
+    updates.record = null;
+    updates.cached = false;
+    updates.hasAnalysis = false;
+  }
+
+  if (result && Object.prototype.hasOwnProperty.call(result, 'embeddingStatus')) {
+    updates.embeddingStatus = result.embeddingStatus || null;
+  }
+
+  if (result && Object.prototype.hasOwnProperty.call(result, 'analysisStatus')) {
+    updates.analysisStatus = result.analysisStatus || null;
+  }
+
+  updateAnalysisCacheEntry(recording, updates);
+
+  if (result && Object.prototype.hasOwnProperty.call(result, 'embeddingStatus')) {
+    const embeddingStatus = result.embeddingStatus || null;
+    if (embeddingStatus) {
+      rememberEmbeddingState(recording, { embeddingStatus });
+    } else {
+      rememberEmbeddingState(recording, null);
+    }
+  }
+}
+
+function extractAnalysisCacheMetadata(result) {
+  if (!result || typeof result !== 'object') {
+    return null;
+  }
+
+  const metadata = {};
+  if (typeof result.status === 'string') {
+    metadata.status = result.status;
+  }
+  if (typeof result.message === 'string') {
+    metadata.message = result.message;
+  }
+  if (Object.prototype.hasOwnProperty.call(result, 'embeddingStatus')) {
+    metadata.embeddingStatus = result.embeddingStatus || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(result, 'analysisStatus')) {
+    metadata.analysisStatus = result.analysisStatus || null;
+  }
+
+  return Object.keys(metadata).length > 0 ? metadata : null;
 }
 
 function buildAnalysisCompleteMessage(record, cached) {
@@ -3092,38 +3210,20 @@ async function loadCachedAnalysis(recording, options = {}) {
         if (analysisViewState.recording?.id === recording.id) {
           setAnalysisView(recording, 'error', errorMessage, null, false, result.code || result.status);
         }
-        const previousEntry = analysisCache.get(key);
-        if (previousEntry) {
-          analysisCache.set(key, { ...previousEntry, checkedAt: timestamp });
-        } else {
-          analysisCache.set(key, {
-            record: null,
-            cached: false,
-            hasAnalysis: false,
-            checkedAt: timestamp,
-          });
-        }
+        updateAnalysisCacheEntry(recording, {
+          checkedAt: timestamp,
+        });
         return null;
       }
 
       if (!result.record) {
         const statusKey = (result.status || '').toLowerCase();
         if (['not_found', 'missing', 'empty'].includes(statusKey)) {
-          const cacheKey = getAnalysisCacheKey(recording);
-          if (cacheKey) {
-            const previousEntry = analysisCache.get(cacheKey);
-            const hasEmbeddingStatus =
-              Boolean(extractEmbeddingStatus(recording)) || Boolean(getSharedEmbeddingStatus(recording));
-            const nextEntry = {
-              record: null,
-              cached: false,
-              hasAnalysis: false,
-              checkedAt: timestamp,
-            };
-            analysisCache.set(cacheKey, previousEntry ? { ...previousEntry, ...nextEntry } : nextEntry);
-            if (!hasEmbeddingStatus) {
-              rememberEmbeddingState(recording, null);
-            }
+          storeAnalysisStatusSnapshot(recording, result, timestamp);
+          const hasEmbeddingStatus =
+            Boolean(extractEmbeddingStatus(recording)) || Boolean(getSharedEmbeddingStatus(recording));
+          if (!hasEmbeddingStatus) {
+            rememberEmbeddingState(recording, null);
           }
           if (analysisViewState.recording?.id === recording.id) {
             const displayName =
@@ -3134,16 +3234,15 @@ async function loadCachedAnalysis(recording, options = {}) {
               `No stored Twelve Labs analysis found for “${displayName}” yet. Press “Analyze” to generate insights.`;
             setAnalysisView(recording, 'missing', fallbackMessage, null, false, result.code || result.status);
           }
+        } else {
+          storeAnalysisStatusSnapshot(recording, result, timestamp);
         }
         return null;
       }
 
       const cachedResult = Boolean(result.cached);
-      storeAnalysisRecord(recording, result.record, cachedResult);
-      const updatedEntry = analysisCache.get(key);
-      if (updatedEntry) {
-        analysisCache.set(key, { ...updatedEntry, checkedAt: timestamp });
-      }
+      const metadataUpdates = extractAnalysisCacheMetadata(result);
+      storeAnalysisRecord(recording, result.record, cachedResult, timestamp, metadataUpdates);
       if (analysisViewState.recording?.id === recording.id) {
         const baseMessage =
           result.message || buildAnalysisCompleteMessage(result.record, cachedResult);
@@ -3169,18 +3268,10 @@ async function loadCachedAnalysis(recording, options = {}) {
       return result;
     } catch (error) {
       console.error('Failed to load stored Twelve Labs analysis', error);
-      const previousEntry = analysisCache.get(key);
       const timestamp = Date.now();
-      if (previousEntry) {
-        analysisCache.set(key, { ...previousEntry, checkedAt: timestamp });
-      } else {
-        analysisCache.set(key, {
-          record: null,
-          cached: false,
-          hasAnalysis: false,
-          checkedAt: timestamp,
-        });
-      }
+      updateAnalysisCacheEntry(recording, {
+        checkedAt: timestamp,
+      });
       return null;
     } finally {
       analysisStatusRequests.delete(key);
@@ -3533,7 +3624,8 @@ async function requestRecordingAnalysis(recording) {
       setAnalysisView(recording, 'error', errorMessage, null, false, result.code || result.status);
       return;
     }
-    storeAnalysisRecord(recording, result.record, result.cached);
+    const metadataUpdates = extractAnalysisCacheMetadata(result);
+    storeAnalysisRecord(recording, result.record, result.cached, Date.now(), metadataUpdates);
     const baseMessage =
       result.message || buildAnalysisCompleteMessage(result.record, result.cached);
     const combinedMessage = combineAnalysisAndEmbeddingMessages(
@@ -3583,7 +3675,14 @@ async function recoverEmbeddingStateFromNetworkError(recording) {
     }
     if (statusResult.ok && statusResult.record) {
       const cachedStatus = Boolean(statusResult.cached);
-      storeAnalysisRecord(recording, statusResult.record, cachedStatus);
+      const metadataUpdates = extractAnalysisCacheMetadata(statusResult);
+      storeAnalysisRecord(
+        recording,
+        statusResult.record,
+        cachedStatus,
+        Date.now(),
+        metadataUpdates
+      );
       const baseMessage =
         statusResult.message ||
         buildAnalysisCompleteMessage(statusResult.record, cachedStatus);
@@ -3608,6 +3707,10 @@ async function recoverEmbeddingStateFromNetworkError(recording) {
       );
       renderRecordingsList();
       return true;
+    }
+    if (statusResult.ok) {
+      storeAnalysisStatusSnapshot(recording, statusResult);
+      renderRecordingsList();
     }
   } catch (error) {
     console.warn('Failed to refresh embedding status after network error', error);
@@ -3723,7 +3826,8 @@ async function requestRecordingEmbeddings(recording) {
     }
 
     const cachedResult = Boolean(result.cached);
-    storeAnalysisRecord(recording, result.record, cachedResult);
+    const metadataUpdates = extractAnalysisCacheMetadata(result);
+    storeAnalysisRecord(recording, result.record, cachedResult, Date.now(), metadataUpdates);
     const baseMessage =
       result.message || buildAnalysisCompleteMessage(result.record, cachedResult);
     const combinedMessage = combineAnalysisAndEmbeddingMessages(
