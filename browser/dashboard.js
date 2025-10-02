@@ -1738,6 +1738,45 @@ function storeAnalysisStatusSnapshot(recording, result, timestamp = Date.now()) 
       rememberEmbeddingState(recording, null);
     }
   }
+
+  const timestampIso = new Date(timestamp).toISOString();
+  let analysisStatusUpdate = null;
+  if (result && Object.prototype.hasOwnProperty.call(result, 'analysisStatus')) {
+    const rawStatus = result.analysisStatus;
+    if (rawStatus && typeof rawStatus === 'object') {
+      analysisStatusUpdate = { ...rawStatus };
+      if (!analysisStatusUpdate.updatedAt) {
+        analysisStatusUpdate.updatedAt = timestampIso;
+      }
+      if (
+        typeof analysisStatusUpdate.__timestamp !== 'number' ||
+        !Number.isFinite(analysisStatusUpdate.__timestamp)
+      ) {
+        analysisStatusUpdate.__timestamp = timestamp;
+      }
+    }
+  } else if (statusValue) {
+    const normalisedState = statusValue.trim().toLowerCase();
+    if (normalisedState && !['missing', 'not_found', 'empty'].includes(normalisedState)) {
+      analysisStatusUpdate = {
+        state: normalisedState,
+        __timestamp: timestamp,
+        updatedAt: timestampIso,
+      };
+      if (messageValue) {
+        analysisStatusUpdate.message = messageValue;
+      }
+    }
+  }
+
+  if (analysisStatusUpdate) {
+    updateWorkflowSyncStateForRecording(recording, { analysis: analysisStatusUpdate });
+  } else if (statusValue) {
+    const normalisedState = statusValue.trim().toLowerCase();
+    if (['missing', 'not_found', 'empty'].includes(normalisedState)) {
+      updateWorkflowSyncStateForRecording(recording, { analysis: null });
+    }
+  }
 }
 
 function extractAnalysisCacheMetadata(result) {
