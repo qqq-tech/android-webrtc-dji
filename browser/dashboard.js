@@ -381,6 +381,7 @@ const analysisViewState = {
 
 const analysisCache = new Map();
 const embeddingSuccessCache = new Map();
+const EMBEDDING_INITIAL_POLL_DELAY_MS = 30000;
 const EMBEDDING_POLL_INTERVAL_MS = 5000;
 const embeddingMonitorState = new Map();
 
@@ -523,7 +524,12 @@ function stopEmbeddingMonitor(key) {
     return;
   }
   if (typeof entry.timerId === 'number') {
-    window.clearInterval(entry.timerId);
+    window.clearTimeout(entry.timerId);
+    entry.timerId = null;
+  }
+  if (typeof entry.intervalId === 'number') {
+    window.clearInterval(entry.intervalId);
+    entry.intervalId = null;
   }
   embeddingMonitorState.delete(key);
 }
@@ -586,14 +592,18 @@ function startEmbeddingMonitor(key, recording) {
   const entry = {
     key,
     timerId: null,
+    intervalId: null,
     active: false,
     recording,
   };
-  entry.timerId = window.setInterval(() => {
+  entry.timerId = window.setTimeout(() => {
+    entry.timerId = null;
     void pollEmbeddingStatus(entry);
-  }, EMBEDDING_POLL_INTERVAL_MS);
+    entry.intervalId = window.setInterval(() => {
+      void pollEmbeddingStatus(entry);
+    }, EMBEDDING_POLL_INTERVAL_MS);
+  }, EMBEDDING_INITIAL_POLL_DELAY_MS);
   embeddingMonitorState.set(key, entry);
-  void pollEmbeddingStatus(entry);
 }
 
 function updateEmbeddingMonitor(key, recording, record) {
@@ -2253,14 +2263,14 @@ function renderAnalysisResult(record, cached) {
     ? record.analysis.chunks.filter((chunk) => typeof chunk === 'string' && chunk.trim().length > 0)
     : [];
 
-  const paragraphs = analysisChunks.length > 0
-    ? analysisChunks
-    : analysisText
+  const textParagraphs = analysisText
     ? analysisText
         .split(/\n{2,}/)
         .map((paragraph) => paragraph.trim())
         .filter((paragraph) => paragraph.length > 0)
     : [];
+
+  const paragraphs = textParagraphs.length > 0 ? textParagraphs : analysisChunks;
 
   const outputBlock = document.createElement('div');
   outputBlock.className = 'analysis-output-body';
