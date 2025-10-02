@@ -384,6 +384,13 @@ const embeddingSuccessCache = new Map();
 const EMBEDDING_INITIAL_POLL_DELAY_MS = 30000;
 const EMBEDDING_POLL_INTERVAL_MS = 5000;
 const embeddingMonitorState = new Map();
+const WORKFLOW_SYNC_STORAGE_KEY = 'djiDashboardWorkflowState';
+const WORKFLOW_SYNC_CHANNEL_NAME = 'dji-dashboard-workflow';
+const WORKFLOW_SYNC_TTL_MS = 60 * 60 * 1000;
+const workflowSyncState = new Map();
+const workflowSyncClientId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+let workflowSyncChannel = null;
+let workflowSyncStorageAvailable = null;
 const WORKFLOW_PENDING_STATES = new Set([
   'pending',
   'starting',
@@ -433,6 +440,348 @@ function getWorkflowStageValue(statusInfo) {
     return 'error';
   }
   return '';
+}
+
+function isWorkflowSyncStorageSupported() {
+  if (workflowSyncStorageAvailable !== null) {
+    return workflowSyncStorageAvailable;
+  }
+  try {
+    const testKey = `${WORKFLOW_SYNC_STORAGE_KEY}:${workflowSyncClientId}`;
+    window.localStorage.setItem(testKey, '1');
+    window.localStorage.removeItem(testKey);
+    workflowSyncStorageAvailable = true;
+  } catch (error) {
+    workflowSyncStorageAvailable = false;
+  }
+  return workflowSyncStorageAvailable;
+}
+
+function getWorkflowStatusTimestamp(status) {
+  if (!status || typeof status !== 'object') {
+    return 0;
+  }
+  if (typeof status.__timestamp === 'number' && Number.isFinite(status.__timestamp)) {
+    return status.__timestamp;
+  }
+  const updatedAt = typeof status.updatedAt === 'string' ? status.updatedAt : '';
+  if (updatedAt) {
+    const parsed = Date.parse(updatedAt);
+    if (!Number.isNaN(parsed)) {
+      return parsed;
+    }
+  }
+  return 0;
+}
+
+function normaliseWorkflowStatus(status) {
+  if (!status || typeof status !== 'object') {
+    return null;
+  }
+  const state =
+    typeof status.state === 'string' && status.state.trim().length > 0
+      ? status.state.trim().toLowerCase()
+      : '';
+  if (!state) {
+    return null;
+  }
+  const message =
+    typeof status.message === 'string' && status.message.trim().length > 0
+      ? status.message.trim()
+      : '';
+  const options = Array.isArray(status.options)
+    ? status.options
+        .map((option) => (typeof option === 'string' ? option.trim() : ''))
+        .filter((option, index, array) => option && array.indexOf(option) === index)
+    : [];
+  const missingOptions = Array.isArray(status.missingOptions)
+    ? status.missingOptions
+        .map((option) => (typeof option === 'string' ? option.trim() : ''))
+        .filter((option, index, array) => option && array.indexOf(option) === index)
+    : [];
+  const includeTranscription = Object.prototype.hasOwnProperty.call(status, 'includeTranscription')
+    ? Boolean(status.includeTranscription)
+    : undefined;
+  const updatedAt =
+    typeof status.updatedAt === 'string' && status.updatedAt.trim().length > 0
+      ? status.updatedAt
+      : new Date().toISOString();
+  const timestamp =
+    typeof status.__timestamp === 'number' && Number.isFinite(status.__timestamp)
+      ? status.__timestamp
+      : Date.now();
+  const normalised = {
+    state,
+    updatedAt,
+    __timestamp: timestamp,
+  };
+  if (message) {
+    normalised.message = message;
+  }
+  if (options.length > 0) {
+    normalised.options = options;
+  }
+  if (missingOptions.length > 0) {
+    normalised.missingOptions = missingOptions;
+  }
+  if (includeTranscription !== undefined) {
+    normalised.includeTranscription = includeTranscription;
+  }
+  return normalised;
+}
+
+function cloneWorkflowStatus(status) {
+  if (!status || typeof status !== 'object') {
+    return null;
+  }
+  const clone = {
+    state: status.state,
+    updatedAt: status.updatedAt,
+  };
+  if (typeof status.message === 'string' && status.message.length > 0) {
+    clone.message = status.message;
+  }
+  if (Array.isArray(status.options) && status.options.length > 0) {
+    clone.options = [...status.options];
+  }
+  if (Array.isArray(status.missingOptions) && status.missingOptions.length > 0) {
+    clone.missingOptions = [...status.missingOptions];
+  }
+  if (Object.prototype.hasOwnProperty.call(status, 'includeTranscription')) {
+    clone.includeTranscription = Boolean(status.includeTranscription);
+  }
+  if (typeof status.__timestamp === 'number' && Number.isFinite(status.__timestamp)) {
+    clone.__timestamp = status.__timestamp;
+  }
+  return clone;
+}
+
+function pruneWorkflowSyncEntries(map) {
+  const now = Date.now();
+  const expiryThreshold = now - WORKFLOW_SYNC_TTL_MS;
+  let changed = false;
+  for (const [key, value] of map.entries()) {
+    let entryChanged = false;
+    if (value.embedding && getWorkflowStatusTimestamp(value.embedding) < expiryThreshold) {
+      delete value.embedding;
+      entryChanged = true;
+    }
+    if (value.analysis && getWorkflowStatusTimestamp(value.analysis) < expiryThreshold) {
+      delete value.analysis;
+      entryChanged = true;
+    }
+    if (!value.embedding && !value.analysis) {
+      map.delete(key);
+      changed = true;
+      continue;
+    }
+    if (entryChanged) {
+      map.set(key, value);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function serialiseWorkflowSyncState() {
+  const entries = [];
+  for (const [key, value] of workflowSyncState.entries()) {
+    const entry = { key };
+    if (value.embedding) {
+      entry.embedding = cloneWorkflowStatus(value.embedding);
+    }
+    if (value.analysis) {
+      entry.analysis = cloneWorkflowStatus(value.analysis);
+    }
+    entries.push(entry);
+  }
+  return {
+    clientId: workflowSyncClientId,
+    version: Date.now(),
+    entries,
+  };
+}
+
+function applyWorkflowSyncState(nextMap) {
+  workflowSyncState.clear();
+  for (const [key, value] of nextMap.entries()) {
+    workflowSyncState.set(key, value);
+  }
+  pruneWorkflowSyncEntries(workflowSyncState);
+  renderRecordingsList();
+}
+
+function applyWorkflowSyncPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return;
+  }
+  if (payload.clientId && payload.clientId === workflowSyncClientId) {
+    return;
+  }
+  const entries = Array.isArray(payload.entries) ? payload.entries : [];
+  const nextMap = new Map();
+  for (const candidate of entries) {
+    if (!candidate || typeof candidate !== 'object') {
+      continue;
+    }
+    const key = typeof candidate.key === 'string' && candidate.key.trim().length > 0 ? candidate.key : '';
+    if (!key) {
+      continue;
+    }
+    const entry = {};
+    const embeddingStatus = normaliseWorkflowStatus(candidate.embedding);
+    if (embeddingStatus) {
+      entry.embedding = embeddingStatus;
+    }
+    const analysisStatus = normaliseWorkflowStatus(candidate.analysis);
+    if (analysisStatus) {
+      entry.analysis = analysisStatus;
+    }
+    if (entry.embedding || entry.analysis) {
+      nextMap.set(key, entry);
+    }
+  }
+  pruneWorkflowSyncEntries(nextMap);
+  applyWorkflowSyncState(nextMap);
+}
+
+function persistWorkflowSyncState() {
+  pruneWorkflowSyncEntries(workflowSyncState);
+  const payload = serialiseWorkflowSyncState();
+  if (workflowSyncChannel) {
+    try {
+      workflowSyncChannel.postMessage(payload);
+    } catch (error) {
+      console.warn('Failed to broadcast workflow sync update', error);
+    }
+  }
+  if (!isWorkflowSyncStorageSupported()) {
+    return;
+  }
+  try {
+    if (payload.entries.length === 0) {
+      window.localStorage.removeItem(WORKFLOW_SYNC_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(WORKFLOW_SYNC_STORAGE_KEY, JSON.stringify(payload));
+    }
+  } catch (error) {
+    console.warn('Failed to persist workflow sync state', error);
+  }
+}
+
+function updateWorkflowSyncStateByKey(key, updates) {
+  if (!key || !updates || typeof updates !== 'object') {
+    return;
+  }
+  const current = workflowSyncState.get(key) || {};
+  const next = { ...current };
+  let changed = false;
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'embedding')) {
+    const embeddingStatus = normaliseWorkflowStatus(updates.embedding);
+    if (embeddingStatus) {
+      next.embedding = embeddingStatus;
+      changed = true;
+    } else if (next.embedding) {
+      delete next.embedding;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'analysis')) {
+    const analysisStatus = normaliseWorkflowStatus(updates.analysis);
+    if (analysisStatus) {
+      next.analysis = analysisStatus;
+      changed = true;
+    } else if (next.analysis) {
+      delete next.analysis;
+      changed = true;
+    }
+  }
+
+  if (!next.embedding && !next.analysis) {
+    if (workflowSyncState.has(key)) {
+      workflowSyncState.delete(key);
+      changed = true;
+    }
+  } else {
+    workflowSyncState.set(key, next);
+  }
+
+  if (!changed) {
+    return;
+  }
+
+  persistWorkflowSyncState();
+  renderRecordingsList();
+}
+
+function updateWorkflowSyncStateForRecording(recording, updates) {
+  const key = getAnalysisCacheKey(recording);
+  if (!key) {
+    return;
+  }
+  updateWorkflowSyncStateByKey(key, updates);
+}
+
+function getSharedWorkflowStateEntry(recording) {
+  const key = getAnalysisCacheKey(recording);
+  if (!key) {
+    return null;
+  }
+  return workflowSyncState.get(key) || null;
+}
+
+function getSharedEmbeddingStatus(recording) {
+  const entry = getSharedWorkflowStateEntry(recording);
+  return entry && entry.embedding ? entry.embedding : null;
+}
+
+function getSharedAnalysisStatus(recording) {
+  const entry = getSharedWorkflowStateEntry(recording);
+  return entry && entry.analysis ? entry.analysis : null;
+}
+
+function initialiseWorkflowSync() {
+  try {
+    if (typeof BroadcastChannel === 'function') {
+      workflowSyncChannel = new BroadcastChannel(WORKFLOW_SYNC_CHANNEL_NAME);
+      workflowSyncChannel.addEventListener('message', (event) => {
+        applyWorkflowSyncPayload(event.data);
+      });
+    }
+  } catch (error) {
+    workflowSyncChannel = null;
+    console.warn('BroadcastChannel unavailable for workflow sync', error);
+  }
+
+  if (isWorkflowSyncStorageSupported()) {
+    try {
+      const stored = window.localStorage.getItem(WORKFLOW_SYNC_STORAGE_KEY);
+      if (stored) {
+        const payload = JSON.parse(stored);
+        applyWorkflowSyncPayload(payload);
+      }
+    } catch (error) {
+      console.warn('Failed to restore workflow sync state from storage', error);
+    }
+    window.addEventListener('storage', (event) => {
+      if (event.key !== WORKFLOW_SYNC_STORAGE_KEY) {
+        return;
+      }
+      if (!event.newValue) {
+        workflowSyncState.clear();
+        renderRecordingsList();
+        return;
+      }
+      try {
+        const payload = JSON.parse(event.newValue);
+        applyWorkflowSyncPayload(payload);
+      } catch (error) {
+        console.warn('Failed to parse workflow sync update from storage', error);
+      }
+    });
+  }
 }
 
 function isWorkflowPendingStatus(statusInfo) {
@@ -539,6 +888,64 @@ function extractEmbeddingStatus(record) {
     includeTranscription: Boolean(status.includeTranscription),
     updatedAt,
   };
+}
+
+function getEmbeddingStatusPriority(statusInfo) {
+  if (isEmbeddingPendingStatus(statusInfo)) {
+    return 3;
+  }
+  if (isEmbeddingErrorStatus(statusInfo)) {
+    return 2;
+  }
+  if (isEmbeddingReadyStatus(statusInfo)) {
+    return 1;
+  }
+  return 0;
+}
+
+function choosePreferredEmbeddingStatus(current, candidate) {
+  if (!current) {
+    return candidate;
+  }
+  if (!candidate) {
+    return current;
+  }
+  const currentPriority = getEmbeddingStatusPriority(current);
+  const candidatePriority = getEmbeddingStatusPriority(candidate);
+  if (candidatePriority > currentPriority) {
+    return candidate;
+  }
+  if (candidatePriority < currentPriority) {
+    return current;
+  }
+  const currentTimestamp = getWorkflowStatusTimestamp(current);
+  const candidateTimestamp = getWorkflowStatusTimestamp(candidate);
+  if (candidateTimestamp > currentTimestamp) {
+    return candidate;
+  }
+  return current;
+}
+
+function getEffectiveEmbeddingStatus(recording, ...sources) {
+  const candidates = [];
+  for (const source of sources) {
+    const status = extractEmbeddingStatus(source);
+    if (status) {
+      candidates.push(status);
+    }
+  }
+  const sharedStatus = getSharedEmbeddingStatus(recording);
+  if (sharedStatus) {
+    candidates.push(sharedStatus);
+  }
+  if (candidates.length === 0) {
+    return null;
+  }
+  let preferred = null;
+  for (const status of candidates) {
+    preferred = choosePreferredEmbeddingStatus(preferred, status);
+  }
+  return preferred;
 }
 
 function buildPendingEmbeddingMessage(recording, record, statusInfo) {
@@ -705,7 +1112,7 @@ function updateEmbeddingMonitor(key, recording, record) {
   if (!key) {
     return;
   }
-  const statusInfo = extractEmbeddingStatus(record) || extractEmbeddingStatus(recording);
+  const statusInfo = getEffectiveEmbeddingStatus(recording, record, recording);
   if (isEmbeddingPendingStatus(statusInfo)) {
     startEmbeddingMonitor(key, recording);
   } else {
@@ -810,6 +1217,7 @@ function rememberEmbeddingState(recording, record) {
       ? record.embeddingStatus
       : null;
   const statusInfo = rawStatus ? extractEmbeddingStatus(record) : null;
+  let sharedEmbeddingStatusUpdate = null;
   if (recording && typeof recording === 'object') {
     if (statusInfo) {
       const nextStatus = {
@@ -828,7 +1236,9 @@ function rememberEmbeddingState(recording, record) {
       if (rawStatus && Object.prototype.hasOwnProperty.call(rawStatus, 'includeTranscription')) {
         nextStatus.includeTranscription = Boolean(statusInfo.includeTranscription);
       }
+      nextStatus.__timestamp = Date.now();
       recording.embeddingStatus = nextStatus;
+      sharedEmbeddingStatusUpdate = { ...nextStatus };
     } else if (record == null) {
       delete recording.embeddingStatus;
     }
@@ -871,6 +1281,11 @@ function rememberEmbeddingState(recording, record) {
   }
 
   updateEmbeddingMonitor(key, recording, record || recording);
+  if (sharedEmbeddingStatusUpdate) {
+    updateWorkflowSyncStateByKey(key, { embedding: sharedEmbeddingStatusUpdate });
+  } else if (record == null) {
+    updateWorkflowSyncStateByKey(key, { embedding: null });
+  }
 }
 
 function hasEmbeddingSuccess(recording) {
@@ -1694,17 +2109,14 @@ function renderRecordingsList() {
       const hasCachedAnalysis = Boolean(cached?.hasAnalysis);
       const hasInlineAnalysis = recordHasAnalysisContent(recording);
       const hasAnalysisAvailable = hasCachedAnalysis || hasInlineAnalysis;
-      const statusInfo = extractEmbeddingStatus(cached?.record) || extractEmbeddingStatus(recording);
+      const statusInfo = getEffectiveEmbeddingStatus(recording, cached?.record, recording);
       const embeddingPending = isEmbeddingPendingStatus(statusInfo);
       const embeddingReady = hasEmbeddingSuccess(recording) || isEmbeddingReadyStatus(statusInfo);
+      const sharedAnalysisStatus = getSharedAnalysisStatus(recording);
+      const analysisPendingShared = isWorkflowPendingStatus(sharedAnalysisStatus);
 
-      if (hasAnalysisAvailable) {
-        analyzeButton.textContent = 'View analysis';
-      }
-
-      if (embeddingReady) {
-        embedButton.textContent = 'View embeddings';
-      }
+      analyzeButton.textContent = hasAnalysisAvailable ? 'View analysis' : 'Analyze';
+      embedButton.textContent = embeddingReady ? 'View embeddings' : 'Embeddings';
 
       if (embeddingPending) {
         embedButton.disabled = true;
@@ -1717,16 +2129,24 @@ function renderRecordingsList() {
         analyzeButton.title = pendingMessage;
       } else {
         embedButton.disabled = false;
+        embedButton.textContent = embeddingReady ? 'View embeddings' : 'Embeddings';
         embedButton.title = embeddingReady
           ? 'Retrieve Twelve Labs embeddings for this recording.'
           : 'Upload to Twelve Labs and retrieve embeddings for this recording.';
-
-        analyzeButton.disabled = !embeddingReady;
-        analyzeButton.title = embeddingReady
-          ? hasAnalysisAvailable || hasCachedRecord
-            ? 'View Twelve Labs analysis for this recording.'
-            : 'Request Twelve Labs analysis for this recording.'
-          : 'Run embeddings before requesting Twelve Labs analysis.';
+        if (analysisPendingShared) {
+          analyzeButton.disabled = true;
+          analyzeButton.textContent = 'Analyzing…';
+          analyzeButton.title =
+            sharedAnalysisStatus?.message ||
+            'Twelve Labs analysis is processing for this recording.';
+        } else {
+          analyzeButton.disabled = !embeddingReady;
+          analyzeButton.title = embeddingReady
+            ? hasAnalysisAvailable || hasCachedRecord
+              ? 'View Twelve Labs analysis for this recording.'
+              : 'Request Twelve Labs analysis for this recording.'
+            : 'Run embeddings before requesting Twelve Labs analysis.';
+        }
       }
     }
 
@@ -2587,7 +3007,7 @@ function setSelectedRecording(recording) {
       baseMessage,
       cachedResult
     );
-    const statusInfo = extractEmbeddingStatus(cachedRecord) || extractEmbeddingStatus(recording);
+    const statusInfo = getEffectiveEmbeddingStatus(recording, cachedRecord, recording);
     const defaultStatus = isEmbeddingPendingStatus(statusInfo)
       ? 'pending'
       : cachedResult
@@ -2601,12 +3021,18 @@ function setSelectedRecording(recording) {
       combinedMessage
     );
   } else {
-    const statusInfo = extractEmbeddingStatus(recording);
+    const statusInfo = getEffectiveEmbeddingStatus(recording, recording);
+    const sharedAnalysisStatus = getSharedAnalysisStatus(recording);
     if (isEmbeddingPendingStatus(statusInfo)) {
       const pendingMessage =
         statusInfo.message ||
         `Twelve Labs embeddings are still processing for “${recording.displayName}”.`;
       setAnalysisView(recording, 'pending', pendingMessage);
+    } else if (isWorkflowPendingStatus(sharedAnalysisStatus)) {
+      const analysisMessage =
+        sharedAnalysisStatus?.message ||
+        `Requesting Twelve Labs analysis for “${recording.displayName}”…`;
+      setAnalysisView(recording, 'loading', analysisMessage);
     } else if (isEmbeddingReadyStatus(statusInfo)) {
       const readyMessage =
         statusInfo.message ||
@@ -2659,6 +3085,14 @@ async function requestRecordingAnalysis(recording) {
     ? `Requesting Twelve Labs analysis for “${recording.displayName}” with a custom prompt…`
     : `Requesting Twelve Labs analysis for “${recording.displayName}”…`;
   setAnalysisView(recording, 'loading', pendingMessage);
+  updateWorkflowSyncStateForRecording(recording, {
+    analysis: {
+      state: 'pending',
+      message: pendingMessage,
+      updatedAt: new Date().toISOString(),
+      __timestamp: Date.now(),
+    },
+  });
 
   try {
     activeAnalysisPromise = fetchAnalysis(recording, { start: true });
@@ -2713,6 +3147,7 @@ async function requestRecordingAnalysis(recording) {
     if (analysisViewState.recording?.id === recording.id) {
       activeAnalysisPromise = null;
     }
+    updateWorkflowSyncStateForRecording(recording, { analysis: null });
   }
 }
 
@@ -4303,6 +4738,7 @@ function handleGcsCommandAck(message) {
   }
 }
 
+initialiseWorkflowSync();
 attachTabNavigation();
 renderAnalysisView();
 renderRecordingsList();
