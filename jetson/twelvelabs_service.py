@@ -378,57 +378,6 @@ class TwelveLabsAnalysisService:
             if status_value:
                 LOGGER.info("  Status=%s", status_value)
 
-        timestamp = _utc_now()
-        pending_task_status: Dict[str, Any] = {"state": "pending", "updatedAt": timestamp}
-        initial_record = {
-            "streamId": stream_id,
-            "fileName": file_name,
-            "createdAt": timestamp,
-            "updatedAt": timestamp,
-            "source": {
-                "path": str(recording_path),
-                "signature": signature,
-            },
-            "index": {
-                "id": index_id,
-                "name": self._index_name,
-            },
-            "task": {
-                "id": task_id,
-                "status": pending_task_status,
-                "response": task_payload,
-            },
-        }
-
-        with self._lock:
-            existing_record = self._records.get(key)
-            if isinstance(existing_record, dict):
-                existing_record.setdefault("createdAt", timestamp)
-                existing_record["updatedAt"] = timestamp
-                existing_record["streamId"] = stream_id
-                existing_record["fileName"] = file_name
-                existing_record["source"] = {
-                    "path": str(recording_path),
-                    "signature": signature,
-                }
-                existing_record["index"] = {
-                    "id": index_id,
-                    "name": self._index_name,
-                }
-                task_block = existing_record.setdefault("task", {})
-                task_block["id"] = task_id
-                task_block["response"] = task_payload
-                task_block["status"] = pending_task_status
-            else:
-                self._records[key] = initial_record
-            self._save_cache()
-
-        self._set_embedding_status(
-            key,
-            state="pending",
-            message="Uploading recording to Twelve Labs…",
-        )
-
         status_payload = self._client.wait_for_task(
             task_id=task_id,
             poll_interval=self._poll_interval,
@@ -452,35 +401,32 @@ class TwelveLabsAnalysisService:
 
         LOGGER.info("Upload complete. The unique identifier of your video is %s.", video_id)
 
-        final_timestamp = _utc_now()
-        with self._lock:
-            record = self._records.get(key)
-            if not isinstance(record, dict):
-                record = {}
-                self._records[key] = record
-
-            record.setdefault("createdAt", final_timestamp)
-            record["updatedAt"] = final_timestamp
-            record["streamId"] = stream_id
-            record["fileName"] = file_name
-            record["videoId"] = video_id
-            record["source"] = {
+        timestamp = _utc_now()
+        record = {
+            "streamId": stream_id,
+            "fileName": file_name,
+            "videoId": video_id,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "source": {
                 "path": str(recording_path),
                 "signature": signature,
-            }
-            record["index"] = {
+            },
+            "index": {
                 "id": index_id,
                 "name": self._index_name,
-            }
-            task_block = record.setdefault("task", {})
-            task_block["id"] = task_id
-            task_block["status"] = status_payload
-            task_block["response"] = task_payload
+            },
+            "task": {
+                "id": task_id,
+                "status": status_payload,
+                "response": task_payload,
+            },
+        }
 
-            updated_record = _clone(record)
+        with self._lock:
+            self._records[key] = record
             self._save_cache()
-
-        return updated_record
+            return _clone(record)
 
     # ------------------------------------------------------------------
     # Index helpers
