@@ -54,12 +54,14 @@ def _serialise(payload: Any) -> Any:
     return payload
 
 _ISOLATED_DOUBLE_NEWLINE_RE = re.compile(r"(?<!\n)\n\n(?!\n)")
+_COLLAPSE_MULTI_NEWLINES_RE = re.compile(r"\n{3,}")
 
 
 def _remove_isolated_double_newlines(text: str) -> str:
     if not isinstance(text, str):
         return ""
-    return _ISOLATED_DOUBLE_NEWLINE_RE.sub("", text)
+    cleaned = _ISOLATED_DOUBLE_NEWLINE_RE.sub("", text)
+    return _COLLAPSE_MULTI_NEWLINES_RE.sub("\n\n", cleaned)
 
 
 def _normalise_text_chunks(chunks: Iterable[str]) -> List[str]:
