@@ -879,6 +879,11 @@ class DetectionBroadcaster:
                     embedding_options=embedding_options or None,
                     include_transcription=bool(include_transcription),
                 )
+            except RecordingNotFoundError as exc:
+                return self._json_response(
+                    {"error": "recording_not_found", "message": str(exc)},
+                    status=http.HTTPStatus.NOT_FOUND,
+                )
             except AnalysisServiceError as exc:
                 return self._json_response(
                     {"error": "embedding_failed", "message": str(exc)},

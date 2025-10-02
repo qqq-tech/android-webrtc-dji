@@ -279,6 +279,29 @@ const analysisPromptParam = (params.get('analysisPrompt') || '').trim();
 const analysisPromptValue = analysisPromptParam;
 const analysisTemperatureParam = (params.get('analysisTemperature') || '').trim();
 const analysisMaxTokensParam = (params.get('analysisMaxTokens') || '').trim();
+const embeddingTranscriptionParam = (params.get('embeddingTranscription') || '')
+  .trim()
+  .toLowerCase();
+const embeddingTranscriptionEnabled = ['1', 'true', 'yes', 'on'].includes(
+  embeddingTranscriptionParam
+);
+const embeddingOptionParams = params.getAll('embeddingOption');
+const embeddingOptionsParamValue = (params.get('embeddingOptions') || '')
+  .split(',')
+  .map((option) => option.trim())
+  .filter((option) => option.length > 0);
+const defaultEmbeddingOptions = [];
+for (const option of [...embeddingOptionParams, ...embeddingOptionsParamValue]) {
+  const value = typeof option === 'string' ? option.trim() : '';
+  if (value && !defaultEmbeddingOptions.includes(value)) {
+    defaultEmbeddingOptions.push(value);
+  }
+}
+
+const embeddingRequestState = {
+  includeTranscription: embeddingTranscriptionEnabled,
+  options: defaultEmbeddingOptions,
+};
 
 const rawVideo = document.getElementById('rawVideo');
 const overlayVideo = document.getElementById('overlayVideo');
@@ -358,6 +381,21 @@ const analysisViewState = {
 
 const analysisCache = new Map();
 const embeddingSuccessCache = new Map();
+
+function getEmbeddingRequestOptions() {
+  const includeTranscription = Boolean(embeddingRequestState.includeTranscription);
+  const sourceOptions = Array.isArray(embeddingRequestState.options)
+    ? embeddingRequestState.options
+    : [];
+  const options = [];
+  for (const option of sourceOptions) {
+    const value = typeof option === 'string' ? option.trim() : '';
+    if (value && !options.includes(value)) {
+      options.push(value);
+    }
+  }
+  return { includeTranscription, embeddingOptions: options };
+}
 
 function extractEmbeddingIdentifier(candidate) {
   if (!candidate || typeof candidate !== 'object') {
@@ -1865,72 +1903,26 @@ async function requestRecordingEmbeddings(recording) {
   }
 
   const cached = getCachedAnalysis(recording);
-  let workingRecord = cached?.record || null;
+  const workingRecord = cached?.record || null;
+  const { includeTranscription, embeddingOptions } = getEmbeddingRequestOptions();
 
-  if (!workingRecord) {
-    const uploadMessage = `Uploading “${recording.displayName}” to Twelve Labs before retrieving embeddings…`;
-    setAnalysisView(recording, 'embedding', uploadMessage);
-
-    try {
-      activeAnalysisPromise = fetchAnalysis(recording, { start: true });
-      const analysisResult = await activeAnalysisPromise;
-      if (analysisViewState.recording?.id !== recording.id) {
-        return;
-      }
-      if (!analysisResult.ok || !analysisResult.record) {
-        if (isAnalysisIntegrationError(analysisResult)) {
-          disableAnalysisIntegration(
-            recording,
-            analysisResult.error || 'Twelve Labs analysis is not configured on the server.',
-            analysisResult.code || analysisResult.status
-          );
-          return;
-        }
-        const errorMessage = resolveIntegrationErrorMessage(
-          analysisResult,
-          'Failed to obtain a Twelve Labs analysis response.'
-        );
-        setAnalysisView(
-          recording,
-          'error',
-          errorMessage,
-          null,
-          false,
-          analysisResult.code || analysisResult.status
-        );
-        return;
-      }
-
-      storeAnalysisRecord(recording, analysisResult.record, analysisResult.cached);
-      workingRecord = analysisResult.record;
-      renderRecordingsList();
-    } catch (error) {
-      if (analysisViewState.recording?.id !== recording.id) {
-        return;
-      }
-      const fallback = error instanceof Error ? error.message : String(error);
-      setAnalysisView(
-        recording,
-        'error',
-        `Failed to upload recording to Twelve Labs: ${fallback}`
-      );
-      return;
-    } finally {
-      if (analysisViewState.recording?.id === recording.id) {
-        activeAnalysisPromise = null;
-      }
-    }
-  }
-
-  if (!workingRecord) {
-    return;
-  }
-
-  const pendingMessage = `Requesting Twelve Labs embeddings for “${recording.displayName}”…`;
-  setAnalysisView(recording, 'embedding', pendingMessage, workingRecord, true);
+  const pendingMessage = workingRecord
+    ? `Requesting Twelve Labs embeddings for “${recording.displayName}”…`
+    : `Uploading “${recording.displayName}” to Twelve Labs and retrieving embeddings…`;
+  setAnalysisView(
+    recording,
+    'embedding',
+    pendingMessage,
+    workingRecord,
+    Boolean(workingRecord)
+  );
 
   try {
-    activeAnalysisPromise = fetchAnalysis(recording, { embed: true });
+    activeAnalysisPromise = fetchAnalysis(recording, {
+      embed: true,
+      includeTranscription,
+      embeddingOptions,
+    });
     const result = await activeAnalysisPromise;
     if (analysisViewState.recording?.id !== recording.id) {
       return;
@@ -1953,16 +1945,22 @@ async function requestRecordingEmbeddings(recording) {
         'error',
         errorMessage,
         workingRecord,
-        true,
+        Boolean(workingRecord),
         result.code || result.status
       );
       return;
     }
 
-    storeAnalysisRecord(recording, result.record, true);
-    const baseMessage = result.message || buildAnalysisCompleteMessage(result.record, true);
-    const message = combineAnalysisAndEmbeddingMessages(result.record, baseMessage, true);
-    setAnalysisView(recording, 'cached', message, result.record, true);
+    const cachedResult = Boolean(result.cached);
+    storeAnalysisRecord(recording, result.record, cachedResult);
+    const baseMessage =
+      result.message || buildAnalysisCompleteMessage(result.record, cachedResult);
+    const message = combineAnalysisAndEmbeddingMessages(
+      result.record,
+      baseMessage,
+      cachedResult
+    );
+    setAnalysisView(recording, 'cached', message, result.record, cachedResult);
     renderRecordingsList();
   } catch (error) {
     if (analysisViewState.recording?.id !== recording.id) {
@@ -1974,7 +1972,7 @@ async function requestRecordingEmbeddings(recording) {
       'error',
       `Failed to request Twelve Labs embeddings: ${fallback}`,
       workingRecord,
-      true
+      Boolean(workingRecord)
     );
   } finally {
     if (analysisViewState.recording?.id === recording.id) {
